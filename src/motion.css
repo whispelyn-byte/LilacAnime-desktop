@@ -1,0 +1,86 @@
+/* UI motion. Short ease-out transitions for state changes and entering content.
+   The global prefers-reduced-motion rule in mobile-parity.css disables all of it. */
+:root {
+  --ease-out: cubic-bezier(.2, .8, .2, 1);
+  --motion-fast: 140ms;
+  --motion: 200ms;
+  --motion-slow: 280ms;
+}
+
+@keyframes motion-fade { from { opacity: 0; } }
+@keyframes motion-rise { from { opacity: 0; transform: translateY(8px); } }
+@keyframes motion-drop { from { opacity: 0; transform: translateY(-6px); } }
+@keyframes motion-pop { 0% { transform: scale(.6); } 70% { transform: scale(1.12); } 100% { transform: scale(1); } }
+
+/* Detail dialog: fades and lifts in, and back out on close (display/overlay allow-discrete). */
+dialog {
+  opacity: 0;
+  transform: translateY(14px) scale(.985);
+  transition: opacity var(--motion) var(--ease-out), transform var(--motion) var(--ease-out),
+    overlay var(--motion) allow-discrete, display var(--motion) allow-discrete;
+}
+dialog[open] { opacity: 1; transform: none; }
+@starting-style { dialog[open] { opacity: 0; transform: translateY(14px) scale(.985); } }
+dialog::backdrop { opacity: 0; transition: opacity var(--motion) var(--ease-out), overlay var(--motion) allow-discrete, display var(--motion) allow-discrete; }
+dialog[open]::backdrop { opacity: 1; }
+@starting-style { dialog[open]::backdrop { opacity: 0; } }
+
+/* Content swapped in after loading. */
+#detailContent > *,
+.episode-list,
+.related-block:not(.hidden),
+.episode-block:not(.hidden),
+#searchStatus,
+.filter-panel:not(.hidden),
+.selection-bar:not(.hidden),
+.sheet-tracks:not(.hidden) { animation: motion-fade var(--motion) var(--ease-out); }
+.filter-panel:not(.hidden),
+.selection-bar:not(.hidden) { animation-name: motion-drop; }
+
+/* Poster cards and continue/history cards rise in with a short stagger. */
+.anime-card,
+.continue-card,
+.history-card { animation: motion-rise var(--motion-slow) var(--ease-out) both; }
+:is(.poster-rail, .poster-grid, .continue-rail, .history-list) > :nth-child(2) { animation-delay: 30ms; }
+:is(.poster-rail, .poster-grid, .continue-rail, .history-list) > :nth-child(3) { animation-delay: 60ms; }
+:is(.poster-rail, .poster-grid, .continue-rail, .history-list) > :nth-child(4) { animation-delay: 90ms; }
+:is(.poster-rail, .poster-grid, .continue-rail, .history-list) > :nth-child(5) { animation-delay: 120ms; }
+:is(.poster-rail, .poster-grid, .continue-rail, .history-list) > :nth-child(6) { animation-delay: 150ms; }
+:is(.poster-rail, .poster-grid, .continue-rail, .history-list) > :nth-child(n+7) { animation-delay: 180ms; }
+
+/* Hover / selection colour changes ease instead of snapping. */
+.nav, .nav i,
+.detail-tabs button,
+.library-tabs button,
+.chip-row button,
+.choice-row button,
+.button-row button,
+.episode-btn,
+.episode-sort,
+.episode-pager button,
+.episode-download,
+.batch-download,
+.track-option,
+.saved-remove,
+.sheet-button,
+.text-btn,
+.primary,
+.ghost {
+  transition: background-color var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out), box-shadow var(--motion-fast) var(--ease-out), transform var(--motion-fast) var(--ease-out),
+    padding var(--motion) var(--ease-out), opacity var(--motion-fast) var(--ease-out);
+}
+
+/* Press feedback. */
+:is(.primary, .ghost, .chip-row button, .choice-row button, .button-row button, .episode-sort, .episode-pager button,
+  .batch-download, .track-option, .sheet-button, .detail-tabs button, .library-tabs button, .nav):active:not(:disabled) { transform: scale(.97); }
+.episode-btn:active:not(:disabled) { transform: scale(.99); }
+
+/* Selection check in watch history pops in. */
+.history-card.selected .history-check { animation: motion-pop var(--motion) var(--ease-out); }
+.history-check svg { transition: stroke var(--motion-fast) var(--ease-out); }
+.history-card .history-thumb { transition: outline-color var(--motion-fast) var(--ease-out); }
+
+/* Floating UI enters from its edge. */
+.update-banner:not(.hidden) { animation: motion-rise var(--motion-slow) var(--ease-out); }
+.skip-chip:not(.hidden) { animation: motion-rise var(--motion) var(--ease-out); }

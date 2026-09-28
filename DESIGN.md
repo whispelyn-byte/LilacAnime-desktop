@@ -37,7 +37,7 @@ Windows 환경의 읽기 안정성을 위해 `Segoe UI Variable`, `Pretendard`, 
 
 ## Motion
 
-상태 변화에만 150–220ms ease-out을 사용한다. 페이지 진입 연출이나 반복적인 카드 애니메이션은 사용하지 않는다. `prefers-reduced-motion`을 존중한다.
+`src/motion.css`에 모은다. 상태 변화(색, 선택, 누름)는 140ms, 등장·전환은 200–280ms ease-out을 사용한다. 상세 창은 떠오르며 열리고 닫히며, 카드 목록은 처음 나타날 때 짧은 시차(30ms 간격, 최대 180ms)로 올라온다. 반복되거나 계속 움직이는 장식 애니메이션은 사용하지 않는다. `prefers-reduced-motion`을 존중한다.
 
 ## Desktop Adaptation
 

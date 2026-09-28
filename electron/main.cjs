@@ -400,7 +400,7 @@ function subtitleResult(file,extra={}){
 async function saveRemoteSubtitle(url,{referer='',userAgent=LINKKF_UA,headers={}}={}){
   const response=await fetch(url,{headers:{...headers,'User-Agent':userAgent,Referer:referer||new URL(url).origin+'/'}});
   if(!response.ok)throw new Error(`자막 다운로드 HTTP ${response.status}`);
-  const data=Buffer.from(await response.arrayBuffer());if(!data.length||data.length>=20*1024*1024)throw new Error('자막 파일 크기가 올바르지 않습니다.');
+  const data=Buffer.from(await response.arrayBuffer());if(!data.length||data.length>=200*1024*1024)throw new Error('자막 파일 크기가 올바르지 않습니다.');
   const text=data.toString('utf8').replace(/^﻿/,''),head=text.trimStart().slice(0,200).toLowerCase();
   if(head.startsWith('<!doctype html')||head.startsWith('<html')||head.startsWith('<head'))throw new Error('자막 대신 HTML 응답을 받았습니다.');
   const ext=/^webvtt/i.test(text.trimStart())?'.vtt':/\[script info\]/i.test(text)?'.ass':/^\s*\d+\s*$/m.test(text)&&text.includes(' --> ')?'.srt':'.vtt';
