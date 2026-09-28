@@ -370,7 +370,15 @@ function openProviderPlayer(episode, title = 'LilacAnime Player') {
 }
 
 function parseFlixSubtitleTracks(html=''){
-  const block=String(html).match(/subtitles:\[([\s\S]*?)\]/)?.[1];if(!block)return [];
+  // Track names can contain brackets ("English [nedragrevev]"), so find the closing ']' outside strings.
+  const text=String(html),start=text.search(/subtitles:\[/);if(start<0)return [];
+  let end=-1,depth=0,quote='';
+  for(let i=text.indexOf('[',start);i<text.length;i++){
+    const c=text[i];
+    if(quote){if(c==='\\')i++;else if(c===quote)quote='';continue}
+    if(c==='"'||c==="'")quote=c;else if(c==='[')depth++;else if(c===']'&&--depth===0){end=i;break}
+  }
+  const block=end>0?text.slice(text.indexOf('[',start)+1,end):'';if(!block)return [];
   const tracks=[];
   for(const match of block.matchAll(/\{([^{}]*?url:"[^"]+"[^{}]*?)\}/g)){
     const fields={};for(const field of match[1].matchAll(/(?:^|,)\s*(url|language|label|format):"((?:\\.|[^"])*)"/g))fields[field[1]]=decodeJsString(field[2]);
