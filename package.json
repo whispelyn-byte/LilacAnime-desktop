@@ -6,14 +6,21 @@
   "author": "LilacAnime Desktop",
   "license": "MIT",
   "scripts": {
+    "vendor": "node scripts/build-jassub.cjs",
+    "prestart": "npm run vendor",
     "start": "electron .",
+    "predev": "npm run vendor",
     "dev": "electron .",
+    "predist": "npm run vendor",
     "dist": "electron-builder --win nsis",
+    "prepack": "npm run vendor",
     "pack": "electron-builder --dir"
   },
   "devDependencies": {
     "electron": "^38.2.0",
-    "electron-builder": "^26.0.12"
+    "electron-builder": "^26.0.12",
+    "esbuild": "^0.28.2",
+    "jassub": "^2.5.16"
   },
   "build": {
     "appId": "com.lilac.anime.desktop",
@@ -28,7 +35,9 @@
       "build/icon.ico",
       "package.json"
     ],
-    "asarUnpack": ["node_modules/ffmpeg-static/**"],
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**"
+    ],
     "win": {
       "icon": "build/icon.ico",
       "executableName": "LilacAnime",

@@ -11,6 +11,7 @@ const { createFlixProxyUrl, createFlixAvProxyUrl, closeFlixProxy } = require('./
 const { detectOpEd } = require('./oped-fingerprint.cjs');
 const { DownloadManager } = require('./download-manager.cjs');
 const { Updater } = require('./updater.cjs');
+const { SubtitleStore } = require('./subtitle-store.cjs');
 
 app.commandLine.appendSwitch('disable-blink-features','AutomationControlled');
 app.setAppUserModelId('com.lilac.anime.desktop');
@@ -318,21 +319,35 @@ async function reanimeEpisodes(anime, detailHtml) {
   return [...byNumber.values()].sort((a,b)=>a.number-b.number);
 }
 
+async function reanimeServers(episode) {
+  const parsed=new URL(episode.url),slug=parsed.pathname.split('/').filter(Boolean).pop(),number=Number(parsed.searchParams.get('ep')||episode.number||1);
+  let links=[];
+  try {
+    const root=await providerFetch(`${REANIME_WEB}/api/watch/${encodeURIComponent(slug)}/${number}`,{json:true,referer:`${REANIME_WEB}/`});
+    links=Array.isArray(root.episode_links)?root.episode_links:[];
+  } catch { /* Current API often serves streams only from /api/flix. */ }
+  if(!links.length&&episode.anilistId){
+    const flix=await providerFetch(`${REANIME_WEB}/api/flix/${Number(episode.anilistId)}/${number}`,{json:true,referer:`${REANIME_WEB}/`});
+    links=Array.isArray(flix.servers)?flix.servers:[];
+  }
+  const candidates=links.map(item=>({name:String(item.serverName||''),url:String(item.dataLink||item.link||'')})).filter(item=>/^https:\/\/flixcloud\.cc\/e\//i.test(item.url));
+  return [...candidates.filter(item=>/HD-?2/i.test(item.name)),...candidates.filter(item=>/HD-?1/i.test(item.name)),...candidates]
+    .filter((item,index,array)=>array.findIndex(x=>x.url===item.url)===index);
+}
+// Subtitle track list only (no stream resolving): lets downloaded Re:ANIME episodes offer tracks too.
+async function reanimeSubtitleTracks(episode) {
+  for(const server of await reanimeServers(episode)){
+    try{
+      const html=await providerFetch(server.url,{referer:`${REANIME_WEB}/`});
+      const tracks=parseFlixSubtitleTracks(html);if(tracks.length)return {tracks,referer:server.url};
+    }catch{/* Try the next server. */}
+  }
+  return {tracks:[],referer:''};
+}
+
 async function resolveProviderEpisode(episode) {
   if(episode.provider==='reanime') {
-    const parsed=new URL(episode.url),slug=parsed.pathname.split('/').filter(Boolean).pop(),number=Number(parsed.searchParams.get('ep')||episode.number||1);
-    let links=[];
-    try {
-      const root=await providerFetch(`${REANIME_WEB}/api/watch/${encodeURIComponent(slug)}/${number}`,{json:true,referer:`${REANIME_WEB}/`});
-      links=Array.isArray(root.episode_links)?root.episode_links:[];
-    } catch { /* Current API often serves streams only from /api/flix. */ }
-    if(!links.length&&episode.anilistId){
-      const flix=await providerFetch(`${REANIME_WEB}/api/flix/${Number(episode.anilistId)}/${number}`,{json:true,referer:`${REANIME_WEB}/`});
-      links=Array.isArray(flix.servers)?flix.servers:[];
-    }
-    const candidates=links.map(item=>({name:String(item.serverName||''),url:String(item.dataLink||item.link||'')})).filter(item=>/^https:\/\/flixcloud\.cc\/e\//i.test(item.url));
-    const ordered=[...candidates.filter(item=>/HD-?2/i.test(item.name)),...candidates.filter(item=>/HD-?1/i.test(item.name)),...candidates]
-      .filter((item,index,array)=>array.findIndex(x=>x.url===item.url)===index);
+    const ordered=await reanimeServers(episode);
     if(!ordered.length)throw new Error('이 작품은 현재 RE:Anime에서 재생할 수 없습니다. 다른 콘텐츠 소스를 선택해주세요.');
     let lastError;
     for(const server of ordered){
@@ -366,7 +381,14 @@ function parseFlixSubtitleTracks(html=''){
   return tracks.filter((track,index,array)=>array.findIndex(x=>x.url===track.url)===index);
 }
 function isKoreanTrack(track){return /kor|korean|한국/i.test(`${track.language} ${track.label}`)||/_kor_/i.test(track.url)}
-// Downloads a remote VTT/SRT/ASS subtitle and stores it as WebVTT for the <track> element.
+// ASS/SSA keep their original file for libass (JASSUB) rendering; every format also gets a
+// WebVTT copy for the <track> fallback. Fonts extracted next to the subtitle are passed along.
+function subtitleResult(file,extra={}){
+  const isAss=/\.(ass|ssa)$/i.test(file),vtt=/\.srt$/i.test(file)?srtToVtt(file):isAss?assToVtt(file):file;
+  const fonts=isAss?fs.readdirSync(path.dirname(file)).filter(name=>/\.(ttf|otf|ttc|woff2?)$/i.test(name)).map(name=>pathToFileURL(path.join(path.dirname(file),name)).href):[];
+  return {...extra,path:vtt,url:pathToFileURL(vtt).href,assPath:isAss?file:null,assUrl:isAss?pathToFileURL(file).href:null,fonts};
+}
+// Downloads a remote VTT/SRT/ASS subtitle and returns the original file (see subtitleResult).
 async function saveRemoteSubtitle(url,{referer='',userAgent=LINKKF_UA,headers={}}={}){
   const response=await fetch(url,{headers:{...headers,'User-Agent':userAgent,Referer:referer||new URL(url).origin+'/'}});
   if(!response.ok)throw new Error(`자막 다운로드 HTTP ${response.status}`);
@@ -376,7 +398,6 @@ async function saveRemoteSubtitle(url,{referer='',userAgent=LINKKF_UA,headers={}
   const ext=/^webvtt/i.test(text.trimStart())?'.vtt':/\[script info\]/i.test(text)?'.ass':/^\s*\d+\s*$/m.test(text)&&text.includes(' --> ')?'.srt':'.vtt';
   const dir=path.join(app.getPath('userData'),'subtitles','provider');fs.mkdirSync(dir,{recursive:true});
   let file=path.join(dir,`subtitle_${Date.now()}_${Math.random().toString(36).slice(2,8)}${ext}`);fs.writeFileSync(file,text,'utf8');
-  if(ext==='.srt')file=srtToVtt(file);else if(ext==='.ass')file=assToVtt(file);
   return file;
 }
 
@@ -426,8 +447,8 @@ async function resolveStreamPage(targetUrl, referer = '') {
     }
     if(stream&&!subtitle&&!isFlixCloud){const subtitleDeadline=Date.now()+2500;while(Date.now()<subtitleDeadline&&!subtitle)await new Promise(resolve=>setTimeout(resolve,200));}
     if(!stream)throw new Error('플레이어 창이 닫혀 스트림 탐색을 중단했습니다.');    if(isFlixCloud){while(!flixPk&&!resolver.isDestroyed()){flixPk=await resolver.webContents.executeJavaScript(`window.__pk||''`,true).catch(()=>'');if(!flixPk)await new Promise(resolve=>setTimeout(resolve,250))}if(!flixPk)throw new Error('플레이어 창이 닫혀 복호화 키 탐색을 중단했습니다.');const headers={...lastHeaders,Referer:targetUrl,'User-Agent':ANDROID_WEBVIEW_UA};stream=flixVideo&&flixAudio?await createFlixAvProxyUrl(flixVideo,flixAudio,flixPk,headers):await createFlixProxyUrl(stream,flixPk,headers);}
-    let subtitleUrl=subtitle;if(subtitle){try{subtitleUrl=pathToFileURL(await saveRemoteSubtitle(subtitle,{referer:targetUrl,userAgent:browserUa,headers:lastHeaders})).href}catch{/* Community subtitle fallback remains available. */}}
-    resolvedStreamHeaders.set(new URL(stream).host,{...lastHeaders,Referer:targetUrl});return {url:stream,subtitleUrl,subtitleTracks,headers:lastHeaders,referer:targetUrl};
+    let subtitleUrl=subtitle,subtitlePath=null,subtitleAss=null;if(subtitle){try{const saved=subtitleResult(await saveRemoteSubtitle(subtitle,{referer:targetUrl,userAgent:browserUa,headers:lastHeaders}));subtitleUrl=saved.url;subtitlePath=saved.path;subtitleAss=saved.assUrl?{url:saved.assUrl,path:saved.assPath}:null}catch{/* Community subtitle fallback remains available. */}}
+    resolvedStreamHeaders.set(new URL(stream).host,{...lastHeaders,Referer:targetUrl});return {url:stream,subtitleUrl,subtitlePath,subtitleAss,subtitleTracks,headers:lastHeaders,referer:targetUrl};
   } finally {ses.webRequest.onBeforeSendHeaders(null);if(!resolver.isDestroyed())resolver.destroy();}
 }
 
@@ -439,6 +460,73 @@ function driveId(url){return url.match(/\/file\/d\/([^/?]+)/)?.[1]||url.match(/[
 function findExecutable(name){const suffix=process.platform==='win32'?'.exe':'';const candidates=(process.env.PATH||'').split(path.delimiter).map(dir=>path.join(dir,`${name}${suffix}`));if(process.platform==='win32'){candidates.push(path.join(process.env.LOCALAPPDATA||'','Programs','mpv','mpv.exe'),path.join(process.env.PROGRAMFILES||'','mpv','mpv.exe'),path.join(app.getAppPath(),'bin','mpv.exe'))}return candidates.find(file=>file&&fs.existsSync(file))||null}
 function srtToVtt(file){const text=fs.readFileSync(file,'utf8').replace(/^\uFEFF/,'').replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g,'$1.$2');const out=file.replace(/\.srt$/i,'.vtt');fs.writeFileSync(out,`WEBVTT\n\n${text}`,'utf8');return out}
 function assToVtt(file){const lines=fs.readFileSync(file,'utf8').replace(/^\uFEFF/,'').split(/\r?\n/);let inEvents=false,fields=[];const cues=[];const stamp=value=>{const match=String(value).trim().match(/(\d+):(\d{2}):(\d{2})[.](\d{1,3})/);if(!match)return null;return `${String(match[1]).padStart(2,'0')}:${match[2]}:${match[3]}.${match[4].padEnd(3,'0').slice(0,3)}`};for(const line of lines){if(/^\[Events]/i.test(line)){inEvents=true;continue}if(/^\[/.test(line)){inEvents=false;continue}if(!inEvents)continue;if(/^Format:/i.test(line)){fields=line.slice(line.indexOf(':')+1).split(',').map(x=>x.trim().toLowerCase());continue}if(!/^Dialogue:/i.test(line)||!fields.length)continue;const raw=line.slice(line.indexOf(':')+1),parts=raw.split(','),values=parts.slice(0,fields.length-1);values.push(parts.slice(fields.length-1).join(','));const row=Object.fromEntries(fields.map((field,index)=>[field,values[index]||'']));const start=stamp(row.start),end=stamp(row.end);if(!start||!end)continue;const text=(row.text||'').replace(/\{[^}]*}/g,'').replace(/\\[Nn]/g,'\n').replace(/\\h/g,' ').trim();if(text)cues.push(`${start} --> ${end}\n${text}`)}const out=file.replace(/\.(ass|ssa)$/i,'.vtt');fs.writeFileSync(out,`WEBVTT\n\n${cues.join('\n\n')}\n`,'utf8');return out}
+// Port of Android NamuWikiTitleResolver: NamuWiki search is a SPA, so the search page is
+// rendered in a hidden window and Korean document titles whose result card contains the
+// query are ranked (English title first as on Android, then the Japanese native title).
+// Android takes the top card as-is, which often lands on songs or unrelated pages, so each
+// candidate document is opened and accepted only if it mentions the native or English title.
+const namuTitleCache=new Map();
+function namuCacheFile(){return path.join(app.getPath('userData'),'namuwiki-title-cache.json')}
+function readNamuCache(){try{return JSON.parse(fs.readFileSync(namuCacheFile(),'utf8'))||{}}catch{return {}}}
+async function renderNamuPage(url,script,isReady){
+  const win=new BrowserWindow({show:false,width:1100,height:900,webPreferences:{partition:'persist:lilac-namuwiki',contextIsolation:true,nodeIntegration:false,sandbox:true,images:false}});
+  try{
+    await win.loadURL(url).catch(()=>{});
+    let result=null;
+    for(let attempt=0;attempt<16&&!win.isDestroyed();attempt++){
+      await new Promise(resolve=>setTimeout(resolve,500));
+      result=await win.webContents.executeJavaScript(script,true).catch(()=>null);
+      if(result&&isReady(result))break;
+    }
+    return result;
+  }finally{if(!win.isDestroyed())win.destroy()}
+}
+async function namuSearchLinks(query){
+  const result=await renderNamuPage(`https://namu.wiki/Search?q=${encodeURIComponent(query)}`,`(()=>{const text=document.body?.innerText||'';const done=/전체\s*\d+\s*건/.test(text);const links=[...document.querySelectorAll('a[href^="/w/"]')].filter(a=>a.closest('section')||a.parentElement?.tagName==='H4').map(a=>({label:a.textContent.replace(/\s+/g,' ').trim(),h4:a.parentElement?.tagName==='H4',card:(a.closest('section')||a.parentElement).innerText.replace(/\s+/g,' ')}));return {done,links}})()`,result=>result.links.length>0||result.done);
+  return result?.links||[];
+}
+async function namuDocumentText(title){
+  const result=await renderNamuPage(`https://namu.wiki/w/${encodeURIComponent(title)}`,`(()=>{const text=(document.querySelector('article')||document.body)?.innerText||'';return {text:text.slice(0,30000)}})()`,result=>result.text.length>2000);
+  return result?.text||'';
+}
+function namuCompareKey(value=''){return String(value).normalize('NFKC').toLowerCase().replace(/…/g,'...').replace(/[\s:：'’"“”!！?？.,·・\-–—~〜()（）]/g,'')}
+function namuCandidates(query,links){
+  const normalize=value=>String(value).toLowerCase().replace(/…/g,'...').replace(/\s+/g,'');
+  const tokens=[...new Set(query.replace(/…/g,'...').split(/\s+/).filter(token=>token.length>=2))];
+  return links.map(link=>{
+    // Subpages (시리즈/음반) count as their parent document; namespaces, list pages and
+    // titles whose only Hangul is a disambiguation suffix such as "(노래)" are ignored.
+    const label=link.label.replace(/^(파일|분류|틀|나무위키):.*/,'').split('/')[0].trim(),bare=label.replace(/\([^)]*\)/g,'').trim();
+    if(!/[가-힣]/.test(bare)||/문서로\s*가기/.test(link.label)||/^(애니메이션|일본 애니메이션|음반|노래|나무위키|최근변경|최근토론|특수기능)$/.test(bare)||/\d{4}년|분기/.test(bare))return null;
+    const card=normalize(link.card);let score=card.includes(normalize(query))?10000:0;
+    score+=tokens.filter(token=>card.includes(normalize(token))).length*500+(link.h4?300:0)+(label.length>=3?10:0);
+    return {label,score};
+  }).filter(Boolean).filter((item,index,array)=>array.findIndex(x=>x.label===item.label)===index).sort((a,b)=>b.score-a.score);
+}
+async function namuKoreanTitle(title,anime={}){
+  const original=String(title||'').trim();if(!original||/[가-힣]/.test(original))return original;
+  const key=`v2:${anime.id||original}`;if(namuTitleCache.has(key))return namuTitleCache.get(key);
+  const disk=readNamuCache();if(disk[key]){namuTitleCache.set(key,disk[key]);return disk[key]}
+  let native='';
+  if(anime.id){try{const media=await providerFetch(`${REANIME_WEB}/api/v1/anime/${encodeURIComponent(anime.id)}`,{json:true,referer:`${REANIME_WEB}/`});native=String(media?.title?.native||'')}catch{/* English only */}}
+  // The Japanese title is distinctive; English titles also appear on unrelated pages, so they only count without one.
+  const english=original.replace(/…/g,'...'),markers=[native||english].map(namuCompareKey).filter(value=>value.length>=4);
+  let korean=null;const checked=new Set();
+  for(const query of [...new Set([english,native].filter(Boolean))]){
+    let candidates=[];try{candidates=namuCandidates(query,await namuSearchLinks(query)).filter(x=>x.score>=500)}catch{}
+    for(const candidate of candidates.slice(0,3)){
+      if(checked.has(candidate.label))continue;checked.add(candidate.label);
+      // A work's own document shows the original title in its infobox at the top; actor or
+      // character pages only mention it further down.
+      const text=namuCompareKey((await namuDocumentText(candidate.label).catch(()=>'')).slice(0,2500));
+      if(markers.some(marker=>text.includes(marker))){korean=candidate.label.replace(/\([^)]*\)/g,'').trim();break}
+    }
+    if(korean)break;
+  }
+  const result=korean||original;namuTitleCache.set(key,result);
+  if(korean){disk[key]=korean;try{fs.writeFileSync(namuCacheFile(),JSON.stringify(disk),'utf8')}catch{}}
+  return result;
+}
 async function findCommunitySubtitle(source,title,episode){
   const blog=source==='kairan'?'https://kairan03.blogspot.com':'https://csora556.blogspot.com';
   const feed=await providerFetch(`${blog}/feeds/posts/default?alt=json&max-results=500&start-index=1`,{json:true,referer:`${blog}/`});
@@ -450,7 +538,7 @@ async function findCommunitySubtitle(source,title,episode){
   if(!links.length)throw new Error('게시물에서 다운로드 링크를 찾지 못했습니다.');
   const dir=path.join(app.getPath('userData'),'subtitles',simpleTitle(title).replace(/\s+/g,'_')||'anime',String(episode));fs.mkdirSync(dir,{recursive:true});const candidates=[];
   for(const original of [...new Set(links)]){try{const id=driveId(original);const url=id?`https://drive.usercontent.google.com/download?id=${encodeURIComponent(id)}&export=download&confirm=t`:original;const buffer=await downloadBuffer(url,match.url);if(buffer.length<16||buffer.length>300*1024*1024)continue;if(buffer[0]===0x50&&buffer[1]===0x4b){const zip=new AdmZip(buffer);let extracted=0;for(const entry of zip.getEntries()){if(entry.isDirectory)continue;const size=Number(entry.header?.size||0);extracted+=size;if(size>100*1024*1024||extracted>300*1024*1024)throw new Error('ZIP 자막 크기 제한을 초과했습니다.');const base=path.basename(entry.entryName).replace(/[^\p{L}\p{N}._ -]/gu,'_');if(!/\.(ass|ssa|srt|vtt|ttf|otf|ttc)$/i.test(base))continue;const out=path.join(dir,base);fs.writeFileSync(out,entry.getData());if(/\.(ass|ssa|srt|vtt)$/i.test(base))candidates.push(out)}}else{const type=buffer.slice(0,200).toString('utf8');let ext=/WEBVTT/i.test(type)?'.vtt':/\[Script Info\]/i.test(type)?'.ass':'.srt';const out=path.join(dir,`${source}_${episode}_${Date.now()}${ext}`);fs.writeFileSync(out,buffer);candidates.push(out)}}catch{/* Try remaining links. */}}
-  let selected=candidates.find(x=>new RegExp(`(?:^|\\D)${episode}(?:\\D|$)`).test(path.basename(x)))||candidates[0];if(!selected)throw new Error('사용 가능한 자막 파일을 추출하지 못했습니다.');if(/\.srt$/i.test(selected))selected=srtToVtt(selected);else if(/\.(ass|ssa)$/i.test(selected))selected=assToVtt(selected);return {path:selected,source,post:match.url,all:candidates};
+  let selected=candidates.find(x=>new RegExp(`(?:^|\\D)${episode}(?:\\D|$)`).test(path.basename(x)))||candidates[0];if(!selected)throw new Error('사용 가능한 자막 파일을 추출하지 못했습니다.');return subtitleResult(selected,{source,post:match.url,all:candidates});
 }
 async function downloadHls(url,filePath,event){
   let playlistUrl=url;let text=await providerFetch(playlistUrl,{referer:new URL(url).origin+'/'});
@@ -520,6 +608,13 @@ app.whenReady().then(async () => {
     const data = catalog.filter(a => [a.title, a.title_english, a.title_japanese, a.romaji, a.synonyms, ...(a.genres || []).map(g => g.name)].some(value => linkkfSearchKey(value).includes(key)));
     return { data, total: data.length };
   });
+  // Android records a Linkkf view after the detail page has been open for 9 s, then refreshes the counters.
+  ipcMain.handle('linkkf:record-view', async (_, postId = '') => {
+    const id = String(postId || '').trim(); if (!/^\d+$/.test(id)) return null;
+    const form = new FormData(); form.append('action', 'record'); form.append('id', id);
+    try { await fetch(`${LINKKF_API}/view.php`, { method: 'POST', body: form, headers: { 'User-Agent': LINKKF_UA, Referer: `${LINKKF_WEB}/up/${id}/` } }); } catch { /* counters are best effort */ }
+    return linkkfFetch(`${LINKKF_API}/view.php?action=get&id=${encodeURIComponent(id)}`, 10000).then(root => root.status === 'success' && root.data ? { day: Number(root.data.day_views) || 0, week: Number(root.data.week_views) || 0, month: Number(root.data.month_views) || 0, total: Number(root.data.total_views) || 0 } : null).catch(() => null);
+  });
   ipcMain.handle('linkkf:extras', async (_, anime = {}) => {
     const postId = String(anime.id || '');
     const stats = await linkkfFetch(`${LINKKF_API}/view.php?action=get&id=${encodeURIComponent(postId)}`, 10000).then(root => root.status === 'success' && root.data ? { day: Number(root.data.day_views) || 0, week: Number(root.data.week_views) || 0, month: Number(root.data.month_views) || 0, total: Number(root.data.total_views) || 0 } : null).catch(() => null);
@@ -581,8 +676,13 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('provider:play', (_, episode, title) => openProviderPlayer(episode,title).then(()=>true));
   ipcMain.handle('provider:resolve', (_, episode) => resolveProviderEpisode(episode));
+  ipcMain.handle('provider:subtitle-tracks', (_, episode) => reanimeSubtitleTracks(episode));
   ipcMain.handle('cover:data', (_, url) => coverDataUrl(url));
   updater=new Updater({app,broadcast});
+  const subtitleStore=new SubtitleStore({app});
+  ipcMain.handle('subtitle-store:list',(_,key)=>subtitleStore.list(String(key||'')));
+  ipcMain.handle('subtitle-store:save',(_,key,entry)=>subtitleStore.save(String(key||''),entry));
+  ipcMain.handle('subtitle-store:remove',(_,key,id)=>subtitleStore.remove(String(key||''),String(id||'')));
   ipcMain.handle('update:state',()=>updater.state);
   ipcMain.handle('update:check',()=>updater.check());
   ipcMain.handle('update:download',()=>updater.download());
@@ -615,10 +715,14 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('subtitle:remote', (_, url, referer = '') => {
     if (!/^https:\/\//i.test(String(url || ''))) throw new Error('올바른 자막 주소가 아닙니다.');
-    return saveRemoteSubtitle(String(url), { referer: /^https:\/\//i.test(referer) ? referer : 'https://flixcloud.cc/', userAgent: ANDROID_WEBVIEW_UA }).then(file => ({ path: file, url: pathToFileURL(file).href }));
+    return saveRemoteSubtitle(String(url), { referer: /^https:\/\//i.test(referer) ? referer : 'https://flixcloud.cc/', userAgent: ANDROID_WEBVIEW_UA }).then(file => subtitleResult(file));
   });
   // The sandboxed preload has no url.pathToFileURL, so file URLs are built here.
-  ipcMain.handle('subtitle:find', async (_, source, title, episode) => { const result = await findCommunitySubtitle(source,title,Number(episode)); return {...result,url:pathToFileURL(result.path).href}; });
+  ipcMain.handle('subtitle:find', async (_, source, title, episode, anime = null) => {
+    // Kairan/Csora posts use Korean titles; Re:ANIME titles are resolved through NamuWiki first.
+    const searchTitle = anime?.provider === 'reanime' ? await namuKoreanTitle(title, anime) : title;
+    return { ...await findCommunitySubtitle(source, searchTitle, Number(episode)), searchTitle };
+  });
   ipcMain.handle('mpv:status', () => ({available:Boolean(findExecutable('mpv')),path:findExecutable('mpv')}));
   ipcMain.handle('player:fullscreen', (event,enabled) => {const win=BrowserWindow.fromWebContents(event.sender);if(win)win.setFullScreen(Boolean(enabled));return Boolean(enabled)});
   ipcMain.handle('mpv:play', (_, mediaUrl, subtitlePath, title = 'LilacAnime') => {
@@ -639,7 +743,23 @@ app.whenReady().then(async () => {
       properties: ['openFile'],
       filters: [{ name: 'Subtitle', extensions: ['vtt', 'srt', 'ass', 'ssa'] }]
     });
-    if(result.canceled)return null;let selected=result.filePaths[0];if(/\.srt$/i.test(selected))selected=srtToVtt(selected);else if(/\.(ass|ssa)$/i.test(selected))selected=assToVtt(selected);return {path:selected,url:pathToFileURL(selected).href};
+    if(result.canceled)return null;return subtitleResult(result.filePaths[0]);
+  });
+  // Default ASS font: the user's choice (설정 > 기본 자막 폰트) or a Korean system font,
+  // since libass' bundled fallback font has no Hangul glyphs.
+  ipcMain.handle('font:default', (_, choice = '기본체', customPath = '') => {
+    const windir = process.env.WINDIR || 'C:\\Windows', system = name => path.join(windir, 'Fonts', name), user = name => path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'Windows', 'Fonts', name);
+    const presets = { '기본체': [system('malgun.ttf')], '나눔고딕': [system('NanumGothic.ttf'), user('NanumGothic.ttf')], '명조체': [system('batang.ttc'), system('NanumMyeongjo.ttf'), user('NanumMyeongjo.ttf')] };
+    const candidates = [customPath, ...(presets[choice] || []), system('malgun.ttf'), system('gulim.ttc')].filter(Boolean);
+    for (const file of candidates) {
+      if (!/\.(ttf|otf|ttc|woff2?)$/i.test(file) || !fs.existsSync(file)) continue;
+      try { return { name: path.basename(file), data: fs.readFileSync(file) }; } catch { /* try next */ }
+    }
+    return null;
+  });
+  ipcMain.handle('file:font', async () => {
+    const result = await dialog.showOpenDialog({ title: '기본 자막 폰트 선택', properties: ['openFile'], filters: [{ name: 'Font', extensions: ['ttf', 'otf', 'ttc', 'woff', 'woff2'] }] });
+    return result.canceled ? null : result.filePaths[0];
   });
   ipcMain.handle('open:external', (_, url) => {
     if (/^https:\/\//i.test(url)) return shell.openExternal(url);

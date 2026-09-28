@@ -94,3 +94,19 @@ dialog { max-height: calc(100vh - 48px); }
 .update-banner .primary { padding: 8px 14px; white-space: nowrap; }
 .update-banner .text-btn { font-size: 18px; }
 body.player-mode .update-banner { display: none; }
+
+/* Detail "작품 정보" external link button */
+.detail-web { display: inline-flex; align-items: center; gap: 7px; }
+.external-icon { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Saved subtitles (Android SubtitleStore) + libass canvas */
+.saved-subtitle { display: flex; gap: 6px; }
+.saved-subtitle .track-option { flex: 1; min-width: 0; }
+.saved-subtitle .track-option span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.saved-remove { flex: 0 0 34px; border: 1px solid #ffffff1f; border-radius: 10px; background: transparent; color: #ffffffb3; font-size: 16px; cursor: pointer; }
+.saved-remove:hover { color: #e07a86; border-color: #e07a86; }
+.immersive-player canvas.JASSUB { z-index: 0; }
+#savedSubtitleList { overflow-x: hidden; }
+.saved-subtitle .track-option span { flex: 1; min-width: 0; }
+.saved-subtitle .track-option small { flex: 0 0 auto; white-space: nowrap; }
+#savedSubtitleList { grid-template-columns: minmax(0, 1fr); }

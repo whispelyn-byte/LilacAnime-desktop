@@ -52,7 +52,7 @@ class DownloadManager {
   remove(id) {
     const job = this.jobs.find(item => item.id === id); if (!job) return false;
     if (this.active?.job.id === id) this.active.process?.kill?.();
-    for (const file of [job.filePath, job.subtitlePath, job.partialPath]) { if (file) try { fs.unlinkSync(file); } catch {} }
+    for (const file of [job.filePath, job.subtitlePath, job.subtitleAssPath, job.partialPath]) { if (file) try { fs.unlinkSync(file); } catch {} }
     this.jobs = this.jobs.filter(item => item.id !== id); this.save(); return true;
   }
 
@@ -68,7 +68,7 @@ class DownloadManager {
       await this.runFfmpeg(job,stream);
       if(job.status==='paused')return;
       try{fs.unlinkSync(job.filePath)}catch{}fs.renameSync(job.partialPath,job.filePath);job.partialPath='';job.status='completed';job.progress=100;job.completed=Date.now();job.updated=Date.now();
-      await this.saveSubtitle(job,stream?.subtitleUrl);this.save();
+      await this.saveSubtitle(job,stream?.subtitleUrl);this.saveAssSubtitle(job,stream?.subtitleAss?.path);this.save();
     } catch (error) {
       if(job.status!=='paused'){job.status='failed';job.error=error?.message||String(error);job.updated=Date.now();this.save();}
     } finally { this.active=null; setImmediate(()=>this.pump()); }
@@ -86,11 +86,15 @@ class DownloadManager {
     });
   }
 
+  saveAssSubtitle(job, file) {
+    if(!file||!fs.existsSync(file))return;try{job.subtitleAssPath=job.filePath.replace(/\.mp4$/i,path.extname(file));fs.copyFileSync(file,job.subtitleAssPath)}catch{}
+  }
+
   async saveSubtitle(job, url) {
     if(!url)return;try{let data,ext='.vtt';if(url.startsWith('file:')){const source=fileURLToPath(url);ext=path.extname(source)||ext;data=fs.readFileSync(source)}else{const response=await fetch(url);if(!response.ok)return;data=Buffer.from(await response.arrayBuffer())}job.subtitlePath=job.filePath.replace(/\.mp4$/i,ext);fs.writeFileSync(job.subtitlePath,data)}catch{}
   }
 
-  localPlayback(id) { const job=this.jobs.find(item=>item.id===id);if(!job||job.status!=='completed'||!fs.existsSync(job.filePath))throw new Error('다운로드 파일을 찾지 못했습니다.');return {url:pathToFileURL(job.filePath).href,subtitleUrl:job.subtitlePath&&fs.existsSync(job.subtitlePath)?pathToFileURL(job.subtitlePath).href:null,job}; }
+  localPlayback(id) { const job=this.jobs.find(item=>item.id===id);if(!job||job.status!=='completed'||!fs.existsSync(job.filePath))throw new Error('다운로드 파일을 찾지 못했습니다.');return {url:pathToFileURL(job.filePath).href,subtitleUrl:job.subtitlePath&&fs.existsSync(job.subtitlePath)?pathToFileURL(job.subtitlePath).href:null,subtitleAss:job.subtitleAssPath&&fs.existsSync(job.subtitleAssPath)?{url:pathToFileURL(job.subtitleAssPath).href,path:job.subtitleAssPath}:null,job}; }
 }
 
 module.exports = { DownloadManager };
