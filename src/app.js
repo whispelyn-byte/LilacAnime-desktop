@@ -250,14 +250,25 @@ function play(src,name='직접 재생',context={}) {
     $('#downloadStatus').textContent='영상 재생목록을 불러오는 중...';
     hlsPlayer.on(Hls.Events.MANIFEST_PARSED,()=>{scheduleOpEdAnalysis();$('#downloadStatus').textContent='재생하며 60초 앞까지 불러오는 중';video.play().catch(()=>{})});
     hlsPlayer.on(Hls.Events.FRAG_BUFFERED,()=>{if(!video.paused)$('#downloadStatus').textContent='재생 중 · 앞부분 계속 불러오는 중'});
-    // Recover from fatal errors before giving up: reload on network errors, and on media errors
-    // recover the decoder (skipping a fragment that cannot be parsed).
-    const recovery={network:0,media:0};
-    hlsPlayer.on(Hls.Events.FRAG_BUFFERED,()=>{recovery.network=0;recovery.media=0});
+    // Recover instead of stopping. FlixCloud segments do not always start on a keyframe and some
+    // contain none, so playback cannot start inside them after a seek or resume ("Found no media").
+    // Step back one fragment at a time until one with a keyframe plays. Counters reset only once
+    // playback actually moves on to another fragment.
+    const recovery={network:0,media:0,stepBack:0,lastSn:null};
+    hlsPlayer.on(Hls.Events.FRAG_CHANGED,()=>{recovery.network=0;recovery.media=0;recovery.stepBack=0;recovery.lastSn=null});
     hlsPlayer.on(Hls.Events.ERROR,(_,data)=>{
-      if(!data.fatal||!hlsPlayer)return;
+      if(!hlsPlayer)return;
+      if(data.details===Hls.ErrorDetails.FRAG_PARSING_ERROR&&data.frag?.type==='main'&&recovery.stepBack<8){
+        if(recovery.lastSn===data.frag.sn&&!data.fatal)return;
+        recovery.lastSn=data.frag.sn;recovery.stepBack++;
+        const previous=(hlsPlayer.levels[data.frag.level]?.details?.fragments||[]).find(frag=>frag.sn===data.frag.sn-1);
+        if(previous){video.currentTime=previous.start+.05;$('#downloadStatus').textContent='재생 위치를 맞추는 중...'}
+        if(data.fatal)hlsPlayer.recoverMediaError();
+        return;
+      }
+      if(!data.fatal)return;
       if(data.type===Hls.ErrorTypes.NETWORK_ERROR&&recovery.network<3){recovery.network++;$('#downloadStatus').textContent='영상 서버에 다시 연결하는 중...';hlsPlayer.startLoad();return}
-      if(data.type===Hls.ErrorTypes.MEDIA_ERROR&&recovery.media<3){recovery.media++;if(data.details===Hls.ErrorDetails.FRAG_PARSING_ERROR&&data.frag)video.currentTime=data.frag.start+data.frag.duration+.05;else if(recovery.media===2)hlsPlayer.swapAudioCodec();$('#downloadStatus').textContent='재생 오류를 복구하는 중...';hlsPlayer.recoverMediaError();return}
+      if(data.type===Hls.ErrorTypes.MEDIA_ERROR&&recovery.media<3){recovery.media++;if(recovery.media===2)hlsPlayer.swapAudioCodec();$('#downloadStatus').textContent='재생 오류를 복구하는 중...';hlsPlayer.recoverMediaError();return}
       {const detail=data.details||data.type||'unknown',status=data.response?.code||data.response?.status||'',reason=data.reason||data.error?.message||'';const message=[detail,status&&`HTTP ${status}`,reason].filter(Boolean).join(' · ');$('#downloadStatus').textContent=`HLS 오류: ${message}`;toast(`HLS 재생 오류: ${message}`)}});
   }else video.src=src;
   $('#streamUrl').value=/^https?:/i.test(src)?src:'';$('#playerTitle').textContent=name;$('#playerMeta').textContent=context.episode?`${context.episode.number||1}화`:'LilacAnime';$('#playerEmpty p').textContent='영상을 준비하고 있어요';$('#skipTitle').value=context.subtitleTitle||((name==='직접 재생')?'':name.split(' · ')[0]);if(context.episode)$('#skipEpisode').value=context.episode.number||1;video.volume=Math.max(0,Math.min(1,Number(localStorage.getItem('playerVolume')??1)));video.muted=localStorage.getItem('playerMuted')==='true';syncVolumeUI();video.playbackRate=Number($('#speed').value);if(!isHls)video.play().catch(()=>{});
