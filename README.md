@@ -15,7 +15,7 @@ npm start
 npm run dist
 ```
 
-완성된 설치 파일은 `dist/LilacAnime-Setup-0.3.8.exe`에 생성됩니다.
+완성된 설치 파일은 `dist/LilacAnime-Setup-0.3.9.exe`에 생성됩니다.
 
 ## 크레딧
 

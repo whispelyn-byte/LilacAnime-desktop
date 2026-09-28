@@ -1,5 +1,4 @@
 const { contextBridge, ipcRenderer } = require('electron');
-const { pathToFileURL } = require('url');
 
 contextBridge.exposeInMainWorld('lilac', {
   season: () => ipcRenderer.invoke('anime:season'),
@@ -11,6 +10,12 @@ contextBridge.exposeInMainWorld('lilac', {
   linkkfEpisodes: id => ipcRenderer.invoke('linkkf:episodes', id),
   linkkfPlay: episode => ipcRenderer.invoke('linkkf:play', episode),
   linkkfResolve: episode => ipcRenderer.invoke('linkkf:resolve', episode),
+  linkkfSchedule: () => ipcRenderer.invoke('linkkf:schedule'),
+  linkkfSections: () => ipcRenderer.invoke('linkkf:sections'),
+  linkkfFilterTags: () => ipcRenderer.invoke('linkkf:filter-tags'),
+  linkkfFilter: request => ipcRenderer.invoke('linkkf:filter', request),
+  linkkfSearch: query => ipcRenderer.invoke('linkkf:search', query),
+  linkkfExtras: anime => ipcRenderer.invoke('linkkf:extras', anime),
   providerCatalog: (provider, query = '', offset = 0) => ipcRenderer.invoke('provider:catalog', provider, query, offset),
   providerDetail: anime => ipcRenderer.invoke('provider:detail', anime),
   providerPlay: (episode, title) => ipcRenderer.invoke('provider:play', episode, title),
@@ -29,24 +34,19 @@ contextBridge.exposeInMainWorld('lilac', {
   playDownload: id => ipcRenderer.invoke('downloads:play', id),
   openDownloadsFolder: () => ipcRenderer.invoke('downloads:open-folder'),
   onDownloadsChanged: callback => ipcRenderer.on('downloads:changed', (_, value) => callback(value)),
-  findSubtitle: async (source, title, episode) => {
-    const result = await ipcRenderer.invoke('subtitle:find', source, title, episode);
-    return {...result,url:pathToFileURL(result.path).href};
-  },
+  findSubtitle: (source, title, episode) => ipcRenderer.invoke('subtitle:find', source, title, episode),
+  remoteSubtitle: (url, referer) => ipcRenderer.invoke('subtitle:remote', url, referer),
   mpvStatus: () => ipcRenderer.invoke('mpv:status'),
   mpvPlay: (url, subtitlePath, title) => ipcRenderer.invoke('mpv:play', url, subtitlePath, title),
   setPlayerFullscreen: enabled => ipcRenderer.invoke('player:fullscreen', Boolean(enabled)),
-  chooseVideo: async () => {
-    const file = await ipcRenderer.invoke('file:video');
-    return file ? pathToFileURL(file).href : null;
-  },
-  chooseSubtitle: async () => {
-    const file = await ipcRenderer.invoke('file:subtitle');
-    return file ? pathToFileURL(file).href : null;
-  },
-  chooseSubtitleDetails: async () => {
-    const file = await ipcRenderer.invoke('file:subtitle');
-    return file ? {path:file,url:pathToFileURL(file).href} : null;
-  },
+  // Main returns {path,url}: url.pathToFileURL is unavailable in the sandboxed preload.
+  chooseVideo: async () => (await ipcRenderer.invoke('file:video'))?.url || null,
+  chooseSubtitle: async () => (await ipcRenderer.invoke('file:subtitle'))?.url || null,
+  chooseSubtitleDetails: () => ipcRenderer.invoke('file:subtitle'),
+  updateState: () => ipcRenderer.invoke('update:state'),
+  checkUpdate: () => ipcRenderer.invoke('update:check'),
+  downloadUpdate: () => ipcRenderer.invoke('update:download'),
+  installUpdate: () => ipcRenderer.invoke('update:install'),
+  onUpdateState: callback => ipcRenderer.on('update:state', (_, value) => callback(value)),
   openExternal: url => ipcRenderer.invoke('open:external', url)
 });

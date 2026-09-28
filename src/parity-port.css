@@ -1,0 +1,96 @@
+/* Android v0.3.9 parity: detail tabs, Re:Anime episode rows, subtitle tracks,
+   Linkkf schedule/filter and watch-history selection. */
+
+/* Detail dialog scrolls inside instead of clipping long episode lists. */
+dialog { max-height: calc(100vh - 48px); }
+#detailContent { max-height: calc(100vh - 50px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.detail-body > .detail-info { min-width: 0; }
+#detailContent { overflow-x: hidden; }
+
+.detail-info .detail-native { margin: -2px 0 4px; color: var(--muted); font-size: 13px; }
+.detail-info .detail-meta,
+.detail-info .detail-stats { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.detail-info .detail-stats { color: var(--lilac); }
+
+.detail-tabs { display: flex; gap: 4px; margin: 22px 0 0; border-bottom: 1px solid var(--line); }
+.detail-tabs button { border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); padding: 10px 14px; font: inherit; font-size: 13px; cursor: pointer; }
+.detail-tabs button.selected { color: var(--lilac); border-bottom-color: var(--lilac); font-weight: 700; }
+
+.related-block { margin-top: 14px; }
+.related-group h3 { margin: 14px 0 10px; color: var(--lilac); font-size: 12px; }
+.related-group h3 small, .episode-block-head h3 small { color: var(--muted); font-weight: 400; }
+.related-group .poster-rail { grid-auto-columns: 128px; }
+
+.episode-section + .episode-section { margin-top: 10px; }
+.episode-tools { display: flex; align-items: center; gap: 6px; }
+.episode-sort { border: 1px solid var(--line); border-radius: 10px; background: transparent; color: var(--text); padding: 8px 12px; font-size: 12px; cursor: pointer; }
+.episode-sort:hover { border-color: var(--lilac); color: var(--lilac); }
+.episode-pager { display: flex; gap: 6px; overflow-x: auto; padding: 0 0 10px; scrollbar-width: thin; }
+.episode-pager button { flex: 0 0 auto; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--muted); padding: 6px 10px; font-size: 11px; cursor: pointer; }
+.episode-pager button.selected { border-color: var(--lilac); color: var(--lilac); background: color-mix(in srgb, var(--lilac) 12%, transparent); font-weight: 700; }
+
+.episode-list.rich { display: grid; gap: 6px; max-height: none; overflow: visible; }
+.episode-row.rich { align-items: center; }
+.episode-row.rich .episode-btn { display: flex; align-items: center; gap: 14px; min-width: 0; padding: 10px 14px; border-radius: 12px; text-align: left; }
+.episode-row.rich .episode-btn:disabled { cursor: not-allowed; opacity: .55; }
+.episode-row.rich .episode-btn:disabled:hover { border-color: var(--line); color: var(--text); }
+.episode-number { flex: 0 0 38px; color: var(--lilac); font-size: 15px; font-weight: 700; text-align: center; }
+.episode-copy { display: grid; gap: 3px; min-width: 0; }
+.episode-copy b, .episode-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.episode-copy b { font-size: 13px; }
+.episode-copy small { color: var(--muted); font-size: 11px; }
+.episode-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; color: var(--muted); font-size: 10px; }
+.episode-meta em { color: #e07a86; font-style: normal; }
+.episode-badge { padding: 2px 5px; border-radius: 4px; font-size: 9px; font-style: normal; font-weight: 700; }
+.episode-badge.filler { color: #e07a86; background: #e07a861a; }
+.episode-badge.recap { color: #7fb6d8; background: #7fb6d81a; }
+.episode-download:disabled { opacity: .35; cursor: not-allowed; }
+
+/* Subtitle sheet: Re:Anime track picker */
+.sheet-tracks { margin-top: 14px; padding: 12px; border: 1px solid #ffffff1a; border-radius: 12px; background: #ffffff08; }
+.sheet-tracks-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; color: #fff; font-size: 13px; }
+.sheet-tracks-head span { color: #ffffff8c; font-size: 11px; }
+.track-list { display: grid; gap: 6px; max-height: 180px; margin-top: 8px; overflow-y: auto; }
+.track-option { display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid #ffffff1f; border-radius: 10px; background: transparent; color: #fff; padding: 9px 11px; text-align: left; cursor: pointer; }
+.track-option small { color: #ffffff80; font-size: 10px; }
+.track-option:hover { background: #ffffff12; }
+.track-option.selected { border-color: #c8a2c8; background: #c8a2c826; }
+
+/* Linkkf home schedule + filter chips */
+.chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
+#scheduleTabs { margin: 0 0 14px; }
+.chip-row button { min-height: 34px; padding: 0 14px; border: 1px solid var(--line); border-radius: 17px; background: var(--panel); color: var(--text); font-size: 12px; cursor: pointer; }
+.chip-row button:hover { border-color: var(--lilac); }
+.chip-row button.selected { border-color: var(--lilac); background: color-mix(in srgb, var(--lilac) 18%, transparent); color: var(--lilac); font-weight: 700; }
+.rail-empty { color: var(--muted); font-size: 12px; }
+
+.filter-bar { max-width: 760px; margin: 12px 0 0; }
+.filter-toggle { padding: 9px 14px; }
+.filter-panel { max-width: 760px; margin-top: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
+.filter-group + .filter-group { margin-top: 14px; }
+.filter-group b { display: block; margin-bottom: 8px; font-size: 13px; }
+.filter-group .chip-row { max-height: 124px; overflow-y: auto; }
+.filter-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.load-more { display: block; margin: 20px auto 0; padding: 10px 22px; }
+
+/* Watch history selection */
+.history-actions { display: flex; gap: 14px; }
+.selection-bar { display: flex; align-items: center; gap: 16px; margin: 0 0 16px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.selection-bar span { flex: 1; font-size: 13px; font-weight: 700; }
+.selection-bar button:disabled { opacity: .45; cursor: default; }
+.danger-text { color: #e07a86 !important; }
+.history-card.selecting .history-card-play { display: none; }
+.history-check { position: absolute; top: 8px; left: 8px; display: grid; place-items: center; width: 24px; height: 24px; border: 2px solid #fff; border-radius: 50%; background: #0006; }
+.history-check svg { width: 16px; height: 16px; fill: none; stroke: transparent; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.history-card.selected .history-check { border-color: var(--lilac); background: var(--lilac); }
+.history-card.selected .history-check svg { stroke: #1b1021; }
+.history-card.selected .history-thumb { outline: 2px solid var(--lilac); outline-offset: 2px; }
+
+.setting-switch small { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.5; }
+.settings-group > .setting-switch { margin-bottom: 12px; }
+
+/* GitHub release auto update */
+.update-banner { position: fixed; z-index: 60; left: 50%; bottom: calc(var(--nav-height) + 16px); transform: translateX(-50%); display: flex; align-items: center; gap: 12px; max-width: calc(100vw - 32px); padding: 10px 12px 10px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); box-shadow: 0 12px 32px #0008; font-size: 13px; }
+.update-banner .primary { padding: 8px 14px; white-space: nowrap; }
+.update-banner .text-btn { font-size: 18px; }
+body.player-mode .update-banner { display: none; }

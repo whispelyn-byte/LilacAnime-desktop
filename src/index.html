@@ -16,6 +16,7 @@
   <link rel="stylesheet" href="settings-port.css" />
   <link rel="stylesheet" href="download-port.css" />
   <link rel="stylesheet" href="volume-port.css" />
+  <link rel="stylesheet" href="parity-port.css" />
 </head>
 <body>
   <div class="app-shell">
@@ -38,22 +39,27 @@
     <main>
       <header class="topbar">
         <div class="search-box"><span>⌕</span><input id="globalSearch" placeholder="보고 싶은 애니메이션을 검색해 보세요" /><kbd>Enter</kbd></div>
-        <button id="themeButton" class="icon-btn" title="테마 전환">☾</button>
-        <button class="profile">LA</button>
       </header>
 
       <section id="homeView" class="view active">
         <div id="hero" class="hero skeleton"><div class="hero-shade"></div><div class="hero-copy"><h1>오늘의 애니메이션</h1><p>새로운 이야기를 불러오는 중입니다.</p><div class="hero-actions"><button class="primary">자세히 보기</button><button class="ghost library-toggle"><svg class="library-heart-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 9c0 5-8.5 10-8.5 10S3.5 14 3.5 9A4.5 4.5 0 0 1 12 7a4.5 4.5 0 0 1 8.5 2Z"/></svg><span>내 목록</span></button></div></div></div>
+        <div id="scheduleSection" class="content-section hidden"><div class="section-title"><div><h2>방영 일정</h2></div></div><div id="scheduleTabs" class="chip-row" role="tablist"></div><div id="scheduleRail" class="poster-rail"></div></div>
         <div id="continueSection" class="content-section hidden"><div class="section-title"><div><h2>이어서 보기</h2></div></div><div id="continueRail" class="continue-rail"></div></div>
-        <div class="content-section"><div class="section-title"><div><h2>이번 시즌 신작</h2></div><button class="text-btn" data-goto="search">전체 보기 →</button></div><div id="seasonRail" class="poster-rail loading-cards"></div></div>
+        <div id="pvSection" class="content-section hidden"><div class="section-title"><div><h2>PV · 트레일러</h2></div></div><div id="pvRail" class="poster-rail"></div></div>
+        <div id="movieSection" class="content-section hidden"><div class="section-title"><div><h2>극장판</h2></div></div><div id="movieRail" class="poster-rail"></div></div>
+        <div id="adultSection" class="content-section hidden"><div class="section-title"><div><h2>16+ 애니</h2></div></div><div id="adultRail" class="poster-rail"></div></div>
+        <div class="content-section"><div class="section-title"><div><h2 id="seasonTitle">이번 시즌 신작</h2></div><button class="text-btn" data-goto="search">전체 보기 →</button></div><div id="seasonRail" class="poster-rail loading-cards"></div></div>
         <div class="content-section"><div class="section-title"><div><h2>인기 애니메이션</h2></div></div><div id="topRail" class="poster-rail loading-cards"></div></div>
       </section>
 
       <section id="searchView" class="view">
         <div class="page-head"><h1>어떤 이야기를 찾고 있나요?</h1><p>제목을 검색해 작품 정보와 평점을 확인하세요.</p></div>
         <div class="big-search"><span>⌕</span><input id="pageSearch" placeholder="애니메이션 제목 입력" /><button id="searchButton">검색</button></div>
+        <div id="filterBar" class="filter-bar hidden"><button id="filterToggle" class="ghost filter-toggle" aria-expanded="false" aria-controls="filterPanel">태그 필터</button></div>
+        <div id="filterPanel" class="filter-panel hidden"><div class="filter-group"><b>시즌 타입</b><div class="chip-row" data-filter-group="format"></div></div><div class="filter-group"><b>장르</b><div class="chip-row" data-filter-group="genre"></div></div><div class="filter-group"><b>연도</b><div class="chip-row" data-filter-group="year"></div></div><div class="filter-actions"><button id="filterReset" class="ghost">초기화</button><button id="filterApply" class="primary">적용</button></div></div>
         <div id="searchStatus" class="result-status">인기 작품을 둘러보거나 검색을 시작하세요.</div>
         <div id="searchGrid" class="poster-grid"></div>
+        <button id="filterMore" class="ghost load-more hidden">더 불러오기</button>
       </section>
 
       <section id="allView" class="view">
@@ -62,7 +68,8 @@
       </section>
 
       <section id="historyView" class="view">
-        <div class="page-head history-head"><div><h1>시청기록</h1><p id="historyCount">최근에 재생한 작품</p></div><button id="clearHistory" class="text-btn">전체 삭제</button></div>
+        <div class="page-head history-head"><div><h1>시청기록</h1><p id="historyCount">최근에 재생한 작품</p></div><div class="history-actions"><button id="selectHistory" class="text-btn">선택</button><button id="clearHistory" class="text-btn">전체 삭제</button></div></div>
+        <div id="historySelectionBar" class="selection-bar hidden"><span id="historySelectedCount">0개 선택</span><button id="historySelectAll" class="text-btn">전체 선택</button><button id="historyDeleteSelected" class="text-btn danger-text">삭제</button><button id="historyCancelSelect" class="text-btn">취소</button></div>
         <div id="historyList" class="history-list"></div>
         <div id="emptyHistory" class="empty-state"><div>◷</div><h2>시청 기록이 없습니다</h2><p>작품의 회차나 직접 영상을 재생하면 여기에 표시됩니다.</p></div>
       </section>
@@ -83,7 +90,7 @@
           <div class="player-center"><button id="rewindPlayer" class="player-skip" aria-label="10초 뒤로"><svg viewBox="0 0 24 24"><path d="M4 8V4m0 4h4M5.5 7A8 8 0 1 1 4 14"/><text x="9" y="15">10</text></svg></button><button id="togglePlayer" class="player-play" aria-label="재생"><svg class="play-shape" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7Z"/></svg><svg class="pause-shape" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></svg></button><button id="forwardPlayer" class="player-skip" aria-label="10초 앞으로"><svg viewBox="0 0 24 24"><path d="M20 8V4m0 4h-4M18.5 7A8 8 0 1 0 20 14"/><text x="9" y="15">10</text></svg></button></div>
           <button id="skipNow" class="skip-chip hidden"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 5 9 7-9 7Zm10 0h3v14h-3Z"/></svg><span>OP 스킵</span></button>
           <div class="player-bottom"><input id="playerSeek" class="player-seek" type="range" min="0" max="1000" value="0" aria-label="재생 위치"><div class="player-bottom-row"><span id="playerTime">00:00 / 00:00</span><div class="player-actions"><div class="volume-control"><button id="mutePlayer" class="player-icon" aria-label="음소거"><svg class="volume-on" viewBox="0 0 24 24"><path d="M5 9v6h4l5 4V5L9 9H5Zm12 1a3 3 0 0 1 0 4m2-7a7 7 0 0 1 0 10"/></svg><svg class="volume-off" viewBox="0 0 24 24"><path d="M5 9v6h4l5 4V5L9 9H5Zm12 1 4 4m0-4-4 4"/></svg></button><input id="playerVolume" type="range" min="0" max="100" step="1" value="100" aria-label="볼륨"></div><button id="subtitleToggle" class="player-action" aria-label="자막 설정">CC</button><label class="speed-control" aria-label="재생 속도"><select id="speed"><option value=".1">0.1×</option><option value=".25">0.25×</option><option value=".5">0.5×</option><option value=".75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="1.75">1.75×</option><option value="2">2×</option></select></label><button id="miniPlayer" class="player-icon" aria-label="미니 플레이어"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><rect x="12" y="11" width="7" height="5" rx="1"/></svg></button><button id="fullscreenPlayer" class="player-icon" aria-label="전체 화면"><svg viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg></button></div></div></div>
-          <aside id="subtitleSheet" class="subtitle-sheet" aria-hidden="true"><div class="sheet-head"><h2>자막</h2><button id="closeSubtitleSheet" class="player-icon" aria-label="닫기">×</button></div><p id="subtitleState">자막을 찾는 중...</p><button id="findSubtitle" class="sheet-button">온라인 자막 다시 찾기</button><button id="openSubtitle" class="sheet-button">내 자막 파일 열기</button><label class="sheet-toggle"><span>자막 표시</span><input id="subtitleEnabled" type="checkbox" checked></label></aside>
+          <aside id="subtitleSheet" class="subtitle-sheet" aria-hidden="true"><div class="sheet-head"><h2>자막</h2><button id="closeSubtitleSheet" class="player-icon" aria-label="닫기">×</button></div><p id="subtitleState">자막을 찾는 중...</p><div id="subtitleTracks" class="sheet-tracks hidden"><div class="sheet-tracks-head"><b>Re:Anime 자막 트랙</b><span id="subtitleTrackState"></span></div><div id="subtitleTrackList" class="track-list"></div></div><button id="findSubtitle" class="sheet-button">온라인 자막 다시 찾기</button><button id="openSubtitle" class="sheet-button">내 자막 파일 열기</button><label class="sheet-toggle"><span>자막 표시</span><input id="subtitleEnabled" type="checkbox" checked></label></aside>
           <div class="player-utilities" aria-hidden="true"><input id="streamUrl"><input id="skipTitle"><input id="skipEpisode" type="number" value="1"><button id="playUrl"></button><button id="openVideo"></button><button id="downloadVideo"></button><button id="loadSkip"></button></div>
         </div>
       </section>
@@ -102,16 +109,18 @@
             <div class="setting-block"><b>기본 VTT 자막 위치 (<span id="positionLabel">10%</span>)</b><input id="subtitlePosition" type="range" min="3" max="30" step="1" value="10"></div>
             <div class="setting-block"><b>자막 싱크 미세 조정 (<span id="subtitleSyncLabel">0 ms</span>)</b><input id="subtitleSync" class="setting-native" type="range" min="-5000" max="5000" step="250" value="0"><div class="button-row"><button data-sync="-250">-250ms</button><button data-sync="0">초기화</button><button data-sync="250">+250ms</button></div></div>
             <div class="setting-block input-setting"><b>뒤로/앞으로 버튼 이동 시간</b><p>재생 화면 중앙 버튼과 방향키로 이동할 시간입니다.</p><label><input id="seekSeconds" type="number" min="1" max="120" value="10"><span>초</span></label></div>
-            <div class="setting-block"><b>자막 소스</b><div class="choice-row" id="subtitleChoices"><button data-value="linkkf">Linkkf</button><button data-value="kairan">Kairan</button><button data-value="csora">Csora</button><button data-value="user">사용자 자막</button></div><select id="subtitleSource" class="setting-native"><option value="linkkf">Linkkf</option><option value="kairan">Kairan</option><option value="csora">Csora</option><option value="user">사용자 자막</option></select></div>
+            <div class="setting-block"><b>자막 소스</b><div class="choice-row" id="subtitleChoices"><button data-value="linkkf">Linkkf</button><button data-value="reanime">Re:Anime</button><button data-value="kairan">Kairan</button><button data-value="csora">Csora</button><button data-value="user">사용자 자막</button></div><select id="subtitleSource" class="setting-native"><option value="linkkf">Linkkf</option><option value="reanime">Re:Anime</option><option value="kairan">Kairan</option><option value="csora">Csora</option><option value="user">사용자 자막</option></select></div>
           </section>
-          <section class="settings-group"><h2>OP/ED 분석 데이터</h2><p>분석한 회차의 결과와 학습된 오디오 Fingerprint를 저장합니다.</p><div class="button-row"><button id="clearOpEdAnalysis">분석 결과 삭제</button><button id="clearOpEdFingerprint">Fingerprint 삭제</button></div><button id="clearOpEdAll" class="filled-setting-button">분석 결과 + Fingerprint 모두 삭제</button></section>
-          <section class="settings-about"><b>Lilac Anime</b><span>Version 0.3.8</span></section>
+          <section class="settings-group"><h2>OP/ED 분석 데이터</h2><p>분석한 회차의 결과와 학습된 오디오 Fingerprint를 저장합니다.</p><label class="setting-switch"><span><b>OP/ED 오디오 자동 분석</b><small>AniSkip 타임스탬프가 없을 때 인접 회차 오디오를 비교해 구간을 찾습니다.</small></span><input id="opedAudioAnalysis" type="checkbox" checked></label><div class="button-row"><button id="clearOpEdAnalysis">분석 결과 삭제</button><button id="clearOpEdFingerprint">Fingerprint 삭제</button></div><button id="clearOpEdAll" class="filled-setting-button">분석 결과 + Fingerprint 모두 삭제</button></section>
+          <section class="settings-group update-group"><h2>앱 업데이트</h2><p id="updateStatus">GitHub 릴리스에서 새 버전을 확인합니다.</p><div class="button-row"><button id="checkUpdate">업데이트 확인</button><button id="applyUpdate" class="hidden">업데이트 다운로드</button></div></section>
+          <section class="settings-about"><b>Lilac Anime</b><span>Version 0.3.9</span></section>
         </div>
       </section>
     </main>
   </div>
 
   <dialog id="detailDialog"><button class="dialog-close">×</button><div id="detailContent"></div></dialog>
+  <div id="updateBanner" class="update-banner hidden" role="status"><span id="updateBannerText"></span><button id="updateBannerAction" class="primary"></button><button id="updateBannerClose" class="text-btn" aria-label="닫기">×</button></div>
   <div id="toast" class="toast"></div>
   <script src="../node_modules/hls.js/dist/hls.min.js"></script>
   <script src="app.js"></script>

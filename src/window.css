@@ -3,17 +3,8 @@
   padding-right: 158px;
 }
 
-.icon-btn,
-.profile {
-  flex: 0 0 35px;
-}
-
 @media (max-width: 760px) {
   .topbar {
     padding-right: 148px;
-  }
-
-  .profile {
-    display: none;
   }
 }
