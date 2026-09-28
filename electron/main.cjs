@@ -466,6 +466,21 @@ function titleScore(target,candidate){const keyA=titleKey(target),keyB=titleKey(
 async function downloadBuffer(url,referer){const response=await fetch(url,{headers:{'User-Agent':LINKKF_UA,Referer:referer||url}});if(!response.ok)throw new Error(`자막 다운로드 HTTP ${response.status}`);return Buffer.from(await response.arrayBuffer())}
 function driveId(url){return url.match(/\/file\/d\/([^/?]+)/)?.[1]||url.match(/[?&]id=([^&]+)/)?.[1]||null}
 function findExecutable(name){const suffix=process.platform==='win32'?'.exe':'';const candidates=(process.env.PATH||'').split(path.delimiter).map(dir=>path.join(dir,`${name}${suffix}`));if(process.platform==='win32'){candidates.push(path.join(process.env.LOCALAPPDATA||'','Programs','mpv','mpv.exe'),path.join(process.env.PROGRAMFILES||'','mpv','mpv.exe'),path.join(app.getAppPath(),'bin','mpv.exe'))}return candidates.find(file=>file&&fs.existsSync(file))||null}
+// Reads the English family name (name ID 1) from a TTF/OTF, or the first font of a TTC.
+function fontFamilyName(data){
+  let offset=0;if(data.toString('latin1',0,4)==='ttcf')offset=data.readUInt32BE(12);
+  const tables=data.readUInt16BE(offset+4);let nameTable=-1;
+  for(let i=0;i<tables;i++){const record=offset+12+i*16;if(data.toString('latin1',record,record+4)==='name'){nameTable=data.readUInt32BE(record+8);break}}
+  if(nameTable<0)return '';
+  const count=data.readUInt16BE(nameTable+2),strings=nameTable+data.readUInt16BE(nameTable+4);let fallback='';
+  for(let i=0;i<count;i++){
+    const record=nameTable+6+i*12,platform=data.readUInt16BE(record),language=data.readUInt16BE(record+4),nameId=data.readUInt16BE(record+6),length=data.readUInt16BE(record+8),start=strings+data.readUInt16BE(record+10);
+    if(nameId!==1)continue;
+    const raw=data.subarray(start,start+length),text=platform===3||platform===0?Buffer.from(raw).swap16().toString('utf16le'):raw.toString('latin1');
+    if(platform===3&&language===0x409)return text.trim();fallback ||= text.trim();
+  }
+  return fallback;
+}
 function srtToVtt(file){const text=fs.readFileSync(file,'utf8').replace(/^\uFEFF/,'').replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g,'$1.$2');const out=file.replace(/\.srt$/i,'.vtt');fs.writeFileSync(out,`WEBVTT\n\n${text}`,'utf8');return out}
 function assToVtt(file){const lines=fs.readFileSync(file,'utf8').replace(/^\uFEFF/,'').split(/\r?\n/);let inEvents=false,fields=[];const cues=[];const stamp=value=>{const match=String(value).trim().match(/(\d+):(\d{2}):(\d{2})[.](\d{1,3})/);if(!match)return null;return `${String(match[1]).padStart(2,'0')}:${match[2]}:${match[3]}.${match[4].padEnd(3,'0').slice(0,3)}`};for(const line of lines){if(/^\[Events]/i.test(line)){inEvents=true;continue}if(/^\[/.test(line)){inEvents=false;continue}if(!inEvents)continue;if(/^Format:/i.test(line)){fields=line.slice(line.indexOf(':')+1).split(',').map(x=>x.trim().toLowerCase());continue}if(!/^Dialogue:/i.test(line)||!fields.length)continue;const raw=line.slice(line.indexOf(':')+1),parts=raw.split(','),values=parts.slice(0,fields.length-1);values.push(parts.slice(fields.length-1).join(','));const row=Object.fromEntries(fields.map((field,index)=>[field,values[index]||'']));const start=stamp(row.start),end=stamp(row.end);if(!start||!end)continue;const text=(row.text||'').replace(/\{[^}]*}/g,'').replace(/\\[Nn]/g,'\n').replace(/\\h/g,' ').trim();if(text)cues.push(`${start} --> ${end}\n${text}`)}const out=file.replace(/\.(ass|ssa)$/i,'.vtt');fs.writeFileSync(out,`WEBVTT\n\n${cues.join('\n\n')}\n`,'utf8');return out}
 // Port of Android NamuWikiTitleResolver: NamuWiki search is a SPA, so the search page is
@@ -759,14 +774,15 @@ app.whenReady().then(async () => {
     const windir = process.env.WINDIR || 'C:\\Windows', system = name => path.join(windir, 'Fonts', name), user = name => path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'Windows', 'Fonts', name);
     const presets = { '기본체': [system('malgun.ttf')], '나눔고딕': [system('NanumGothic.ttf'), user('NanumGothic.ttf')], '명조체': [system('batang.ttc'), system('NanumMyeongjo.ttf'), user('NanumMyeongjo.ttf')] };
     const candidates = [customPath, ...(presets[choice] || []), system('malgun.ttf'), system('gulim.ttc')].filter(Boolean);
+    // libass picks its fallback font by family name, so the real family name is read from the font file.
     for (const file of candidates) {
-      if (!/\.(ttf|otf|ttc|woff2?)$/i.test(file) || !fs.existsSync(file)) continue;
-      try { return { name: path.basename(file), data: fs.readFileSync(file) }; } catch { /* try next */ }
+      if (!/\.(ttf|otf|ttc)$/i.test(file) || !fs.existsSync(file)) continue;
+      try { const data = fs.readFileSync(file), family = fontFamilyName(data); if (family) return { name: path.basename(file), family, data }; } catch { /* try next */ }
     }
     return null;
   });
   ipcMain.handle('file:font', async () => {
-    const result = await dialog.showOpenDialog({ title: '기본 자막 폰트 선택', properties: ['openFile'], filters: [{ name: 'Font', extensions: ['ttf', 'otf', 'ttc', 'woff', 'woff2'] }] });
+    const result = await dialog.showOpenDialog({ title: '기본 자막 폰트 선택', properties: ['openFile'], filters: [{ name: 'Font', extensions: ['ttf', 'otf', 'ttc'] }] });
     return result.canceled ? null : result.filePaths[0];
   });
   ipcMain.handle('open:external', (_, url) => {
