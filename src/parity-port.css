@@ -83,7 +83,7 @@ dialog { max-height: calc(100vh - 48px); }
 .history-check { position: absolute; top: 8px; left: 8px; display: grid; place-items: center; width: 24px; height: 24px; border: 2px solid #fff; border-radius: 50%; background: #0006; }
 .history-check svg { width: 16px; height: 16px; fill: none; stroke: transparent; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
 .history-card.selected .history-check { border-color: var(--lilac); background: var(--lilac); }
-.history-card.selected .history-check svg { stroke: #1b1021; }
+.history-card.selected .history-check svg { stroke: #1c1b1f; }
 .history-card.selected .history-thumb { outline: 2px solid var(--lilac); outline-offset: 2px; }
 
 .setting-switch small { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.5; }

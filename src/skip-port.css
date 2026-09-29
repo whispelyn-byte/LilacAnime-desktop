@@ -17,6 +17,6 @@
 }
 
 .controls-visible .skip-chip { bottom: 138px; }
-.skip-chip:hover { background: #211a24; }
+.skip-chip:hover { background: #262626; }
 .skip-chip svg { width: 19px; height: 19px; fill: currentColor; }
 .skip-chip.hidden { display: none; }

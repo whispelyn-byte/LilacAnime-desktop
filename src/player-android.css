@@ -27,7 +27,7 @@
 .player-unlock { width: 72px; height: 72px; }
 .player-unlock svg { width: 28px; height: 28px; }
 .player-unlock.hidden { display: none; }
-.player-lock:hover, .player-unlock:hover { background: #211a24; }
+.player-lock:hover, .player-unlock:hover { background: #262626; }
 
 /* Locked: only the unlock affordance (and the OP/ED pill) remain. */
 .immersive-player.locked :is(.player-shade, .player-top, .player-center, .player-bottom, .player-lock) { opacity: 0 !important; pointer-events: none !important; }

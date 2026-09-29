@@ -312,6 +312,5 @@ $('#playerBack').addEventListener('click', () => { if ('mediaSession' in navigat
 $('#unlockPlayer').onclick = event => { event.stopPropagation(); setPlayerLocked(false); };
 // Settings stay open while the pointer is on them; a click on the video closes them (Android dropdown).
 $('#playerSettings').addEventListener('pointerdown', event => event.stopPropagation());
-$('#immersivePlayer').addEventListener('mousemove', () => { if (!playerLocked) showPlayerControls(); }, { passive: true });
 $('#video').addEventListener('ratechange', () => { if (playerSettingsOpen()) syncPlayerSettingsUI(); });
 syncPlayerSettingsUI();

@@ -744,9 +744,9 @@ function createWindow() {
     minWidth: 980,
     minHeight: 680,
     icon: path.join(__dirname, '..', 'build', 'icon.png'),
-    backgroundColor: '#0d0b12',
+    backgroundColor: '#121212',
     titleBarStyle: 'hidden',
-    titleBarOverlay: { color: '#0d0b12', symbolColor: '#c9c2d4', height: 42 },
+    titleBarOverlay: { color: '#121212', symbolColor: '#d0cdd6', height: 42 },
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -896,7 +896,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('subtitle-store:list',(_,key)=>subtitleStore.list(String(key||'')));
   ipcMain.handle('subtitle-store:save',(_,key,entry)=>subtitleStore.save(String(key||''),entry));
   ipcMain.handle('subtitle-store:remove',(_,key,id)=>subtitleStore.remove(String(key||''),String(id||'')));
-  ipcMain.handle('window:theme',(event,light)=>{const win=BrowserWindow.fromWebContents(event.sender);if(win&&!win.isDestroyed())win.setTitleBarOverlay(light?{color:'#ffffff',symbolColor:'#242026'}:{color:'#0d0b12',symbolColor:'#c9c2d4'});});
+  ipcMain.handle('window:theme',(event,light)=>{const win=BrowserWindow.fromWebContents(event.sender);if(win&&!win.isDestroyed())win.setTitleBarOverlay(light?{color:'#ffffff',symbolColor:'#1c1b1f'}:{color:'#121212',symbolColor:'#d0cdd6'});});
   ipcMain.handle('update:state',()=>updater.state);
   ipcMain.handle('update:check',()=>updater.check());
   ipcMain.handle('update:download',()=>updater.download());
