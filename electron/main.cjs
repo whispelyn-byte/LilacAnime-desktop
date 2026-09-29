@@ -46,7 +46,7 @@ async function coverDataUrl(rawUrl){
 
 async function resolveMalIdFromAniList(anilistId){
   const id=Number(anilistId);if(!id)return null;if(malIdCache.has(id))return malIdCache.get(id);
-  const response=await fetch('https://graphql.anilist.co',{method:'POST',headers:{Accept:'application/json','Content-Type':'application/json','User-Agent':'LilacAnime Android'},body:JSON.stringify({query:'query ($id: Int) { Media(id: $id, type: ANIME) { idMal } }',variables:{id}})});
+  const response=await fetch('https://graphql.anilist.co',{signal:AbortSignal.timeout(25000),method:'POST',headers:{Accept:'application/json','Content-Type':'application/json','User-Agent':'LilacAnime Android'},body:JSON.stringify({query:'query ($id: Int) { Media(id: $id, type: ANIME) { idMal } }',variables:{id}})});
   if(!response.ok)return null;const malId=Number((await response.json())?.data?.Media?.idMal)||null;if(malId)malIdCache.set(id,malId);return malId;
 }
 
@@ -60,7 +60,7 @@ async function androidOnlineSkipTimes({episode,anilistId,malId,duration}){
     const query=ANISKIP_TYPES.map(type=>`types[]=${type}`).join('&');
     const url=`https://api.aniskip.com/v2/skip-times/${resolvedMalId}/${Number(episode)}?${query}&episodeLength=${Math.max(0,Math.round(Number(length)||0))}`;
     try{
-      const response=await fetch(url,{headers:{Accept:'application/json','User-Agent':'LilacAnime Android'}});if(!response.ok)return [];
+      const response=await fetch(url,{signal:AbortSignal.timeout(25000),headers:{Accept:'application/json','User-Agent':'LilacAnime Android'}});if(!response.ok)return [];
       const root=await response.json();return (root.results||[]).map(item=>{const interval=item.interval||item;return {type:item.skipType,startTime:Number(interval.startTime),endTime:Number(interval.endTime)}}).filter(item=>allowed.has(item.type)&&Number.isFinite(item.startTime)&&item.startTime>=0&&item.endTime>item.startTime).sort((a,b)=>a.startTime-b.startTime);
     }catch{return []}
   };
@@ -77,7 +77,8 @@ async function api(pathname) {
   return response.json();
 }
 
-async function linkkfFetch(url, timeout = 18000) {
+// Same as Android LinkkfApiClient: call timeout 30 s, 3 attempts, 350/700 ms apart.
+async function linkkfFetch(url, timeout = 30000) {
   let lastError;
   for (let attempt = 0; attempt < 3; attempt++) {
     const controller = new AbortController();
@@ -91,7 +92,7 @@ async function linkkfFetch(url, timeout = 18000) {
       return await response.json();
     } catch (error) {
       lastError = error;
-      if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 400 * (attempt + 1)));
+      if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 350 * (attempt + 1)));
     } finally { clearTimeout(timer); }
   }
   throw new Error(lastError?.name === 'AbortError' ? 'Linkkf 서버 응답 시간이 초과되었습니다.' : `Linkkf 연결 실패: ${lastError?.message || '알 수 없는 오류'}`);
@@ -151,7 +152,7 @@ function linkkfSearchKey(value = '') { return String(value).toLowerCase().normal
 
 async function providerFetch(url, { json = false, referer } = {}) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 30000);
+  const timer = setTimeout(() => controller.abort(), 45000); // Android ReAnimeClient call timeout
   try {
     const response = await fetch(url, { signal: controller.signal, headers: {
       'User-Agent': LINKKF_UA, Accept: json ? 'application/json' : 'text/html,application/xhtml+xml',
@@ -398,7 +399,7 @@ function subtitleResult(file,extra={}){
 }
 // Downloads a remote VTT/SRT/ASS subtitle and returns the original file (see subtitleResult).
 async function saveRemoteSubtitle(url,{referer='',userAgent=LINKKF_UA,headers={}}={}){
-  const response=await fetch(url,{headers:{...headers,'User-Agent':userAgent,Referer:referer||new URL(url).origin+'/'}});
+  const response=await fetch(url,{signal:AbortSignal.timeout(20000),headers:{...headers,'User-Agent':userAgent,Referer:referer||new URL(url).origin+'/'}});
   if(!response.ok)throw new Error(`자막 다운로드 HTTP ${response.status}`);
   const data=Buffer.from(await response.arrayBuffer());if(!data.length||data.length>=200*1024*1024)throw new Error('자막 파일 크기가 올바르지 않습니다.');
   const text=data.toString('utf8').replace(/^﻿/,''),head=text.trimStart().slice(0,200).toLowerCase();
@@ -409,7 +410,8 @@ async function saveRemoteSubtitle(url,{referer='',userAgent=LINKKF_UA,headers={}
   return file;
 }
 
-async function resolveStreamPage(targetUrl, referer = '') {
+// Android gives the player WebView 30 s (Re:Anime) or 15 s (Linkkf) to expose the stream.
+async function resolveStreamPage(targetUrl, referer = '', timeoutMs = 30000) {
   const isFlixCloud=/flixcloud\.cc/i.test(targetUrl);
   const partition=isFlixCloud?'persist:lilac-android-webview-v2':'persist:lilac-provider';
   const browserUa=isFlixCloud?ANDROID_WEBVIEW_UA:LINKKF_UA;
@@ -422,7 +424,7 @@ async function resolveStreamPage(targetUrl, referer = '') {
     await resolver.loadURL(targetUrl,{httpReferrer:referer||new URL(targetUrl).origin+'/',userAgent:browserUa});
     const blocked=await resolver.webContents.executeJavaScript(`(()=>{const text=(document.title+' '+(document.body?.innerText||'')).toLowerCase();return text.includes('sorry, you have been blocked')||text.includes('you have been blocked')})()`,true).catch(()=>false);
     if(blocked)throw new Error('FlixCloud가 이 앱 세션을 차단했습니다. 다른 영상 서버로 전환합니다.');
-    const streamDeadline=Date.now()+90000;
+    const streamDeadline=Date.now()+timeoutMs;
     while(!stream&&!resolver.isDestroyed()&&Date.now()<streamDeadline){
       for(const frame of resolver.webContents.mainFrame.frames){
         frame.executeJavaScript(`(()=>{document.querySelectorAll('video').forEach(v=>{v.muted=true;v.play().catch(()=>{})});const els=[...document.querySelectorAll('button,[role=button],.play,.vjs-big-play-button,.jw-display-icon-container,.jw-icon-display,.jwplayer')];const play=els.find(e=>/play|재생|watch|jw-display|jw-icon-display/i.test((e.innerText||e.getAttribute('aria-label')||e.className||'')));if(play&&!play.dataset.lilacClicked){play.dataset.lilacClicked='1';play.click()}let jw=[];try{const api=window.jwplayer?.();const item=api?.getPlaylistItem?.();jw=[item?.file,...(item?.sources||[]).map(x=>x.file)].filter(Boolean);api?.play?.()}catch{}const resources=performance.getEntriesByType('resource').map(e=>e.name);return {urls:[...jw,...resources].filter(u=>/\.(m3u8|mp4|webm)(?:\?|$)/i.test(u)&&!/runative|magsrv|juneworewyjyna|pxltag/i.test(u)),pk:window.__pk||''}})()`,true).then(result=>{if(Array.isArray(result?.urls)){const preferred=result.urls[0];if(preferred&&!stream)stream=preferred}if(result?.pk)flixPk=result.pk}).catch(()=>{});
@@ -463,7 +465,16 @@ async function resolveStreamPage(targetUrl, referer = '') {
 function simpleTitle(value=''){return value.toLowerCase().normalize('NFKC').replace(/\[[^\]]*]|\([^)]*\)/g,' ').replace(/\b(?:subtitle|sub)\b|(?:한글|한국어)?\s*자막/gi,' ').replace(/[^a-z0-9가-힣]+/g,' ').trim()}
 function titleKey(value=''){const clean=simpleTitle(value),hangul=(clean.match(/[가-힣]+/g)||[]).join('');return hangul.length>=2?hangul:clean.replace(/\s+/g,'')}
 function titleScore(target,candidate){const keyA=titleKey(target),keyB=titleKey(candidate);if(!keyA||!keyB)return 0;if(keyA===keyB)return 1;if(keyA.includes(keyB)||keyB.includes(keyA))return Math.min(keyA.length,keyB.length)/Math.max(keyA.length,keyB.length);const a=new Set(simpleTitle(target).split(' ').filter(Boolean)),b=new Set(simpleTitle(candidate).split(' ').filter(Boolean));let hits=0;a.forEach(x=>{if([...b].some(y=>Math.min(x.length,y.length)>=2&&(y.includes(x)||x.includes(y))))hits++});return a.size?hits/a.size:0}
-async function downloadBuffer(url,referer){const response=await fetch(url,{headers:{'User-Agent':LINKKF_UA,Referer:referer||url}});if(!response.ok)throw new Error(`자막 다운로드 HTTP ${response.status}`);return Buffer.from(await response.arrayBuffer())}
+// Same as Android KairanSubtitleService/GoogleDriveDownloader: 15 s to connect, 60 s without data.
+async function downloadBuffer(url,referer){
+  const controller=new AbortController();let timer=setTimeout(()=>controller.abort(),15000);
+  try{
+    const response=await fetch(url,{signal:controller.signal,headers:{'User-Agent':LINKKF_UA,Referer:referer||url}});if(!response.ok)throw new Error(`자막 다운로드 HTTP ${response.status}`);
+    const chunks=[];const reader=response.body.getReader();
+    for(;;){clearTimeout(timer);timer=setTimeout(()=>controller.abort(),60000);const {done,value}=await reader.read();if(done)break;chunks.push(value)}
+    return Buffer.concat(chunks);
+  }catch(error){if(error.name==='AbortError')throw new Error('자막 다운로드 시간이 초과되었습니다.');throw error}finally{clearTimeout(timer)}
+}
 function driveId(url){return url.match(/\/file\/d\/([^/?]+)/)?.[1]||url.match(/[?&]id=([^&]+)/)?.[1]||null}
 function findExecutable(name){const suffix=process.platform==='win32'?'.exe':'';const candidates=(process.env.PATH||'').split(path.delimiter).map(dir=>path.join(dir,`${name}${suffix}`));if(process.platform==='win32'){candidates.push(path.join(process.env.LOCALAPPDATA||'','Programs','mpv','mpv.exe'),path.join(process.env.PROGRAMFILES||'','mpv','mpv.exe'),path.join(app.getAppPath(),'bin','mpv.exe'))}return candidates.find(file=>file&&fs.existsSync(file))||null}
 // Reads the English family name (name ID 1) from a TTF/OTF, or the first font of a TTC.
@@ -494,7 +505,8 @@ function readNamuCache(){try{return JSON.parse(fs.readFileSync(namuCacheFile(),'
 async function renderNamuPage(url,script,isReady){
   const win=new BrowserWindow({show:false,width:1100,height:900,webPreferences:{partition:'persist:lilac-namuwiki',contextIsolation:true,nodeIntegration:false,sandbox:true,images:false}});
   try{
-    await win.loadURL(url).catch(()=>{});
+    // Android's NamuWiki client allows 12 s to connect and 12 s to read.
+    await Promise.race([win.loadURL(url).catch(()=>{}),new Promise(resolve=>setTimeout(resolve,24000))]);
     let result=null;
     for(let attempt=0;attempt<16&&!win.isDestroyed();attempt++){
       await new Promise(resolve=>setTimeout(resolve,500));
@@ -550,12 +562,12 @@ async function namuKoreanTitle(title,anime={}){
   if(korean){disk[key]=korean;try{fs.writeFileSync(namuCacheFile(),JSON.stringify(disk),'utf8')}catch{}}
   return result;
 }
-// Blogger feeds return at most 150 posts per request, so the whole blog is paged in and cached briefly.
+// Blogger feeds return at most 150 posts per request, so the whole blog is paged in and cached for a day (as on Android).
 const communityPostCache=new Map();
 async function communityPosts(blog){
-  const cached=communityPostCache.get(blog);if(cached&&Date.now()-cached.time<10*60*1000)return cached.posts;
+  const cached=communityPostCache.get(blog);if(cached&&Date.now()-cached.time<24*60*60*1000)return cached.posts;
   const page=start=>providerFetch(`${blog}/feeds/posts/default?alt=json&max-results=150&start-index=${start}`,{json:true,referer:`${blog}/`});
-  const first=await page(1),total=Math.min(Number(first.feed?.openSearch$totalResults?.$t)||0,3000),rest=[];
+  const first=await page(1),total=Number(first.feed?.openSearch$totalResults?.$t)||0,rest=[];
   for(let start=151;start<=total;start+=150)rest.push(page(start).catch(()=>null));
   const posts=[first,...await Promise.all(rest)].flatMap(root=>root?.feed?.entry||[]).map(entry=>({title:entry.title?.$t||'',url:(entry.link||[]).find(x=>x.rel==='alternate')?.href||'',html:entry.content?.$t||entry.summary?.$t||''}));
   communityPostCache.set(blog,{time:Date.now(),posts});return posts;
@@ -709,8 +721,8 @@ app.whenReady().then(async () => {
     return null;
   };
   downloadManager=new DownloadManager({app,findSubtitle:findDownloadSubtitle,resolveEpisode:resolveProviderEpisode,resolveLinkkf:async episode=>{
-    let playerUrl='';try{const root=await linkkfFetch(`https://emdlinkkf.5imgdarr.top/apilink2.php?data=${encodeURIComponent(episode.token)}`,12000);const links=Array.isArray(root.data)?root.data:[];playerUrl=(links.find(x=>String(x.server).toUpperCase()==='NR-HD')||links[0]||{}).link||'';}catch{}
-    if(!playerUrl)playerUrl=`${LINKKF_WEB}/up/${encodeURIComponent(episode.postId)}/watch/?slug=${encodeURIComponent(episode.slug)}`;return resolveStreamPage(playerUrl,`${LINKKF_WEB}/`);
+    let playerUrl='';try{const root=await linkkfFetch(`https://emdlinkkf.5imgdarr.top/apilink2.php?data=${encodeURIComponent(episode.token)}`);const links=Array.isArray(root.data)?root.data:[];playerUrl=(links.find(x=>String(x.server).toUpperCase()==='NR-HD')||links[0]||{}).link||'';}catch{}
+    if(!playerUrl)playerUrl=`${LINKKF_WEB}/up/${encodeURIComponent(episode.postId)}/watch/?slug=${encodeURIComponent(episode.slug)}`;return resolveStreamPage(playerUrl,`${LINKKF_WEB}/`,15000);
   },broadcast});
   session.defaultSession.webRequest.onBeforeSendHeaders({urls:['*://*/*']},(details,callback)=>{let headers=details.requestHeaders||{};const host=new URL(details.url).host,remembered=resolvedStreamHeaders.get(host);if(remembered){for(const [key,value] of Object.entries(remembered)){if(['referer','origin','user-agent','cookie','authorization'].includes(key.toLowerCase())&&value)headers[key]=value;}}callback({requestHeaders:headers});});
   ipcMain.handle('anime:season', () => api('/seasons/now?limit=20&sfw=true'));
@@ -750,15 +762,15 @@ app.whenReady().then(async () => {
     const id = String(postId || '').trim(); if (!/^\d+$/.test(id)) return null;
     const form = new FormData(); form.append('action', 'record'); form.append('id', id);
     try { await fetch(`${LINKKF_API}/view.php`, { method: 'POST', body: form, headers: { 'User-Agent': LINKKF_UA, Referer: `${LINKKF_WEB}/up/${id}/` } }); } catch { /* counters are best effort */ }
-    return linkkfFetch(`${LINKKF_API}/view.php?action=get&id=${encodeURIComponent(id)}`, 10000).then(root => root.status === 'success' && root.data ? { day: Number(root.data.day_views) || 0, week: Number(root.data.week_views) || 0, month: Number(root.data.month_views) || 0, total: Number(root.data.total_views) || 0 } : null).catch(() => null);
+    return linkkfFetch(`${LINKKF_API}/view.php?action=get&id=${encodeURIComponent(id)}`).then(root => root.status === 'success' && root.data ? { day: Number(root.data.day_views) || 0, week: Number(root.data.week_views) || 0, month: Number(root.data.month_views) || 0, total: Number(root.data.total_views) || 0 } : null).catch(() => null);
   });
   ipcMain.handle('linkkf:extras', async (_, anime = {}) => {
     const postId = String(anime.id || '');
-    const stats = await linkkfFetch(`${LINKKF_API}/view.php?action=get&id=${encodeURIComponent(postId)}`, 10000).then(root => root.status === 'success' && root.data ? { day: Number(root.data.day_views) || 0, week: Number(root.data.week_views) || 0, month: Number(root.data.month_views) || 0, total: Number(root.data.total_views) || 0 } : null).catch(() => null);
+    const stats = await linkkfFetch(`${LINKKF_API}/view.php?action=get&id=${encodeURIComponent(postId)}`).then(root => root.status === 'success' && root.data ? { day: Number(root.data.day_views) || 0, week: Number(root.data.week_views) || 0, month: Number(root.data.month_views) || 0, total: Number(root.data.total_views) || 0 } : null).catch(() => null);
     const related = (await Promise.all((anime.seriesTagIds || []).map(async tagId => {
       try {
-        const tax = await linkkfFetch(`${LINKKF_API}/link/tax.php?taxonomy=anime-aniss&tag_ID=${Number(tagId)}`, 10000), term = (tax.terms || [])[0] || {};
-        const root = await linkkfFetch(`${LINKKF_API}/singlefilter.php?postanisstagid=${Number(tagId)}&limit=25`, 10000);
+        const tax = await linkkfFetch(`${LINKKF_API}/link/tax.php?taxonomy=anime-aniss&tag_ID=${Number(tagId)}`), term = (tax.terms || [])[0] || {};
+        const root = await linkkfFetch(`${LINKKF_API}/singlefilter.php?postanisstagid=${Number(tagId)}&limit=25`);
         const items = (root.data || []).map(linkkfAnime).filter(item => item.id && item.id !== postId);
         return items.length ? { id: Number(tagId), name: String(term.name || '').trim() || `Series ${tagId}`, count: Number(term.count) || 0, items } : null;
       } catch { return null; }
@@ -778,7 +790,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('linkkf:play', async (_, episode) => {
     let playerUrl = '';
     try {
-      const root = await linkkfFetch(`https://emdlinkkf.5imgdarr.top/apilink2.php?data=${encodeURIComponent(episode.token)}`, 12000);
+      const root = await linkkfFetch(`https://emdlinkkf.5imgdarr.top/apilink2.php?data=${encodeURIComponent(episode.token)}`);
       const links = Array.isArray(root.data) ? root.data : [];
       playerUrl = (links.find(x => String(x.server).toUpperCase() === 'NR-HD') || links[0] || {}).link || '';
     } catch { /* Use the watch page while the player-link server is unavailable. */ }
@@ -792,9 +804,9 @@ app.whenReady().then(async () => {
     return true;
   });
   ipcMain.handle('linkkf:resolve', async (_, episode) => {
-    let playerUrl='';try{const root=await linkkfFetch(`https://emdlinkkf.5imgdarr.top/apilink2.php?data=${encodeURIComponent(episode.token)}`,12000);const links=Array.isArray(root.data)?root.data:[];playerUrl=(links.find(x=>String(x.server).toUpperCase()==='NR-HD')||links[0]||{}).link||'';}catch{}
+    let playerUrl='';try{const root=await linkkfFetch(`https://emdlinkkf.5imgdarr.top/apilink2.php?data=${encodeURIComponent(episode.token)}`);const links=Array.isArray(root.data)?root.data:[];playerUrl=(links.find(x=>String(x.server).toUpperCase()==='NR-HD')||links[0]||{}).link||'';}catch{}
     if(!playerUrl)playerUrl=`${LINKKF_WEB}/up/${encodeURIComponent(episode.postId)}/watch/?slug=${encodeURIComponent(episode.slug)}`;
-    return resolveStreamPage(playerUrl,`${LINKKF_WEB}/`);
+    return resolveStreamPage(playerUrl,`${LINKKF_WEB}/`,15000);
   });
   ipcMain.handle('provider:catalog', async (_, provider, query = '', offset = 0) => {
     if (provider === 'reanime') {

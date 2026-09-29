@@ -12,6 +12,8 @@ function seconds(value = '') {
   return match ? Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]) : 0;
 }
 
+const MAX_CONCURRENT_DOWNLOADS = 2;
+
 class DownloadManager {
   constructor({ app, resolveEpisode, resolveLinkkf, findSubtitle, broadcast }) {
     this.root = path.join(app.getPath('videos'), 'LilacAnime');
@@ -20,7 +22,8 @@ class DownloadManager {
     this.resolveLinkkf = resolveLinkkf;
     this.findSubtitle = findSubtitle;
     this.broadcast = broadcast;
-    this.active = null;
+    this.resolving = Promise.resolve();
+    this.active = new Map(); // job id -> {job, process}; Android runs up to 2 downloads at once.
     this.jobs = this.read().map(job => ['downloading', 'resolving'].includes(job.status) ? {...job, status:'queued'} : job.stage ? {...job, stage:''} : job);
     fs.mkdirSync(this.root, { recursive: true });
     this.save();
@@ -44,7 +47,7 @@ class DownloadManager {
 
   cancel(id) {
     const job = this.jobs.find(item => item.id === id); if (!job) return false;
-    if (this.active?.job.id === id) this.active.process?.kill?.();
+    this.active.get(id)?.process?.kill?.();
     job.status = 'paused'; job.updated = Date.now(); this.save(); return true;
   }
 
@@ -52,17 +55,26 @@ class DownloadManager {
 
   remove(id) {
     const job = this.jobs.find(item => item.id === id); if (!job) return false;
-    if (this.active?.job.id === id) this.active.process?.kill?.();
+    this.active.get(id)?.process?.kill?.();
     for (const file of [job.filePath, job.subtitlePath, job.subtitleAssPath, job.partialPath]) { if (file) try { fs.unlinkSync(file); } catch {} }
     this.jobs = this.jobs.filter(item => item.id !== id); this.save(); return true;
   }
 
-  async pump() {
-    if (this.active) return;
-    const job = this.jobs.find(item => item.status === 'queued'); if (!job) return;
-    job.status='resolving';job.updated=Date.now();this.active={job,process:null};this.save();
+  pump() {
+    while (this.active.size < MAX_CONCURRENT_DOWNLOADS) {
+      const job = this.jobs.find(item => item.status === 'queued'); if (!job) return;
+      job.status='resolving';job.updated=Date.now();this.active.set(job.id,{job,process:null});this.save();
+      this.run(job);
+    }
+  }
+
+  async run(job) {
     try {
-      const stream = job.resolveKind === 'linkkf' ? await this.resolveLinkkf(job.episode) : await this.resolveEpisode(job.episode);
+      // Stream resolution shares one browser session whose request hooks are swapped per call, so only the
+      // ffmpeg transfers run in parallel.
+      const resolving = this.resolving.then(() => job.resolveKind === 'linkkf' ? this.resolveLinkkf(job.episode) : this.resolveEpisode(job.episode));
+      this.resolving = resolving.catch(() => {});
+      const stream = await resolving;
       if(job.status==='paused'||!this.jobs.some(item=>item.id===job.id))return;
       const animeDir=path.join(this.root,safeName(job.title)), base=`${String(job.episodeNumber).padStart(3,'0')}화`;
       fs.mkdirSync(animeDir,{recursive:true});job.filePath=path.join(animeDir,`${base}.mp4`);job.partialPath=`${job.filePath}.part`;job.status='downloading';job.updated=Date.now();this.save();
@@ -72,7 +84,7 @@ class DownloadManager {
       job.stage='subtitle';this.save();await this.attachSubtitle(job,stream);job.stage='';job.updated=Date.now();this.save();
     } catch (error) {
       if(job.status!=='paused'){job.status='failed';job.error=error?.message||String(error);job.updated=Date.now();this.save();}
-    } finally { this.active=null; setImmediate(()=>this.pump()); }
+    } finally { this.active.delete(job.id); setImmediate(()=>this.pump()); }
   }
 
   runFfmpeg(job,stream) {
@@ -80,8 +92,9 @@ class DownloadManager {
       let ffmpeg=require('ffmpeg-static');if(ffmpeg.includes('app.asar'))ffmpeg=ffmpeg.replace('app.asar','app.asar.unpacked');
       const args=['-y'];const headers={...(stream?.headers||{})};if(stream?.referer&&!headers.Referer)headers.Referer=stream.referer;
       if(Object.keys(headers).length)args.push('-headers',Object.entries(headers).map(([k,v])=>`${k}: ${v}`).join('\r\n')+'\r\n');
+      args.push('-rw_timeout','180000000'); // Android MpvHlsDownloader read timeout: 180 s
       args.push('-i',stream.url,'-map','0:v?','-map','0:a?','-c','copy','-movflags','+faststart','-f','mp4',job.partialPath);
-      const child=spawn(ffmpeg,args,{windowsHide:true});this.active={job,process:child};let duration=0,stderr='';
+      const child=spawn(ffmpeg,args,{windowsHide:true});this.active.set(job.id,{job,process:child});let duration=0,stderr='';
       child.stderr.on('data',chunk=>{const text=chunk.toString();stderr=(stderr+text).slice(-12000);const d=text.match(/Duration:\s*([^,]+)/)?.[1];if(d)duration=seconds(d);const t=[...text.matchAll(/time=\s*([^\s]+)/g)].pop()?.[1];if(t&&duration){job.progress=Math.max(0,Math.min(99,Math.round(seconds(t)/duration*100)));job.updated=Date.now();this.save();}});
       child.once('error',reject);child.once('close',code=>{if(job.status==='paused')return resolve();if(code===0&&fs.existsSync(job.partialPath))resolve();else reject(new Error((stderr.match(/([^\r\n]+)$/)?.[1]||`FFmpeg 종료 코드 ${code}`).trim()));});
     });
