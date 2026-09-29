@@ -494,15 +494,11 @@ function readNamuCache(){try{return JSON.parse(fs.readFileSync(namuCacheFile(),'
 async function renderNamuPage(url,script,isReady){
   const win=new BrowserWindow({show:false,width:1100,height:900,webPreferences:{partition:'persist:lilac-namuwiki',contextIsolation:true,nodeIntegration:false,sandbox:true,images:false}});
   try{
-    // NamuWiki search can take ~30 s and a failing one (HTTP 500) keeps loadURL and executeJavaScript (which
-    // waits for the load) pending for minutes, so both are bounded and an error page ends the lookup early.
-    const within=(promise,ms,fallback)=>Promise.race([promise.catch(()=>fallback),new Promise(resolve=>setTimeout(()=>resolve(fallback),ms))]);
-    const deadline=Date.now()+45000;await within(win.loadURL(url),15000);
+    await win.loadURL(url).catch(()=>{});
     let result=null;
-    for(let attempt=0;attempt<16&&!win.isDestroyed()&&Date.now()<deadline;attempt++){
+    for(let attempt=0;attempt<16&&!win.isDestroyed();attempt++){
       await new Promise(resolve=>setTimeout(resolve,500));
-      if(await within(win.webContents.executeJavaScript(`/^오류 - |서버 오류/.test(document.title+' '+(document.body?.innerText||'').slice(0,200))`,true),2000,false))return null;
-      result=await within(win.webContents.executeJavaScript(script,true),2000,null);
+      result=await win.webContents.executeJavaScript(script,true).catch(()=>null);
       if(result&&isReady(result))break;
     }
     return result;
