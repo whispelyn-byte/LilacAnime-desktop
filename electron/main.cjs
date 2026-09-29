@@ -520,9 +520,9 @@ async function analyzeOfflineOpEd({title,episode,currentUrl,duration,candidates,
   if(segments.length){cache[key]=segments;try{fs.writeFileSync(cacheFile,JSON.stringify(cache),'utf8')}catch{}}
   return segments;
 }
-// Korean titles for Re:ANIME entries (Kairan/Csora posts are Korean) come from TMDB's ko-KR names, which
-// needs the user's TMDB API key (설정 > 한국어 제목 검색). Seasons are read from the original title, so the
-// series name is enough.
+// Korean titles for Re:ANIME entries (Kairan/Csora posts are Korean): TMDB's ko-KR names with the user's
+// TMDB API key (설정 > 한국어 제목 검색), then AniList and Wikidata. Seasons are read from the original title,
+// so the series name is enough.
 const koreanTitleCache=new Map();
 function koreanTitleCacheFile(){return path.join(app.getPath('userData'),'korean-title-cache.json')}
 function readKoreanTitleCache(){try{return JSON.parse(fs.readFileSync(koreanTitleCacheFile(),'utf8'))||{}}catch{return {}}}
@@ -562,15 +562,40 @@ async function tmdbKoreanTitles(titles){
   }
   return found;
 }
+// Fallbacks when TMDB has no Korean name (or no key is set): AniList's Korean synonyms, then the Korean
+// Wikidata labels of the work and its series, looked up by MAL/AniList ID.
+function titleCompareKey(value=''){return String(value).normalize('NFKC').toLowerCase().replace(/…/g,'...').replace(/[\s:：'’"“”!！?？.,·・\-–—~〜()（）]/g,'')}
+async function anilistMedia(title,anime){
+  // Without an ID, prefer an exact title match, then a TV series: the top hit can be a spin-off
+  // ("Frieren" returns the mini anime first).
+  const id=Number(anime.anilistId)||null;
+  const query=`query($id:Int,$search:String){Page(perPage:5){media(id:$id,search:$search,type:ANIME,sort:SEARCH_MATCH){id idMal format synonyms title{romaji english}}}}`;
+  const response=await fetch('https://graphql.anilist.co',{signal:AbortSignal.timeout(25000),method:'POST',headers:{Accept:'application/json','Content-Type':'application/json','User-Agent':'LilacAnime Android'},body:JSON.stringify({query,variables:id?{id}:{search:title.replace(/…/g,'...')}})});
+  const list=response.ok?(await response.json())?.data?.Page?.media||[]:[],same=value=>titleCompareKey(value||'')===titleCompareKey(title);
+  return list.find(item=>same(item.title?.english)||same(item.title?.romaji))||list.find(item=>item.format==='TV')||list[0]||null;
+}
+async function wikidataKoreanTitles(malId,anilistId){
+  const where=[malId&&`{?item wdt:P4086 "${malId}"}`,anilistId&&`{?item wdt:P8729 "${anilistId}"}`].filter(Boolean).join(' UNION ');if(!where)return [];
+  const sparql=`SELECT ?ko ?seriesKo WHERE { ${where} OPTIONAL{?item rdfs:label ?ko FILTER(lang(?ko)="ko")} OPTIONAL{?item wdt:P179 ?series. ?series rdfs:label ?seriesKo FILTER(lang(?seriesKo)="ko")} } LIMIT 5`;
+  const response=await fetch(`https://query.wikidata.org/sparql?format=json&query=${encodeURIComponent(sparql)}`,{signal:AbortSignal.timeout(25000),headers:{Accept:'application/sparql-results+json','User-Agent':`LilacAnime-Desktop/${app.getVersion()} (https://github.com/whispelyn-byte/LilacAnime-desktop)`}});
+  return response.ok?((await response.json())?.results?.bindings||[]).flatMap(row=>[row.ko?.value,row.seriesKo?.value]):[];
+}
+// Order: TMDB (needs the user's key), then AniList, then Wikidata; each is only asked when the previous
+// one found nothing.
 async function koreanTitleCandidates(title,anime={}){
   const original=String(title||'').trim();if(!original||/[가-힣]/.test(original))return original?[original]:[];
-  if(!tmdbKey())return [original];
-  const key=`tmdb:${anime.id||original}`;if(koreanTitleCache.has(key))return koreanTitleCache.get(key);
+  const tmdb=Boolean(tmdbKey()),key=`${tmdb?'tmdb':'free'}:${anime.id||original}`;if(koreanTitleCache.has(key))return koreanTitleCache.get(key);
   const disk=readKoreanTitleCache();if(Array.isArray(disk[key])&&disk[key].length){koreanTitleCache.set(key,disk[key]);return disk[key]}
-  // Re:ANIME also knows the Japanese title, which TMDB matches as the original name.
-  let native='';
-  if(anime.id){try{const media=await providerFetch(`${REANIME_WEB}/api/v1/anime/${encodeURIComponent(anime.id)}`,{json:true,referer:`${REANIME_WEB}/`});native=String(media?.title?.native||'')}catch{/* English only */}}
-  const found=await tmdbKoreanTitles([original,native]).catch(()=>[]);
+  const found=[],add=value=>{const clean=String(value||'').replace(/\((?:애니메이션|TV|애니)[^)]*\)/g,'').replace(/\s+/g,' ').trim();if(/[가-힣]{2}/.test(clean)&&!found.includes(clean))found.push(clean)};
+  if(tmdb){
+    // Re:ANIME also knows the Japanese title, which TMDB matches as the original name.
+    let native='';
+    if(anime.id){try{const media=await providerFetch(`${REANIME_WEB}/api/v1/anime/${encodeURIComponent(anime.id)}`,{json:true,referer:`${REANIME_WEB}/`});native=String(media?.title?.native||'')}catch{/* English only */}}
+    (await tmdbKoreanTitles([original,native]).catch(()=>[])).forEach(add);
+  }
+  let media=null;
+  if(!found.length){media=await anilistMedia(original,anime).catch(()=>null);(media?.synonyms||[]).forEach(add)}
+  if(!found.length){const malId=Number(anime.malId)||media?.idMal||null,anilistId=Number(anime.anilistId)||media?.id||null;(await wikidataKoreanTitles(malId,anilistId).catch(()=>[])).forEach(add)}
   const result=found.length?found:[original];koreanTitleCache.set(key,result);
   if(found.length){disk[key]=found;try{fs.writeFileSync(koreanTitleCacheFile(),JSON.stringify(disk),'utf8')}catch{}}
   return result;
@@ -930,7 +955,7 @@ app.whenReady().then(async () => {
   });
   // The sandboxed preload has no url.pathToFileURL, so file URLs are built here.
   ipcMain.handle('subtitle:find', async (_, source, title, episode, anime = null) => {
-    // Kairan/Csora posts use Korean titles; Re:ANIME titles are resolved to Korean through TMDB first.
+    // Kairan/Csora posts use Korean titles; Re:ANIME titles are resolved to Korean first (TMDB, AniList, Wikidata).
     const titles = anime?.provider === 'reanime' ? await koreanTitleCandidates(title, anime).catch(() => [title]) : [title];
     return findCommunitySubtitleByTitles(source, titles, Number(episode), { originalTitle: anime?.title || '' });
   });
