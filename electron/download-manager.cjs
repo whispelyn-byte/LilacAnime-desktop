@@ -13,17 +13,18 @@ function seconds(value = '') {
 }
 
 class DownloadManager {
-  constructor({ app, resolveEpisode, resolveLinkkf, broadcast }) {
+  constructor({ app, resolveEpisode, resolveLinkkf, findSubtitle, broadcast }) {
     this.root = path.join(app.getPath('videos'), 'LilacAnime');
     this.stateFile = path.join(app.getPath('userData'), 'downloads.json');
     this.resolveEpisode = resolveEpisode;
     this.resolveLinkkf = resolveLinkkf;
+    this.findSubtitle = findSubtitle;
     this.broadcast = broadcast;
     this.active = null;
-    this.jobs = this.read().map(job => ['downloading', 'resolving'].includes(job.status) ? {...job, status:'queued'} : job);
+    this.jobs = this.read().map(job => ['downloading', 'resolving'].includes(job.status) ? {...job, status:'queued'} : job.stage ? {...job, stage:''} : job);
     fs.mkdirSync(this.root, { recursive: true });
     this.save();
-    setImmediate(() => this.pump());
+    setImmediate(() => { this.pump(); this.backfillSubtitles(); });
   }
 
   read() { try { const value = JSON.parse(fs.readFileSync(this.stateFile, 'utf8')); return Array.isArray(value) ? value : []; } catch { return []; } }
@@ -33,7 +34,7 @@ class DownloadManager {
 
   enqueue(request) {
     const key = this.key(request), existing = this.jobs.find(job => job.key === key);
-    if (existing && existing.status === 'completed' && fs.existsSync(existing.filePath)) return existing;
+    if (existing && existing.status === 'completed' && fs.existsSync(existing.filePath)) { if (!existing.subtitlePath) { existing.subtitleChecked = false; this.backfillSubtitles(); } return existing; }
     if (existing && ['queued','resolving','downloading'].includes(existing.status)) return existing;
     const now = Date.now(), job = existing || { id:`dl_${now}_${Math.random().toString(36).slice(2,8)}`, key, created:now };
     Object.assign(job, request, { title:request.title || request.anime?.title || '애니메이션', episodeNumber:Number(request.episodeNumber || request.episode?.number || request.episode?.name || 1), image:request.image || '', status:'queued', progress:0, error:'', updated:now });
@@ -68,7 +69,7 @@ class DownloadManager {
       await this.runFfmpeg(job,stream);
       if(job.status==='paused')return;
       try{fs.unlinkSync(job.filePath)}catch{}fs.renameSync(job.partialPath,job.filePath);job.partialPath='';job.status='completed';job.progress=100;job.completed=Date.now();job.updated=Date.now();
-      await this.saveSubtitle(job,stream?.subtitleUrl);this.saveAssSubtitle(job,stream?.subtitleAss?.path);this.save();
+      job.stage='subtitle';this.save();await this.attachSubtitle(job,stream);job.stage='';job.updated=Date.now();this.save();
     } catch (error) {
       if(job.status!=='paused'){job.status='failed';job.error=error?.message||String(error);job.updated=Date.now();this.save();}
     } finally { this.active=null; setImmediate(()=>this.pump()); }
@@ -86,6 +87,33 @@ class DownloadManager {
     });
   }
 
+  // Subtitles are fetched right after the video so the episode also plays offline with them.
+  async attachSubtitle(job, stream) {
+    let found = null;
+    try { found = await this.findSubtitle?.(job, stream); } catch { /* fall back to the stream's own subtitle */ }
+    job.subtitleChecked = true;
+    if (!found || found.stream) { await this.saveSubtitle(job, stream?.subtitleUrl); this.saveAssSubtitle(job, stream?.subtitleAss?.path); return; }
+    const base = job.filePath.replace(/\.mp4$/i, '');
+    try {
+      if (found.path && fs.existsSync(found.path)) { job.subtitlePath = base + path.extname(found.path); fs.copyFileSync(found.path, job.subtitlePath); }
+      if (found.assPath && fs.existsSync(found.assPath)) { job.subtitleAssPath = base + path.extname(found.assPath); fs.copyFileSync(found.assPath, job.subtitleAssPath); }
+      // ASS styles name their fonts; they are shared by every episode of the series.
+      const fonts = (found.fonts || []).map(url => { try { return fileURLToPath(url); } catch { return null; } }).filter(file => file && fs.existsSync(file));
+      if (fonts.length) { const dir = path.join(path.dirname(job.filePath), 'fonts'); fs.mkdirSync(dir, { recursive: true }); job.subtitleFonts = fonts.map(file => { const out = path.join(dir, path.basename(file)); if (!fs.existsSync(out)) fs.copyFileSync(file, out); return out; }); }
+      job.subtitleLabel = found.label || '';
+    } catch { /* the video is still usable without a subtitle */ }
+  }
+
+  // Episodes saved before subtitles were bundled get one lookup each.
+  async backfillSubtitles() {
+    if (this.backfilling) return; this.backfilling = true;
+    try {
+      for (const job of this.jobs.filter(item => item.status === 'completed' && !item.subtitlePath && !item.subtitleChecked && fs.existsSync(item.filePath || ''))) {
+        job.stage = 'subtitle'; this.save(); await this.attachSubtitle(job, null); job.stage = ''; job.updated = Date.now(); this.save();
+      }
+    } finally { this.backfilling = false; }
+  }
+
   saveAssSubtitle(job, file) {
     if(!file||!fs.existsSync(file))return;try{job.subtitleAssPath=job.filePath.replace(/\.mp4$/i,path.extname(file));fs.copyFileSync(file,job.subtitleAssPath)}catch{}
   }
@@ -94,7 +122,7 @@ class DownloadManager {
     if(!url)return;try{let data,ext='.vtt';if(url.startsWith('file:')){const source=fileURLToPath(url);ext=path.extname(source)||ext;data=fs.readFileSync(source)}else{const response=await fetch(url);if(!response.ok)return;data=Buffer.from(await response.arrayBuffer())}job.subtitlePath=job.filePath.replace(/\.mp4$/i,ext);fs.writeFileSync(job.subtitlePath,data)}catch{}
   }
 
-  localPlayback(id) { const job=this.jobs.find(item=>item.id===id);if(!job||job.status!=='completed'||!fs.existsSync(job.filePath))throw new Error('다운로드 파일을 찾지 못했습니다.');return {url:pathToFileURL(job.filePath).href,subtitleUrl:job.subtitlePath&&fs.existsSync(job.subtitlePath)?pathToFileURL(job.subtitlePath).href:null,subtitleAss:job.subtitleAssPath&&fs.existsSync(job.subtitleAssPath)?{url:pathToFileURL(job.subtitleAssPath).href,path:job.subtitleAssPath}:null,job}; }
+  localPlayback(id) { const job=this.jobs.find(item=>item.id===id);if(!job||job.status!=='completed'||!fs.existsSync(job.filePath))throw new Error('다운로드 파일을 찾지 못했습니다.');return {url:pathToFileURL(job.filePath).href,subtitleUrl:job.subtitlePath&&fs.existsSync(job.subtitlePath)?pathToFileURL(job.subtitlePath).href:null,subtitleAss:job.subtitleAssPath&&fs.existsSync(job.subtitleAssPath)?{url:pathToFileURL(job.subtitleAssPath).href,path:job.subtitleAssPath,fonts:(job.subtitleFonts||[]).filter(file=>fs.existsSync(file)).map(file=>pathToFileURL(file).href)}:null,subtitleLabel:job.subtitleLabel||'',job}; }
 }
 
 module.exports = { DownloadManager };

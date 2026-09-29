@@ -462,7 +462,7 @@ async function resolveStreamPage(targetUrl, referer = '') {
 
 function simpleTitle(value=''){return value.toLowerCase().normalize('NFKC').replace(/\[[^\]]*]|\([^)]*\)/g,' ').replace(/\b(?:subtitle|sub)\b|(?:한글|한국어)?\s*자막/gi,' ').replace(/[^a-z0-9가-힣]+/g,' ').trim()}
 function titleKey(value=''){const clean=simpleTitle(value),hangul=(clean.match(/[가-힣]+/g)||[]).join('');return hangul.length>=2?hangul:clean.replace(/\s+/g,'')}
-function titleScore(target,candidate){const keyA=titleKey(target),keyB=titleKey(candidate);if(!keyA||!keyB)return 0;if(keyA===keyB)return 1;if(keyA.includes(keyB)||keyB.includes(keyA))return Math.min(keyA.length,keyB.length)/Math.max(keyA.length,keyB.length);const a=new Set(simpleTitle(target).split(' ').filter(Boolean)),b=new Set(simpleTitle(candidate).split(' ').filter(Boolean));let hits=0;a.forEach(x=>{if([...b].some(y=>y.includes(x)||x.includes(y)))hits++});return a.size?hits/a.size:0}
+function titleScore(target,candidate){const keyA=titleKey(target),keyB=titleKey(candidate);if(!keyA||!keyB)return 0;if(keyA===keyB)return 1;if(keyA.includes(keyB)||keyB.includes(keyA))return Math.min(keyA.length,keyB.length)/Math.max(keyA.length,keyB.length);const a=new Set(simpleTitle(target).split(' ').filter(Boolean)),b=new Set(simpleTitle(candidate).split(' ').filter(Boolean));let hits=0;a.forEach(x=>{if([...b].some(y=>Math.min(x.length,y.length)>=2&&(y.includes(x)||x.includes(y))))hits++});return a.size?hits/a.size:0}
 async function downloadBuffer(url,referer){const response=await fetch(url,{headers:{'User-Agent':LINKKF_UA,Referer:referer||url}});if(!response.ok)throw new Error(`자막 다운로드 HTTP ${response.status}`);return Buffer.from(await response.arrayBuffer())}
 function driveId(url){return url.match(/\/file\/d\/([^/?]+)/)?.[1]||url.match(/[?&]id=([^&]+)/)?.[1]||null}
 function findExecutable(name){const suffix=process.platform==='win32'?'.exe':'';const candidates=(process.env.PATH||'').split(path.delimiter).map(dir=>path.join(dir,`${name}${suffix}`));if(process.platform==='win32'){candidates.push(path.join(process.env.LOCALAPPDATA||'','Programs','mpv','mpv.exe'),path.join(process.env.PROGRAMFILES||'','mpv','mpv.exe'),path.join(app.getAppPath(),'bin','mpv.exe'))}return candidates.find(file=>file&&fs.existsSync(file))||null}
@@ -550,18 +550,117 @@ async function namuKoreanTitle(title,anime={}){
   if(korean){disk[key]=korean;try{fs.writeFileSync(namuCacheFile(),JSON.stringify(disk),'utf8')}catch{}}
   return result;
 }
-async function findCommunitySubtitle(source,title,episode){
-  const blog=source==='kairan'?'https://kairan03.blogspot.com':'https://csora556.blogspot.com';
-  const feed=await providerFetch(`${blog}/feeds/posts/default?alt=json&max-results=500&start-index=1`,{json:true,referer:`${blog}/`});
-  const posts=(feed.feed?.entry||[]).map(entry=>({title:entry.title?.$t||'',url:(entry.link||[]).find(x=>x.rel==='alternate')?.href||''}));
-  const episodePattern=new RegExp(`(?:^|\\D)(?:ep(?:isode)?\\s*|제?\\s*)?0*${episode}(?:\\s*(?:화|회|편))?(?:\\D|$)`,'i');const numbered=posts.filter(post=>episodePattern.test(`${post.title} ${post.url}`));const pool=numbered.length?numbered:(episode===1?posts:[]);const match=pool.map(post=>({...post,score:titleScore(title,post.title)})).sort((a,b)=>b.score-a.score)[0];
-  if(!match||match.score<.5)throw new Error(`${source==='kairan'?'Kairan':'Csora'} 자막 게시물을 찾지 못했습니다.`);
-  const html=await providerFetch(match.url,{referer:`${blog}/`});const $=cheerio.load(html);const links=[];
-  $('a[href]').each((_,a)=>{const href=absoluteUrl($(a).attr('href'),match.url);if(/drive\.google\.com|docs\.google\.com|\.zip(?:$|\?)|\.ass(?:$|\?)|\.ssa(?:$|\?)|\.srt(?:$|\?)|\.vtt(?:$|\?)/i.test(href))links.push(href)});
-  if(!links.length)throw new Error('게시물에서 다운로드 링크를 찾지 못했습니다.');
+// Blogger feeds return at most 150 posts per request, so the whole blog is paged in and cached briefly.
+const communityPostCache=new Map();
+async function communityPosts(blog){
+  const cached=communityPostCache.get(blog);if(cached&&Date.now()-cached.time<10*60*1000)return cached.posts;
+  const page=start=>providerFetch(`${blog}/feeds/posts/default?alt=json&max-results=150&start-index=${start}`,{json:true,referer:`${blog}/`});
+  const first=await page(1),total=Math.min(Number(first.feed?.openSearch$totalResults?.$t)||0,3000),rest=[];
+  for(let start=151;start<=total;start+=150)rest.push(page(start).catch(()=>null));
+  const posts=[first,...await Promise.all(rest)].flatMap(root=>root?.feed?.entry||[]).map(entry=>({title:entry.title?.$t||'',url:(entry.link||[]).find(x=>x.rel==='alternate')?.href||'',html:entry.content?.$t||entry.summary?.$t||''}));
+  communityPostCache.set(blog,{time:Date.now(),posts});return posts;
+}
+// Episode numbers written as "12화", "9, 10화", "1 ~ 12화" or "EP 3". Bare digits ("2기", "무직전생3") are not episodes.
+function communityEpisodes(text=''){
+  const list=[],ranges=[];const value=String(text).normalize('NFKC');
+  for(const m of value.matchAll(/(\d+)\s*[~∼\-]\s*(\d+)\s*(?:화|회|편)/g))ranges.push([Number(m[1]),Number(m[2])]);
+  for(const m of value.replace(/(\d+)\s*[~∼\-]\s*(\d+)\s*(?:화|회|편)/g,' ').matchAll(/((?:\d+\s*,\s*)*\d+)\s*(?:화|회|편)/g))list.push(...m[1].split(',').map(Number));
+  for(const m of value.matchAll(/\bep(?:isode)?\s*\.?\s*(\d+)/gi))list.push(Number(m[1]));
+  return {list,ranges,has:ep=>list.includes(ep)||ranges.some(([a,b])=>ep>=a&&ep<=b),any:list.length+ranges.length>0};
+}
+function communitySeason(text=''){
+  const value=String(text).normalize('NFKC'),m=value.match(/(?:season|시즌)\s*(\d+)|(\d+)\s*기(?![가-힣])|(\d+)(?:st|nd|rd|th)(?:\s*season)?\b|[가-힣](\d)(?=\s|$)/i);
+  return m?Number(m[1]||m[2]||m[3]||m[4]):null;
+}
+// Posts often drop the "~부제~" part ("무직전생3"), so a distinctive shared prefix of 4+ Hangul counts as a match too.
+function communityScore(target,candidate){
+  const bare=value=>value.replace(/[~〜～][^~〜～]*[~〜～]/g,' ').replace(/\s+/g,' ').trim(),score=Math.max(titleScore(target,candidate),titleScore(bare(target),bare(candidate)));
+  const a=titleKey(bare(target)),b=titleKey(bare(candidate)),short=a.length<b.length?a:b,long=short===a?b:a;
+  return /^[가-힣]{4,}$/.test(short)&&long.startsWith(short)?Math.max(score,.6):score;
+}
+// Older Kairan titles end in a bare episode number ("히로아카7 20", "... 12(완)").
+const COMMUNITY_TRAILING_EPISODE=/(?<!season|시즌|part|파트|vol\.?|제)\s+(\d{1,3})\s*(?:\((?:끝|완)\))?\s*(?:자막)?\s*$/i;
+function communityPostEpisodes(title=''){const episodes=communityEpisodes(title);if(episodes.any)return episodes;const m=String(title).normalize('NFKC').match(COMMUNITY_TRAILING_EPISODE);return m?communityEpisodes(`${m[1]}화`):episodes}
+function communityPostTitle(title=''){return communityTitle(String(title).normalize('NFKC').replace(COMMUNITY_TRAILING_EPISODE,' '))}
+function communityTitle(text=''){return String(text).replace(/(\d+)\s*[~∼\-,]\s*(?=\d)/g,'').replace(/\d+\s*(?:화|회|편)|\((?:끝|완)\)|작업\s*중|블루레이판|자막/g,' ').trim()}
+// Picks the post's download links for one episode: per-episode posts (Kairan) carry the number in the
+// title, series posts (Csora) label each link ("13화", "1 ~ 12화") and add a separate "폰트" link.
+function communityLinks(post,episode){
+  const $=cheerio.load(post.html),anchors=[];
+  $('a[href]').each((_,a)=>{const href=absoluteUrl($(a).attr('href'),post.url);if(/drive\.google\.com|docs\.google\.com|\.zip(?:$|\?)|\.(?:ass|ssa|srt|vtt)(?:$|\?)/i.test(href))anchors.push({href,label:$(a).text().trim()})});
+  const fonts=anchors.filter(a=>/폰트|font/i.test(a.label)),subs=anchors.filter(a=>!fonts.includes(a)),withFonts=list=>list.length?[...new Set([...list,...fonts].map(a=>a.href))]:[];
+  const titleEpisodes=communityPostEpisodes(post.title);
+  if(titleEpisodes.any)return titleEpisodes.has(episode)?{links:withFonts(subs),episode}:{links:[],episode};
+  const labeled=subs.map(a=>({...a,episodes:communityEpisodes(a.label)})).filter(a=>a.episodes.any);
+  // No numbers at all: a movie or a whole-season bundle, whose file has to be matched by episode.
+  if(!labeled.length)return {links:withFonts(subs),episode,strict:true};
+  const pick=ep=>labeled.find(a=>a.episodes.list.includes(ep))||labeled.find(a=>a.episodes.has(ep));
+  // Later seasons often continue the numbering (2기 = 13~24화) while the player counts from 1.
+  const first=Math.min(...labeled.flatMap(a=>[...a.episodes.list,...a.episodes.ranges.map(r=>r[0])]));
+  const direct=pick(episode),shifted=!direct&&first>1?pick(episode+first-1):null,chosen=direct||shifted;
+  const number=direct?episode:shifted?episode+first-1:episode;
+  // A range link ("1 ~ 12화") is a bundle, so its file must be matched by episode number.
+  return {links:chosen?withFonts([chosen]):[],episode:number,strict:Boolean(chosen&&!chosen.episodes.list.includes(number))};
+}
+function communityFileMatches(file,episode){
+  const name=path.basename(file).normalize('NFKC').replace(/\.[^.]+$/,'').replace(/\b(?:s\d+|season\s*\d+|\d{3,4}p|x26[45]|h\.?26[45]|(?:19|20)\d{2})\b|\d+\s*기/gi,' ');
+  return new RegExp(`(?:^|[^0-9])(?:e|ep|episode)?\\s*0*${episode}(?:v\\d)?(?:[^0-9]|$)`,'i').test(name);
+}
+const COMMUNITY_FILE=/\.(ass|ssa|srt|vtt|ttf|otf|ttc)$/i;
+function communityFileName(name){return path.basename(String(name).replace(/\\/g,'/')).normalize('NFC').replace(/[^\p{L}\p{N}._ -]/gu,'_')}
+// Large Drive files answer with a "virus scan warning" page (always when a foreign Referer is sent);
+// its form holds the real download URL.
+async function downloadDriveBuffer(url,referer){
+  const buffer=await downloadBuffer(url,referer);if(buffer[0]!==0x3c||!/virus scan warning|download-form/i.test(buffer.slice(0,4096).toString('utf8')))return buffer;
+  const $=cheerio.load(buffer.toString('utf8')),form=$('form#download-form').first();if(!form.length)return buffer;
+  const next=new URL(absoluteUrl(form.attr('action'),url));form.find('input[name]').each((_,input)=>next.searchParams.set($(input).attr('name'),$(input).attr('value')||''));
+  return downloadBuffer(next.href,referer);
+}
+// Unpacks subtitle and font files. Zip names without the UTF-8 flag are CP949 (Korean Windows);
+// 7z/RAR go through Windows' bundled bsdtar.
+async function extractCommunityArchive(buffer,dir){
+  const files=[],write=(name,data)=>{if(!COMMUNITY_FILE.test(name))return;let out=path.join(dir,communityFileName(name));if(files.includes(out))out=path.join(dir,`${files.length}_${communityFileName(name)}`);fs.writeFileSync(out,data);files.push(out)};
+  if(buffer[0]===0x50&&buffer[1]===0x4b){
+    const zip=new AdmZip(buffer);let extracted=0;
+    for(const entry of zip.getEntries()){if(entry.isDirectory)continue;const size=Number(entry.header?.size||0);extracted+=size;if(size>100*1024*1024||extracted>300*1024*1024)throw new Error('ZIP 자막 크기 제한을 초과했습니다.');
+      const name=entry.header?.flags&0x800?entry.entryName:new TextDecoder('euc-kr').decode(entry.rawEntryName);write(name,entry.getData())}
+    return files;
+  }
+  const isSevenZip=buffer.slice(0,6).equals(Buffer.from([0x37,0x7a,0xbc,0xaf,0x27,0x1c])),isRar=buffer.slice(0,4).toString('latin1')==='Rar!';
+  if(!isSevenZip&&!isRar||process.platform!=='win32')return null;
+  const work=fs.mkdtempSync(path.join(app.getPath('temp'),'lilac-sub-')),archive=path.join(work,isRar?'a.rar':'a.7z'),out=path.join(work,'x');
+  try{
+    fs.writeFileSync(archive,buffer);fs.mkdirSync(out);
+    await new Promise((resolve,reject)=>{const child=spawn(path.join(process.env.SystemRoot||'C:\\Windows','System32','tar.exe'),['-xf',archive,'-C',out],{windowsHide:true});child.once('error',reject);child.once('close',code=>code===0?resolve():reject(new Error(`tar ${code}`)))});
+    const walk=folder=>fs.readdirSync(folder,{withFileTypes:true}).flatMap(item=>item.isDirectory()?walk(path.join(folder,item.name)):[path.join(folder,item.name)]);
+    for(const file of walk(out))write(file,fs.readFileSync(file));
+    return files;
+  }finally{fs.rmSync(work,{recursive:true,force:true})}
+}
+function communitySubtitleExt(buffer){const head=buffer.slice(0,4096).toString('utf8').replace(/^\uFEFF/,'');return /^WEBVTT/.test(head)?'.vtt':/\[Script Info\]/i.test(head)?'.ass':/\d+:\d{2}:\d{2}[,.]\d{3}\s*-->/.test(head)?'.srt':null}
+async function findCommunitySubtitle(source,title,episode,{originalTitle=''}={}){
+  const blog=source==='kairan'?'https://kairan03.blogspot.com':'https://csora556.blogspot.com',label=source==='kairan'?'Kairan':'Csora';
+  const season=communitySeason(title)??communitySeason(originalTitle)??1,wanted=communityTitle(title);
+  const matches=(await communityPosts(blog)).filter(post=>!/작업\s*중|하차/.test(post.title)&&(communitySeason(communityPostTitle(post.title))??1)===season)
+    .map(post=>({post,score:communityScore(wanted,communityPostTitle(post.title))})).filter(x=>x.score>=.5)
+    .map(x=>({...x,...communityLinks(x.post,episode)})).filter(x=>x.links.length)
+    // Per-episode links beat bundles of a similarly named post; newer posts come first in the feed.
+    .sort((a,b)=>Math.round((b.score-a.score)*20)||Number(Boolean(a.strict))-Number(Boolean(b.strict)));
+  const match=matches[0];if(!match)throw new Error(`${label} 자막 게시물을 찾지 못했습니다.`);
   const dir=path.join(app.getPath('userData'),'subtitles',simpleTitle(title).replace(/\s+/g,'_')||'anime',String(episode));fs.mkdirSync(dir,{recursive:true});const candidates=[];
-  for(const original of [...new Set(links)]){try{const id=driveId(original);const url=id?`https://drive.usercontent.google.com/download?id=${encodeURIComponent(id)}&export=download&confirm=t`:original;const buffer=await downloadBuffer(url,match.url);if(buffer.length<16||buffer.length>300*1024*1024)continue;if(buffer[0]===0x50&&buffer[1]===0x4b){const zip=new AdmZip(buffer);let extracted=0;for(const entry of zip.getEntries()){if(entry.isDirectory)continue;const size=Number(entry.header?.size||0);extracted+=size;if(size>100*1024*1024||extracted>300*1024*1024)throw new Error('ZIP 자막 크기 제한을 초과했습니다.');const base=path.basename(entry.entryName).replace(/[^\p{L}\p{N}._ -]/gu,'_');if(!/\.(ass|ssa|srt|vtt|ttf|otf|ttc)$/i.test(base))continue;const out=path.join(dir,base);fs.writeFileSync(out,entry.getData());if(/\.(ass|ssa|srt|vtt)$/i.test(base))candidates.push(out)}}else{const type=buffer.slice(0,200).toString('utf8');let ext=/WEBVTT/i.test(type)?'.vtt':/\[Script Info\]/i.test(type)?'.ass':'.srt';const out=path.join(dir,`${source}_${episode}_${Date.now()}${ext}`);fs.writeFileSync(out,buffer);candidates.push(out)}}catch{/* Try remaining links. */}}
-  let selected=candidates.find(x=>new RegExp(`(?:^|\\D)${episode}(?:\\D|$)`).test(path.basename(x)))||candidates[0];if(!selected)throw new Error('사용 가능한 자막 파일을 추출하지 못했습니다.');return subtitleResult(selected,{source,post:match.url,all:candidates});
+  for(const original of match.links){
+    try{
+      const id=driveId(original),url=id?`https://drive.usercontent.google.com/download?id=${encodeURIComponent(id)}&export=download&confirm=t`:original,buffer=await downloadDriveBuffer(url,id?undefined:match.post.url);
+      if(buffer.length<16||buffer.length>300*1024*1024)continue;
+      const unpacked=await extractCommunityArchive(buffer,dir);
+      if(unpacked){candidates.push(...unpacked.filter(file=>/\.(ass|ssa|srt|vtt)$/i.test(file)));continue}
+      const ext=communitySubtitleExt(buffer);if(!ext)continue;
+      const out=path.join(dir,`${source}_${Date.now()}_${candidates.length}${ext}`);fs.writeFileSync(out,buffer);candidates.push(out);
+    }catch{/* Try remaining links. */}
+  }
+  // A movie bundle has no numbered files (the main script, an MV, an older version...): take the largest.
+  const unnumbered=episode===1&&!candidates.some(x=>communityFileMatches(x,2)),largest=()=>candidates.slice().sort((a,b)=>fs.statSync(b).size-fs.statSync(a).size)[0];
+  const selected=candidates.find(x=>communityFileMatches(x,match.episode))||(!match.strict?candidates[0]:unnumbered?largest():null);if(!selected)throw new Error('사용 가능한 자막 파일을 추출하지 못했습니다.');return subtitleResult(selected,{source,post:match.post.url,postTitle:match.post.title,all:candidates});
 }
 async function downloadHls(url,filePath,event){
   let playlistUrl=url;let text=await providerFetch(playlistUrl,{referer:new URL(url).origin+'/'});
@@ -594,7 +693,22 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   const broadcast=(channel,value)=>BrowserWindow.getAllWindows().forEach(win=>{if(!win.isDestroyed())win.webContents.send(channel,value)});
-  downloadManager=new DownloadManager({app,resolveEpisode:resolveProviderEpisode,resolveLinkkf:async episode=>{
+  const subtitleStore=new SubtitleStore({app});
+  // Same order as the player's ensureSubtitle: the preferred source's saved file, the stream's own
+  // subtitle, any saved file, then Kairan/Csora.
+  const findDownloadSubtitle=async(job,stream)=>{
+    const episode=job.episode||{},key=encodeURIComponent(String(episode.url||episode.token||episode.id||episode.number||'')),saved=key?subtitleStore.list(key):[],preferred=job.subtitleSource||'linkkf';
+    const fromSaved=entry=>({path:entry.path,assPath:entry.assPath,fonts:entry.fonts||[],label:entry.label});
+    const savedPreferred=saved.find(entry=>entry.source===preferred);if(savedPreferred)return fromSaved(savedPreferred);
+    if(stream?.subtitleUrl)return {stream:true};
+    if(saved[0])return fromSaved(saved[0]);
+    const anime=job.anime||{},title=job.title||anime.title||'',searchTitle=anime.provider==='reanime'?await namuKoreanTitle(title,anime).catch(()=>title):title;
+    for(const source of ['kairan','csora'].includes(preferred)?[preferred,...['kairan','csora'].filter(x=>x!==preferred)]:['kairan','csora']){
+      try{const result=await findCommunitySubtitle(source,searchTitle,Number(job.episodeNumber)||1,{originalTitle:anime.title||''});return {path:result.path,assPath:result.assPath,fonts:result.fonts,label:`${source==='kairan'?'Kairan':'Csora'} 자막`}}catch{/* next source */}
+    }
+    return null;
+  };
+  downloadManager=new DownloadManager({app,findSubtitle:findDownloadSubtitle,resolveEpisode:resolveProviderEpisode,resolveLinkkf:async episode=>{
     let playerUrl='';try{const root=await linkkfFetch(`https://emdlinkkf.5imgdarr.top/apilink2.php?data=${encodeURIComponent(episode.token)}`,12000);const links=Array.isArray(root.data)?root.data:[];playerUrl=(links.find(x=>String(x.server).toUpperCase()==='NR-HD')||links[0]||{}).link||'';}catch{}
     if(!playerUrl)playerUrl=`${LINKKF_WEB}/up/${encodeURIComponent(episode.postId)}/watch/?slug=${encodeURIComponent(episode.slug)}`;return resolveStreamPage(playerUrl,`${LINKKF_WEB}/`);
   },broadcast});
@@ -702,7 +816,6 @@ app.whenReady().then(async () => {
   ipcMain.handle('provider:subtitle-tracks', (_, episode) => reanimeSubtitleTracks(episode));
   ipcMain.handle('cover:data', (_, url) => coverDataUrl(url));
   updater=new Updater({app,broadcast});
-  const subtitleStore=new SubtitleStore({app});
   ipcMain.handle('subtitle-store:list',(_,key)=>subtitleStore.list(String(key||'')));
   ipcMain.handle('subtitle-store:save',(_,key,entry)=>subtitleStore.save(String(key||''),entry));
   ipcMain.handle('subtitle-store:remove',(_,key,id)=>subtitleStore.remove(String(key||''),String(id||'')));
@@ -745,7 +858,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('subtitle:find', async (_, source, title, episode, anime = null) => {
     // Kairan/Csora posts use Korean titles; Re:ANIME titles are resolved through NamuWiki first.
     const searchTitle = anime?.provider === 'reanime' ? await namuKoreanTitle(title, anime) : title;
-    return { ...await findCommunitySubtitle(source, searchTitle, Number(episode)), searchTitle };
+    return { ...await findCommunitySubtitle(source, searchTitle, Number(episode), { originalTitle: anime?.title || '' }), searchTitle };
   });
   ipcMain.handle('mpv:status', () => ({available:Boolean(findExecutable('mpv')),path:findExecutable('mpv')}));
   ipcMain.handle('player:fullscreen', (event,enabled) => {const win=BrowserWindow.fromWebContents(event.sender);if(win)win.setFullScreen(Boolean(enabled));return Boolean(enabled)});
