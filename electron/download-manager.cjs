@@ -15,12 +15,14 @@ function seconds(value = '') {
 const MAX_CONCURRENT_DOWNLOADS = 2;
 
 class DownloadManager {
-  constructor({ app, resolveEpisode, resolveLinkkf, findSubtitle, broadcast }) {
+  constructor({ app, resolveEpisode, resolveLinkkf, findSubtitle, findSkips, analyzeOpEd, broadcast }) {
     this.root = path.join(app.getPath('videos'), 'LilacAnime');
     this.stateFile = path.join(app.getPath('userData'), 'downloads.json');
     this.resolveEpisode = resolveEpisode;
     this.resolveLinkkf = resolveLinkkf;
     this.findSubtitle = findSubtitle;
+    this.findSkips = findSkips;
+    this.analyzeOpEd = analyzeOpEd;
     this.broadcast = broadcast;
     this.resolving = Promise.resolve();
     this.active = new Map(); // job id -> {job, process}; Android runs up to 2 downloads at once.
@@ -82,6 +84,7 @@ class DownloadManager {
       if(job.status==='paused')return;
       try{fs.unlinkSync(job.filePath)}catch{}fs.renameSync(job.partialPath,job.filePath);job.partialPath='';job.status='completed';job.progress=100;job.completed=Date.now();job.updated=Date.now();
       job.stage='subtitle';this.save();await this.attachSubtitle(job,stream);job.stage='';job.updated=Date.now();this.save();
+      await this.attachSkips(job);
     } catch (error) {
       if(job.status!=='paused'){job.status='failed';job.error=error?.message||String(error);job.updated=Date.now();this.save();}
     } finally { this.active.delete(job.id); setImmediate(()=>this.pump()); }
@@ -95,7 +98,7 @@ class DownloadManager {
       args.push('-rw_timeout','180000000'); // Android MpvHlsDownloader read timeout: 180 s
       args.push('-i',stream.url,'-map','0:v?','-map','0:a?','-c','copy','-movflags','+faststart','-f','mp4',job.partialPath);
       const child=spawn(ffmpeg,args,{windowsHide:true});this.active.set(job.id,{job,process:child});let duration=0,stderr='';
-      child.stderr.on('data',chunk=>{const text=chunk.toString();stderr=(stderr+text).slice(-12000);const d=text.match(/Duration:\s*([^,]+)/)?.[1];if(d)duration=seconds(d);const t=[...text.matchAll(/time=\s*([^\s]+)/g)].pop()?.[1];if(t&&duration){job.progress=Math.max(0,Math.min(99,Math.round(seconds(t)/duration*100)));job.updated=Date.now();this.save();}});
+      child.stderr.on('data',chunk=>{const text=chunk.toString();stderr=(stderr+text).slice(-12000);const d=text.match(/Duration:\s*([^,]+)/)?.[1];if(d){duration=seconds(d);job.duration=duration}const t=[...text.matchAll(/time=\s*([^\s]+)/g)].pop()?.[1];if(t&&duration){job.progress=Math.max(0,Math.min(99,Math.round(seconds(t)/duration*100)));job.updated=Date.now();this.save();}});
       child.once('error',reject);child.once('close',code=>{if(job.status==='paused')return resolve();if(code===0&&fs.existsSync(job.partialPath))resolve();else reject(new Error((stderr.match(/([^\r\n]+)$/)?.[1]||`FFmpeg 종료 코드 ${code}`).trim()));});
     });
   }
@@ -117,6 +120,19 @@ class DownloadManager {
     } catch { /* the video is still usable without a subtitle */ }
   }
 
+  // OP/ED timestamps for offline playback. A failed lookup is not stored, so the analyzer can fill it later.
+  async attachSkips(job) {
+    let segments = [];
+    try { segments = await this.findSkips?.(job) || []; } catch { /* stays empty */ }
+    job.skipChecked = true;
+    if (segments.length) { job.skipSegments = segments; job.updated = Date.now(); this.save(); return; }
+    this.save();
+    if (job.opedAnalysis === false || !job.duration) return;
+    const identity = item => item.anime?.mal_id || item.anime?.id || item.title;
+    const siblings = this.jobs.filter(item => item !== job && item.status === 'completed' && identity(item) === identity(job) && fs.existsSync(item.filePath || ''));
+    if (siblings.length) this.analyzeOpEd?.(job, siblings).catch(() => {});
+  }
+
   // Episodes saved before subtitles were bundled get one lookup each.
   async backfillSubtitles() {
     if (this.backfilling) return; this.backfilling = true;
@@ -124,6 +140,7 @@ class DownloadManager {
       for (const job of this.jobs.filter(item => item.status === 'completed' && !item.subtitlePath && !item.subtitleChecked && fs.existsSync(item.filePath || ''))) {
         job.stage = 'subtitle'; this.save(); await this.attachSubtitle(job, null); job.stage = ''; job.updated = Date.now(); this.save();
       }
+      for (const job of this.jobs.filter(item => item.status === 'completed' && !item.skipChecked && fs.existsSync(item.filePath || ''))) await this.attachSkips(job);
     } finally { this.backfilling = false; }
   }
 

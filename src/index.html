@@ -17,6 +17,7 @@
   <link rel="stylesheet" href="download-port.css" />
   <link rel="stylesheet" href="volume-port.css" />
   <link rel="stylesheet" href="parity-port.css" />
+  <link rel="stylesheet" href="player-android.css" />
   <link rel="stylesheet" href="motion.css" />
 </head>
 <body>
@@ -88,12 +89,74 @@
           <video id="video" playsinline preload="auto"></video>
           <div id="playerEmpty" class="player-loading"><span class="player-spinner"></span><p>영상을 준비하고 있어요</p></div>
           <div class="player-shade player-shade-top"></div><div class="player-shade player-shade-bottom"></div>
-          <header class="player-top"><button id="playerBack" class="player-icon" aria-label="플레이어 닫기"><svg viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></svg></button><div><h1 id="playerTitle">재생 준비 중</h1><p id="playerMeta">LilacAnime</p></div><span id="downloadStatus" class="player-status">연결 중</span></header>
-          <div class="player-center"><button id="rewindPlayer" class="player-skip" aria-label="10초 뒤로"><svg viewBox="0 0 24 24"><path d="M4 8V4m0 4h4M5.5 7A8 8 0 1 1 4 14"/><text x="9" y="15">10</text></svg></button><button id="togglePlayer" class="player-play" aria-label="재생"><svg class="play-shape" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7Z"/></svg><svg class="pause-shape" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></svg></button><button id="forwardPlayer" class="player-skip" aria-label="10초 앞으로"><svg viewBox="0 0 24 24"><path d="M20 8V4m0 4h-4M18.5 7A8 8 0 1 0 20 14"/><text x="9" y="15">10</text></svg></button></div>
+          <header class="player-top">
+            <button id="playerBack" class="player-icon" aria-label="뒤로"><svg viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></svg></button>
+            <div class="player-heading"><h1 id="playerTitle">재생 준비 중</h1><p id="playerMeta">LilacAnime</p></div>
+            <span id="downloadStatus" class="player-status">연결 중</span>
+            <button id="playerSettingsButton" class="player-icon" aria-label="플레이어 설정" aria-expanded="false" aria-controls="playerSettings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg></button>
+          </header>
+          <div class="player-center">
+            <button id="previousEpisode" class="player-episode" aria-label="이전 화"><svg viewBox="0 0 24 24"><path d="M19 5 9 12l10 7ZM6 5v14"/></svg></button>
+            <button id="rewindPlayer" class="player-skip" aria-label="10초 뒤로"><svg viewBox="0 0 24 24"><path d="M4 8V4m0 4h4M5.5 7A8 8 0 1 1 4 14"/><text x="9" y="15">10</text></svg></button>
+            <button id="togglePlayer" class="player-play" aria-label="재생"><svg class="play-shape" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7Z"/></svg><svg class="pause-shape" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></svg></button>
+            <button id="forwardPlayer" class="player-skip" aria-label="10초 앞으로"><svg viewBox="0 0 24 24"><path d="M20 8V4m0 4h-4M18.5 7A8 8 0 1 0 20 14"/><text x="9" y="15">10</text></svg></button>
+            <button id="nextEpisode" class="player-episode" aria-label="다음 화"><svg viewBox="0 0 24 24"><path d="m5 5 10 7-10 7ZM18 5v14"/></svg></button>
+          </div>
           <button id="skipNow" class="skip-chip hidden"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 5 9 7-9 7Zm10 0h3v14h-3Z"/></svg><span>OP 스킵</span></button>
-          <div class="player-bottom"><input id="playerSeek" class="player-seek" type="range" min="0" max="1000" value="0" aria-label="재생 위치"><div class="player-bottom-row"><span id="playerTime">00:00 / 00:00</span><div class="player-actions"><div class="volume-control"><button id="mutePlayer" class="player-icon" aria-label="음소거"><svg class="volume-on" viewBox="0 0 24 24"><path d="M5 9v6h4l5 4V5L9 9H5Zm12 1a3 3 0 0 1 0 4m2-7a7 7 0 0 1 0 10"/></svg><svg class="volume-off" viewBox="0 0 24 24"><path d="M5 9v6h4l5 4V5L9 9H5Zm12 1 4 4m0-4-4 4"/></svg></button><input id="playerVolume" type="range" min="0" max="100" step="1" value="100" aria-label="볼륨"></div><button id="subtitleToggle" class="player-action" aria-label="자막 설정">CC</button><label class="speed-control" aria-label="재생 속도"><select id="speed"><option value=".1">0.1×</option><option value=".25">0.25×</option><option value=".5">0.5×</option><option value=".75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="1.75">1.75×</option><option value="2">2×</option></select></label><button id="miniPlayer" class="player-icon" aria-label="미니 플레이어"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><rect x="12" y="11" width="7" height="5" rx="1"/></svg></button><button id="fullscreenPlayer" class="player-icon" aria-label="전체 화면"><svg viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg></button></div></div></div>
-          <aside id="subtitleSheet" class="subtitle-sheet" aria-hidden="true"><div class="sheet-head"><h2>자막</h2><button id="closeSubtitleSheet" class="player-icon" aria-label="닫기">×</button></div><p id="subtitleState">자막을 찾는 중...</p><div id="subtitleTracks" class="sheet-tracks hidden"><div class="sheet-tracks-head"><b>Re:Anime 자막 트랙</b><span id="subtitleTrackState"></span></div><button id="reloadSubtitleTracks" type="button" class="sheet-button hidden">자막 트랙 다시 불러오기</button><div id="subtitleTrackList" class="track-list"></div></div><div id="savedSubtitles" class="sheet-tracks hidden"><div class="sheet-tracks-head"><b>저장된 자막</b><span id="savedSubtitleCount"></span></div><div id="savedSubtitleList" class="track-list"></div></div><button id="findSubtitle" class="sheet-button">온라인 자막 다시 찾기</button><button id="openSubtitle" class="sheet-button">내 자막 파일 열기</button><label class="sheet-toggle"><span>자막 표시</span><input id="subtitleEnabled" type="checkbox" checked></label><label class="sheet-toggle"><span>ASS 자막 효과</span><input id="assEffectsSheet" type="checkbox" checked></label></aside>
-          <div class="player-utilities" aria-hidden="true"><input id="streamUrl"><input id="skipTitle"><input id="skipEpisode" type="number" value="1"><button id="playUrl"></button><button id="openVideo"></button><button id="downloadVideo"></button><button id="loadSkip"></button></div>
+          <div class="player-bottom">
+            <input id="playerSeek" class="player-seek" type="range" min="0" max="1000" value="0" aria-label="재생 위치">
+            <div class="player-bottom-row">
+              <span id="playerTime">00:00 / 00:00</span>
+              <div class="player-actions">
+                <div class="volume-control"><button id="mutePlayer" class="player-icon" aria-label="음소거"><svg class="volume-on" viewBox="0 0 24 24"><path d="M5 9v6h4l5 4V5L9 9H5Zm12 1a3 3 0 0 1 0 4m2-7a7 7 0 0 1 0 10"/></svg><svg class="volume-off" viewBox="0 0 24 24"><path d="M5 9v6h4l5 4V5L9 9H5Zm12 1 4 4m0-4-4 4"/></svg></button><input id="playerVolume" type="range" min="0" max="100" step="1" value="100" aria-label="볼륨"></div>
+                <button id="subtitleToggle" class="player-action" aria-label="자막 설정">CC</button>
+                <button id="miniPlayer" class="player-icon" aria-label="미니 플레이어"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><rect x="12" y="11" width="7" height="5" rx="1"/></svg></button>
+                <button id="fullscreenPlayer" class="player-icon" aria-label="전체 화면"><svg viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg></button>
+              </div>
+            </div>
+          </div>
+          <button id="lockPlayer" class="player-lock" aria-label="화면 잠금"><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></button>
+          <button id="unlockPlayer" class="player-unlock hidden" aria-label="잠금 해제"><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.5-2"/></svg></button>
+          <aside id="playerSettings" class="player-settings" aria-hidden="true" aria-label="플레이어 설정">
+            <div class="ps-head">
+              <span class="ps-badge"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M4.9 4.9l2.1 2.1m10 10 2.1 2.1M2 12h3m14 0h3M4.9 19.1 7 17M17 7l2.1-2.1"/></svg></span>
+              <div><b>플레이어 설정</b><small>재생 · 화질 · 자막</small></div>
+              <button id="closePlayerSettings" class="player-icon" aria-label="닫기"><svg viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></svg></button>
+            </div>
+            <div class="ps-body">
+              <label class="ps-switch"><span><b>다음 화 자동재생</b><small>영상이 끝나면 다음 화를 재생합니다</small></span><input id="psAutoPlay" type="checkbox"></label>
+              <label class="ps-switch"><span><b>OP/ED 스킵 버튼</b><small>재생 화면에 스킵 버튼을 표시합니다</small></span><input id="psSkipButton" type="checkbox"></label>
+              <label class="ps-switch"><span><b>OP/ED 자동 스킵</b><small>감지된 OP/ED 구간을 자동으로 건너뜁니다</small></span><input id="psAutoSkip" type="checkbox"></label>
+              <section class="ps-section">
+                <label class="ps-switch"><span><b>자막</b><small>표시 · 소스 · 트랙 · 크기 · 위치 · 싱크 · 스타일</small></span><input id="subtitleEnabled" type="checkbox" checked></label>
+                <p id="subtitleState" class="ps-state">자막을 찾는 중...</p>
+                <label class="ps-switch ps-small"><span><b>ASS 자막 효과</b><small id="assEffectsHint">원본 위치·색상·효과를 유지합니다</small></span><input id="assEffectsSheet" type="checkbox" checked></label>
+                <p class="ps-label">자막 소스</p>
+                <div id="psSubtitleSources" class="ps-chips"><button type="button" data-source="linkkf">Linkkf</button><button type="button" data-source="reanime">Re:Anime</button><button type="button" data-source="kairan">Kairan</button><button type="button" data-source="csora">Csora</button><button type="button" data-source="user">사용자</button></div>
+                <div id="subtitleTracks" class="sheet-tracks hidden"><div class="sheet-tracks-head"><b>Re:Anime 자막 트랙</b><span id="subtitleTrackState"></span></div><button id="reloadSubtitleTracks" type="button" class="sheet-button hidden">자막 트랙 다시 불러오기</button><div id="subtitleTrackList" class="track-list"></div></div>
+                <p class="ps-label">자막 크기 <span id="psSizeLabel">100%</span></p>
+                <input id="psSubtitleSize" type="range" min="50" max="180" step="5" value="100" aria-label="자막 크기">
+                <p class="ps-label">자막 위치 <span id="psPositionLabel">10%</span></p>
+                <input id="psSubtitlePosition" type="range" min="3" max="30" step="1" value="10" aria-label="자막 위치">
+                <p class="ps-label">자막 싱크 <span id="psSyncLabel">0ms</span></p>
+                <div class="ps-chips"><button type="button" data-ps-sync="-250">-250ms</button><button type="button" data-ps-sync="0">초기화</button><button type="button" data-ps-sync="250">+250ms</button></div>
+                <label class="ps-switch ps-small"><span><b>VTT 원본 스타일</b><small>원본 색상/스타일 유지</small></span><input id="psVttStyle" type="checkbox"></label>
+                <label class="ps-switch ps-small"><span><b>VTT 굵게</b><small>자막 글자를 굵게 표시</small></span><input id="psVttBold" type="checkbox"></label>
+                <p class="ps-label">VTT 테두리 <span id="psOutlineLabel">2.0px</span></p>
+                <input id="psVttOutline" type="range" min="0" max="6" step="0.5" value="2" aria-label="VTT 테두리">
+                <p class="ps-group">자막 파일 및 폰트</p>
+                <small class="ps-note">저장된 자막, 사용자 자막, ASS 폰트를 한 곳에서 관리합니다.</small>
+                <div class="ps-row"><span><b>커스텀 폰트</b><small id="psFontName">기본 폰트 사용 중</small></span><button id="psChooseFont" type="button">불러오기</button></div>
+                <div class="ps-row"><span><b>사용자 자막</b><small>ASS / SSA / SRT / VTT / SMI</small></span><button id="openSubtitle" type="button">추가</button></div>
+                <button id="findSubtitle" class="sheet-button" type="button">온라인 자막 다시 찾기</button>
+                <div id="savedSubtitles" class="sheet-tracks hidden"><div class="sheet-tracks-head"><b>이 회차의 저장 자막</b><span id="savedSubtitleCount"></span></div><div id="savedSubtitleList" class="track-list"></div></div>
+              </section>
+              <section id="psQuality" class="ps-section hidden"><p class="ps-group">화질</p><small class="ps-note">현재 스트림에서 선택 가능한 화질</small><div id="psQualityList" class="ps-chips"></div></section>
+              <div class="ps-row ps-speed"><span><b>재생 속도</b><small id="psSpeedLabel">1.00x</small></span><div id="psSpeeds" class="ps-chips"><button type="button" data-speed="0.75">0.75x</button><button type="button" data-speed="1">1.00x</button><button type="button" data-speed="1.25">1.25x</button><button type="button" data-speed="1.5">1.50x</button><button type="button" data-speed="2">2.00x</button></div></div>
+              <small id="psSeekNote" class="ps-note">뒤로/앞으로 버튼 이동: 10초</small>
+            </div>
+          </aside>
+          <div class="player-utilities" aria-hidden="true"><select id="speed"><option value=".1">0.1×</option><option value=".25">0.25×</option><option value=".5">0.5×</option><option value=".75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="1.75">1.75×</option><option value="2">2×</option></select><input id="streamUrl"><input id="skipTitle"><input id="skipEpisode" type="number" value="1"><button id="playUrl"></button><button id="openVideo"></button><button id="downloadVideo"></button><button id="loadSkip"></button></div>
         </div>
       </section>
 
@@ -114,9 +177,9 @@
             <div class="setting-block input-setting"><b>뒤로/앞으로 버튼 이동 시간</b><p>재생 화면 중앙 버튼과 방향키로 이동할 시간입니다.</p><label><input id="seekSeconds" type="number" min="1" max="120" value="10"><span>초</span></label></div>
             <div class="setting-block"><b>자막 소스</b><div class="choice-row" id="subtitleChoices"><button data-value="linkkf">Linkkf</button><button data-value="reanime">Re:Anime</button><button data-value="kairan">Kairan</button><button data-value="csora">Csora</button><button data-value="user">사용자 자막</button></div><select id="subtitleSource" class="setting-native"><option value="linkkf">Linkkf</option><option value="reanime">Re:Anime</option><option value="kairan">Kairan</option><option value="csora">Csora</option><option value="user">사용자 자막</option></select></div>
           </section>
-          <section class="settings-group"><h2>OP/ED 분석 데이터</h2><p>분석한 회차의 결과와 학습된 오디오 Fingerprint를 저장합니다.</p><label class="setting-switch"><span><b>OP/ED 오디오 자동 분석</b><small>AniSkip 타임스탬프가 없을 때 인접 회차 오디오를 비교해 구간을 찾습니다.</small></span><input id="opedAudioAnalysis" type="checkbox" checked></label><div class="button-row"><button id="clearOpEdAnalysis">분석 결과 삭제</button><button id="clearOpEdFingerprint">Fingerprint 삭제</button></div><button id="clearOpEdAll" class="filled-setting-button">분석 결과 + Fingerprint 모두 삭제</button></section>
+          <section class="settings-group"><h2>OP/ED 분석 데이터</h2><p>분석한 회차의 결과와 학습된 오디오 Fingerprint를 저장합니다.</p><label class="setting-switch"><span><b>오프라인 OP/ED 자동 분석</b><small>다운로드한 회차에 AniSkip 타임스탬프가 없을 때, 다운로드한 다른 회차의 오디오와 비교해 구간을 찾습니다.</small></span><input id="opedAudioAnalysis" type="checkbox" checked></label><div class="button-row"><button id="clearOpEdAnalysis">분석 결과 삭제</button><button id="clearOpEdFingerprint">Fingerprint 삭제</button></div><button id="clearOpEdAll" class="filled-setting-button">분석 결과 + Fingerprint 모두 삭제</button></section>
           <section class="settings-group update-group"><h2>앱 업데이트</h2><p id="updateStatus">GitHub 릴리스에서 새 버전을 확인합니다.</p><div class="button-row"><button id="checkUpdate">업데이트 확인</button><button id="applyUpdate" class="hidden">업데이트 다운로드</button></div></section>
-          <section class="settings-about"><b>Lilac Anime</b><span>Version 0.3.9</span></section>
+          <section class="settings-about"><b>Lilac Anime</b><span id="appVersion">Version</span></section>
         </div>
       </section>
     </main>
@@ -127,6 +190,7 @@
   <div id="toast" class="toast"></div>
   <script src="../node_modules/hls.js/dist/hls.min.js"></script>
   <script src="app.js"></script>
+  <script src="player.js"></script>
   <script type="module" src="ass-renderer.js"></script>
 </body>
 </html>

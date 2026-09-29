@@ -14,6 +14,9 @@ const { Updater } = require('./updater.cjs');
 const { SubtitleStore } = require('./subtitle-store.cjs');
 
 app.commandLine.appendSwitch('disable-blink-features','AutomationControlled');
+// Android BackgroundAudioService: playback continues while the window is hidden or minimized.
+app.commandLine.appendSwitch('disable-background-media-suspend');
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.setAppUserModelId('com.lilac.anime.desktop');
 let mainWindow = null;
 const singleInstanceLock = app.requestSingleInstanceLock();
@@ -71,7 +74,7 @@ async function androidOnlineSkipTimes({episode,anilistId,malId,duration}){
 
 async function api(pathname) {
   const response = await fetch(`${API}${pathname}`, {
-    headers: { 'User-Agent': 'LilacAnime-Desktop/0.3.9' }
+    headers: { 'User-Agent': `LilacAnime-Desktop/${app.getVersion()}` }
   });
   if (!response.ok) throw new Error(`API 요청 실패 (${response.status})`);
   return response.json();
@@ -393,7 +396,7 @@ function isKoreanTrack(track){return /kor|korean|한국/i.test(`${track.language
 // ASS/SSA keep their original file for libass (JASSUB) rendering; every format also gets a
 // WebVTT copy for the <track> fallback. Fonts extracted next to the subtitle are passed along.
 function subtitleResult(file,extra={}){
-  const isAss=/\.(ass|ssa)$/i.test(file),vtt=/\.srt$/i.test(file)?srtToVtt(file):isAss?assToVtt(file):file;
+  const isAss=/\.(ass|ssa)$/i.test(file),vtt=/\.srt$/i.test(file)?srtToVtt(file):/\.(smi|sami)$/i.test(file)?smiToVtt(file):isAss?assToVtt(file):file;
   const fonts=isAss?fs.readdirSync(path.dirname(file)).filter(name=>/\.(ttf|otf|ttc|woff2?)$/i.test(name)).map(name=>pathToFileURL(path.join(path.dirname(file),name)).href):[];
   return {...extra,path:vtt,url:pathToFileURL(vtt).href,assPath:isAss?file:null,assUrl:isAss?pathToFileURL(file).href:null,fonts};
 }
@@ -492,7 +495,22 @@ function fontFamilyName(data){
   }
   return fallback;
 }
-function srtToVtt(file){const text=fs.readFileSync(file,'utf8').replace(/^\uFEFF/,'').replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g,'$1.$2');const out=file.replace(/\.srt$/i,'.vtt');fs.writeFileSync(out,`WEBVTT\n\n${text}`,'utf8');return out}
+// Korean SRT/SMI files are often CP949 or UTF-16 rather than UTF-8.
+function readSubtitleText(file){
+  const data=fs.readFileSync(file);
+  if(data[0]===0xff&&data[1]===0xfe)return new TextDecoder('utf-16le').decode(data.subarray(2));
+  if(data[0]===0xfe&&data[1]===0xff)return new TextDecoder('utf-16be').decode(data.subarray(2));
+  try{return new TextDecoder('utf-8',{fatal:true}).decode(data).replace(/^\uFEFF/,'')}catch{return new TextDecoder('euc-kr').decode(data)}
+}
+// Android prepareSmiAsVttFile: each <SYNC Start=ms> cue lasts until the next SYNC (or 5 s for the last one).
+function smiToVtt(file){
+  const source=readSubtitleText(file),syncs=[...source.matchAll(/<sync\s+start\s*=\s*["']?(\d+)["']?[^>]*>([\s\S]*?)(?=<sync\s+start\s*=|$)/gi)];
+  const clean=raw=>raw.replace(/<br\s*\/?>/gi,'\n').replace(/<\/p\s*>/gi,'\n').replace(/<[^>]+>/g,'').replace(/&nbsp;/gi,' ').replace(/&amp;/gi,'&').replace(/&lt;/gi,'<').replace(/&gt;/gi,'>').replace(/&quot;/gi,'"').replace(/&#39;/g,"'").split('\n').map(line=>line.trim()).join('\n').trim();
+  const clock=ms=>{const h=Math.floor(ms/3600000),m=Math.floor(ms/60000)%60,sec=Math.floor(ms/1000)%60;return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}.${String(ms%1000).padStart(3,'0')}`};
+  const cues=syncs.map((match,index)=>{const start=Number(match[1]),end=syncs[index+1]?Number(syncs[index+1][1]):start+5000,text=clean(match[2]);return end>start&&text?`${index+1}\n${clock(start)} --> ${clock(end)}\n${text}`:null}).filter(Boolean);
+  const out=file.replace(/\.(smi|sami)$/i,'.vtt');fs.writeFileSync(out,`WEBVTT\n\n${cues.join('\n\n')}\n`,'utf8');return out;
+}
+function srtToVtt(file){const text=readSubtitleText(file).replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g,'$1.$2');const out=file.replace(/\.srt$/i,'.vtt');fs.writeFileSync(out,`WEBVTT\n\n${text}`,'utf8');return out}
 function assToVtt(file){const lines=fs.readFileSync(file,'utf8').replace(/^\uFEFF/,'').split(/\r?\n/);let inEvents=false,fields=[];const cues=[];const stamp=value=>{const match=String(value).trim().match(/(\d+):(\d{2}):(\d{2})[.](\d{1,3})/);if(!match)return null;return `${String(match[1]).padStart(2,'0')}:${match[2]}:${match[3]}.${match[4].padEnd(3,'0').slice(0,3)}`};for(const line of lines){if(/^\[Events]/i.test(line)){inEvents=true;continue}if(/^\[/.test(line)){inEvents=false;continue}if(!inEvents)continue;if(/^Format:/i.test(line)){fields=line.slice(line.indexOf(':')+1).split(',').map(x=>x.trim().toLowerCase());continue}if(!/^Dialogue:/i.test(line)||!fields.length)continue;const raw=line.slice(line.indexOf(':')+1),parts=raw.split(','),values=parts.slice(0,fields.length-1);values.push(parts.slice(fields.length-1).join(','));const row=Object.fromEntries(fields.map((field,index)=>[field,values[index]||'']));const start=stamp(row.start),end=stamp(row.end);if(!start||!end)continue;const text=(row.text||'').replace(/\{[^}]*}/g,'').replace(/\\[Nn]/g,'\n').replace(/\\h/g,' ').trim();if(text)cues.push(`${start} --> ${end}\n${text}`)}const out=file.replace(/\.(ass|ssa)$/i,'.vtt');fs.writeFileSync(out,`WEBVTT\n\n${cues.join('\n\n')}\n`,'utf8');return out}
 // Port of Android NamuWikiTitleResolver: NamuWiki search is a SPA, so the search page is
 // rendered in a hidden window and Korean document titles whose result card contains the
@@ -538,6 +556,14 @@ function namuCandidates(query,links){
     return {label,score};
   }).filter(Boolean).filter((item,index,array)=>array.findIndex(x=>x.label===item.label)===index).sort((a,b)=>b.score-a.score);
 }
+// Local audio analysis over downloaded episodes only (Android LinkkfChapterService.detectSkipSegmentsOffline).
+// Results are cached per title and episode.
+async function analyzeOfflineOpEd({title,episode,currentUrl,duration,candidates,status=()=>{}}){
+  const cacheFile=path.join(app.getPath('userData'),'oped-fingerprint-cache.json'),key=`v6-offline:${simpleTitle(title)}:${Number(episode)||1}`;let cache={};try{cache=JSON.parse(fs.readFileSync(cacheFile,'utf8'))}catch{}if(Array.isArray(cache[key])&&cache[key].length)return cache[key];
+  const segments=await detectOpEd({currentUrl,duration:Number(duration),currentHeaders:{},candidates,resolveEpisode:candidate=>Promise.resolve({url:candidate.localUrl,headers:{}}),status});
+  if(segments.length){cache[key]=segments;try{fs.writeFileSync(cacheFile,JSON.stringify(cache),'utf8')}catch{}}
+  return segments;
+}
 async function namuKoreanTitle(title,anime={}){
   const original=String(title||'').trim();if(!original||/[가-힣]/.test(original))return original;
   const key=`v2:${anime.id||original}`;if(namuTitleCache.has(key))return namuTitleCache.get(key);
@@ -562,15 +588,23 @@ async function namuKoreanTitle(title,anime={}){
   if(korean){disk[key]=korean;try{fs.writeFileSync(namuCacheFile(),JSON.stringify(disk),'utf8')}catch{}}
   return result;
 }
-// Blogger feeds return at most 150 posts per request, so the whole blog is paged in and cached for a day (as on Android).
+// Blogger feeds return at most 150 posts per request, so the whole blog is paged in. Like Android the index is
+// kept on disk for a day, a failed refresh falls back to the stale copy, and a miss refreshes once (below).
 const communityPostCache=new Map();
-async function communityPosts(blog){
-  const cached=communityPostCache.get(blog);if(cached&&Date.now()-cached.time<24*60*60*1000)return cached.posts;
-  const page=start=>providerFetch(`${blog}/feeds/posts/default?alt=json&max-results=150&start-index=${start}`,{json:true,referer:`${blog}/`});
-  const first=await page(1),total=Number(first.feed?.openSearch$totalResults?.$t)||0,rest=[];
-  for(let start=151;start<=total;start+=150)rest.push(page(start).catch(()=>null));
-  const posts=[first,...await Promise.all(rest)].flatMap(root=>root?.feed?.entry||[]).map(entry=>({title:entry.title?.$t||'',url:(entry.link||[]).find(x=>x.rel==='alternate')?.href||'',html:entry.content?.$t||entry.summary?.$t||''}));
-  communityPostCache.set(blog,{time:Date.now(),posts});return posts;
+async function communityPosts(blog,{force=false}={}){
+  const file=path.join(app.getPath('userData'),`community-${new URL(blog).hostname.split('.')[0]}.json`);
+  let cached=communityPostCache.get(blog);if(!cached){try{cached=JSON.parse(fs.readFileSync(file,'utf8'))}catch{cached=null}}
+  const age=cached?.posts?.length?Date.now()-cached.time:Infinity;
+  if(age<(force?10*60*1000:24*60*60*1000)){communityPostCache.set(blog,cached);return cached.posts}
+  try{
+    const page=start=>providerFetch(`${blog}/feeds/posts/default?alt=json&max-results=150&start-index=${start}`,{json:true,referer:`${blog}/`});
+    const first=await page(1),total=Number(first.feed?.openSearch$totalResults?.$t)||0,rest=[];
+    for(let start=151;start<=total;start+=150)rest.push(page(start).catch(()=>null));
+    const posts=[first,...await Promise.all(rest)].flatMap(root=>root?.feed?.entry||[]).map(entry=>({title:entry.title?.$t||'',url:(entry.link||[]).find(x=>x.rel==='alternate')?.href||'',html:entry.content?.$t||entry.summary?.$t||''}));
+    if(!posts.length)throw new Error('empty feed');
+    const fresh={time:Date.now(),posts};communityPostCache.set(blog,fresh);try{fs.writeFileSync(file,JSON.stringify(fresh))}catch{}
+    return posts;
+  }catch(error){if(cached?.posts?.length){communityPostCache.set(blog,cached);return cached.posts}throw error}
 }
 // Episode numbers written as "12화", "9, 10화", "1 ~ 12화" or "EP 3". Bare digits ("2기", "무직전생3") are not episodes.
 function communityEpisodes(text=''){
@@ -585,10 +619,30 @@ function communitySeason(text=''){
   return m?Number(m[1]||m[2]||m[3]||m[4]):null;
 }
 // Posts often drop the "~부제~" part ("무직전생3"), so a distinctive shared prefix of 4+ Hangul counts as a match too.
+// Android HangulSimilarityMatcher: edit distance where two syllables differing only in one jamo cost
+// 0.3-0.4, so spelling variants ("카구야"/"가구야") still count as the same title.
+function hangulEditSimilarity(first,second){
+  const clean=value=>String(value).toLowerCase().normalize('NFC').replace(/[^가-힣a-z0-9\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/gu,'');
+  const a=[...clean(first)],b=[...clean(second)];if(!a.length||!b.length)return 0;if(a.join('')===b.join(''))return 1;
+  const jamo=c=>{const code=c.codePointAt(0)-0xac00;return code>=0&&code<11172?[Math.floor(code/588),Math.floor(code/28)%21,code%28]:null};
+  const cost=(x,y)=>{if(x===y)return 0;const p=jamo(x),q=jamo(y);return p&&q?(p[0]!==q[0]?.4:0)+(p[1]!==q[1]?.3:0)+(p[2]!==q[2]?.3:0):1};
+  let previous=Array.from({length:b.length+1},(_,i)=>i);
+  for(let i=0;i<a.length;i++){const current=[i+1];for(let j=0;j<b.length;j++)current[j+1]=Math.min(previous[j+1]+1,current[j]+1,previous[j]+cost(a[i],b[j]));previous=current}
+  return Math.max(0,1-previous[b.length]/Math.max(a.length,b.length));
+}
+// Android languageAwareSimilarity: mixed Korean/English titles are also compared one script at a time.
+function scriptRuns(value){return (String(value).normalize('NFC').match(/[가-힣]+(?:\s+[가-힣]+)*|[a-z0-9]+(?:\s+[a-z0-9]+)*/gi)||[]).map(run=>run.trim()).filter(run=>run.replace(/\s/g,'').length>=2)}
+// Posts often drop the "~부제~" part ("무직전생3"), so a distinctive shared prefix of 4+ Hangul counts as a match too.
 function communityScore(target,candidate){
   const bare=value=>value.replace(/[~〜～][^~〜～]*[~〜～]/g,' ').replace(/\s+/g,' ').trim(),score=Math.max(titleScore(target,candidate),titleScore(bare(target),bare(candidate)));
   const a=titleKey(bare(target)),b=titleKey(bare(candidate)),short=a.length<b.length?a:b,long=short===a?b:a;
-  return /^[가-힣]{4,}$/.test(short)&&long.startsWith(short)?Math.max(score,.6):score;
+  let best=/^[가-힣]{4,}$/.test(short)&&long.startsWith(short)?Math.max(score,.6):score;
+  // Edit distance only settles near-identical spellings; lower values also fit unrelated titles of similar length.
+  const variant=value=>value.replace(/카구야/g,'가구야');
+  // Android also compares Korean/English runs separately, but a shared franchise name ("BanG Dream!") then
+  // matches every season, so only whole titles are compared here.
+  const edit=hangulEditSimilarity(variant(a),variant(b));if(edit>=.75)best=Math.max(best,edit);
+  return best;
 }
 // Older Kairan titles end in a bare episode number ("히로아카7 20", "... 12(완)").
 const COMMUNITY_TRAILING_EPISODE=/(?<!season|시즌|part|파트|vol\.?|제)\s+(\d{1,3})\s*(?:\((?:끝|완)\))?\s*(?:자막)?\s*$/i;
@@ -618,7 +672,7 @@ function communityFileMatches(file,episode){
   const name=path.basename(file).normalize('NFKC').replace(/\.[^.]+$/,'').replace(/\b(?:s\d+|season\s*\d+|\d{3,4}p|x26[45]|h\.?26[45]|(?:19|20)\d{2})\b|\d+\s*기/gi,' ');
   return new RegExp(`(?:^|[^0-9])(?:e|ep|episode)?\\s*0*${episode}(?:v\\d)?(?:[^0-9]|$)`,'i').test(name);
 }
-const COMMUNITY_FILE=/\.(ass|ssa|srt|vtt|ttf|otf|ttc)$/i;
+const COMMUNITY_FILE=/\.(ass|ssa|srt|vtt|smi|ttf|otf|ttc)$/i;
 function communityFileName(name){return path.basename(String(name).replace(/\\/g,'/')).normalize('NFC').replace(/[^\p{L}\p{N}._ -]/gu,'_')}
 // Large Drive files answer with a "virus scan warning" page (always when a foreign Referer is sent);
 // its form holds the real download URL.
@@ -649,23 +703,24 @@ async function extractCommunityArchive(buffer,dir){
     return files;
   }finally{fs.rmSync(work,{recursive:true,force:true})}
 }
-function communitySubtitleExt(buffer){const head=buffer.slice(0,4096).toString('utf8').replace(/^\uFEFF/,'');return /^WEBVTT/.test(head)?'.vtt':/\[Script Info\]/i.test(head)?'.ass':/\d+:\d{2}:\d{2}[,.]\d{3}\s*-->/.test(head)?'.srt':null}
+function communitySubtitleExt(buffer){const head=buffer.slice(0,4096).toString('utf8').replace(/^\uFEFF/,'');return /^WEBVTT/.test(head)?'.vtt':/\[Script Info\]/i.test(head)?'.ass':/<sami[\s>]/i.test(head)?'.smi':/\d+:\d{2}:\d{2}[,.]\d{3}\s*-->/.test(head)?'.srt':null}
 async function findCommunitySubtitle(source,title,episode,{originalTitle=''}={}){
   const blog=source==='kairan'?'https://kairan03.blogspot.com':'https://csora556.blogspot.com',label=source==='kairan'?'Kairan':'Csora';
   const season=communitySeason(title)??communitySeason(originalTitle)??1,wanted=communityTitle(title);
-  const matches=(await communityPosts(blog)).filter(post=>!/작업\s*중|하차/.test(post.title)&&(communitySeason(communityPostTitle(post.title))??1)===season)
-    .map(post=>({post,score:communityScore(wanted,communityPostTitle(post.title))})).filter(x=>x.score>=.5)
+  const rank=posts=>posts.filter(post=>!/작업\s*중|하차/.test(post.title)&&(communitySeason(communityPostTitle(post.title))??1)===season)
+    .map(post=>({post,score:communityScore(wanted,communityPostTitle(post.title))})).filter(x=>x.score>=.52) // Android MIN_SIMILARITY
     .map(x=>({...x,...communityLinks(x.post,episode)})).filter(x=>x.links.length)
     // Per-episode links beat bundles of a similarly named post; newer posts come first in the feed.
     .sort((a,b)=>Math.round((b.score-a.score)*20)||Number(Boolean(a.strict))-Number(Boolean(b.strict)));
-  const match=matches[0];if(!match)throw new Error(`${label} 자막 게시물을 찾지 못했습니다.`);
+  // A cached index can predate the episode (Csora adds links to existing posts), so a miss refreshes once.
+  let match=rank(await communityPosts(blog))[0];if(!match)match=rank(await communityPosts(blog,{force:true}))[0];if(!match)throw new Error(`${label} 자막 게시물을 찾지 못했습니다.`);
   const dir=path.join(app.getPath('userData'),'subtitles',simpleTitle(title).replace(/\s+/g,'_')||'anime',String(episode));fs.mkdirSync(dir,{recursive:true});const candidates=[];
   for(const original of match.links){
     try{
       const id=driveId(original),url=id?`https://drive.usercontent.google.com/download?id=${encodeURIComponent(id)}&export=download&confirm=t`:original,buffer=await downloadDriveBuffer(url,id?undefined:match.post.url);
       if(buffer.length<16||buffer.length>300*1024*1024)continue;
       const unpacked=await extractCommunityArchive(buffer,dir);
-      if(unpacked){candidates.push(...unpacked.filter(file=>/\.(ass|ssa|srt|vtt)$/i.test(file)));continue}
+      if(unpacked){candidates.push(...unpacked.filter(file=>/\.(ass|ssa|srt|vtt|smi)$/i.test(file)));continue}
       const ext=communitySubtitleExt(buffer);if(!ext)continue;
       const out=path.join(dir,`${source}_${Date.now()}_${candidates.length}${ext}`);fs.writeFileSync(out,buffer);candidates.push(out);
     }catch{/* Try remaining links. */}
@@ -695,7 +750,9 @@ function createWindow() {
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      // Timers drive auto skip and autoplay; keep them running in the background.
+      backgroundThrottling: false
     }
   });
   mainWindow = win;
@@ -720,7 +777,15 @@ app.whenReady().then(async () => {
     }
     return null;
   };
-  downloadManager=new DownloadManager({app,findSubtitle:findDownloadSubtitle,resolveEpisode:resolveProviderEpisode,resolveLinkkf:async episode=>{
+  // Android LilacDownloadService: AniSkip timestamps are saved with the download (one retry after 500 ms);
+  // without them the local analyzer runs over the anime's other downloaded episodes.
+  const findDownloadSkips=async job=>{
+    const anilistId=job.episode?.anilistId||job.anime?.anilistId||null,malId=job.episode?.malId||job.anime?.malId||null,lookup=()=>androidOnlineSkipTimes({episode:job.episodeNumber,anilistId,malId,duration:job.duration||0}).catch(()=>[]);
+    let segments=await lookup();if(!segments.length){await new Promise(resolve=>setTimeout(resolve,500));segments=await lookup()}
+    return segments;
+  };
+  const analyzeDownload=async(job,siblings)=>analyzeOfflineOpEd({title:job.title,episode:job.episodeNumber,currentUrl:pathToFileURL(job.filePath).href,duration:job.duration,candidates:siblings.map(item=>({...item.episode,number:item.episodeNumber,localUrl:pathToFileURL(item.filePath).href}))});
+  downloadManager=new DownloadManager({app,findSubtitle:findDownloadSubtitle,findSkips:findDownloadSkips,analyzeOpEd:analyzeDownload,resolveEpisode:resolveProviderEpisode,resolveLinkkf:async episode=>{
     let playerUrl='';try{const root=await linkkfFetch(`https://emdlinkkf.5imgdarr.top/apilink2.php?data=${encodeURIComponent(episode.token)}`);const links=Array.isArray(root.data)?root.data:[];playerUrl=(links.find(x=>String(x.server).toUpperCase()==='NR-HD')||links[0]||{}).link||'';}catch{}
     if(!playerUrl)playerUrl=`${LINKKF_WEB}/up/${encodeURIComponent(episode.postId)}/watch/?slug=${encodeURIComponent(episode.slug)}`;return resolveStreamPage(playerUrl,`${LINKKF_WEB}/`,15000);
   },broadcast});
@@ -843,11 +908,15 @@ app.whenReady().then(async () => {
   ipcMain.handle('downloads:remove',(_,id)=>downloadManager.remove(id));
   ipcMain.handle('downloads:play',(_,id)=>downloadManager.localPlayback(id));
   ipcMain.handle('downloads:open-folder',()=>shell.openPath(downloadManager.root));
+  // Android OpEdSkipResolver: online playback uses AniSkip only; a downloaded episode uses the AniSkip
+  // timestamps saved with the download, then the local audio analyzer over other downloaded episodes.
   ipcMain.handle('oped:get', async (event, request = {}) => {
-    const {title='',episode,duration,currentUrl,currentHeaders={},candidates=[],anilistId=null,malId=null,audioAnalysis=true}=request;if(!/^(https?|file):/i.test(currentUrl||'')||!Number.isFinite(Number(duration)))return [];
-    const cacheFile=path.join(app.getPath('userData'),'oped-fingerprint-cache.json'),key=`v5-android:${simpleTitle(title)}:${Number(episode)||1}`;let cache={};try{cache=JSON.parse(fs.readFileSync(cacheFile,'utf8'))}catch{}if(Array.isArray(cache[key])&&cache[key].length)return cache[key];
-    let segments=[];try{event.sender.send('oped:status','Android 온라인 타임스탬프 확인 중');segments=await androidOnlineSkipTimes({episode,anilistId,malId,duration})}catch{/* Audio analysis remains the offline fallback, matching Android. */}
-    if(!segments.length&&audioAnalysis!==false)segments=await detectOpEd({currentUrl,duration:Number(duration),currentHeaders,candidates,resolveEpisode:candidate=>candidate.localUrl?Promise.resolve({url:candidate.localUrl,headers:{}}):resolveProviderEpisode(candidate),status:message=>event.sender.send('oped:status',message)});if(segments.length){cache[key]=segments;try{fs.writeFileSync(cacheFile,JSON.stringify(cache),'utf8')}catch{}}return segments;
+    const {title='',episode,duration,currentUrl,candidates=[],anilistId=null,malId=null,audioAnalysis=true,offline=false,jobId=null}=request;if(!/^(https?|file):/i.test(currentUrl||'')||!Number.isFinite(Number(duration)))return [];
+    const status=message=>event.sender.send('oped:status',message);
+    if(!offline){status('AniSkip 타임스탬프 확인 중');try{return await androidOnlineSkipTimes({episode,anilistId,malId,duration})}catch{return []}}
+    const saved=downloadManager.jobs.find(job=>job.id===jobId)?.skipSegments;if(Array.isArray(saved)&&saved.length)return saved;
+    if(audioAnalysis===false)return [];
+    return analyzeOfflineOpEd({title,episode,currentUrl,duration,candidates:candidates.filter(candidate=>candidate.localUrl),status});
   });
   ipcMain.handle('oped:clear', async () => {const cacheFile=path.join(app.getPath('userData'),'oped-fingerprint-cache.json');try{fs.unlinkSync(cacheFile)}catch(error){if(error.code!=='ENOENT')throw error}return true;});
   ipcMain.handle('media:download', async (event, url, suggestedName = 'episode.mp4') => {
@@ -890,7 +959,7 @@ app.whenReady().then(async () => {
     const result = await dialog.showOpenDialog({
       title: '자막 선택',
       properties: ['openFile'],
-      filters: [{ name: 'Subtitle', extensions: ['vtt', 'srt', 'ass', 'ssa'] }]
+      filters: [{ name: 'Subtitle', extensions: ['vtt', 'srt', 'ass', 'ssa', 'smi', 'sami'] }]
     });
     if(result.canceled)return null;return subtitleResult(result.filePaths[0]);
   });
