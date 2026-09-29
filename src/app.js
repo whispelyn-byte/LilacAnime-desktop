@@ -286,7 +286,7 @@ function assEffectsEnabled(){return localStorage.getItem('assEffects')!=='false'
 // 기본 자막 폰트 (기본체 / 나눔고딕 / 명조체 or a font file) as {family, data}, shared by VTT and ASS.
 function subtitleFontData(){subtitleFontPromise ||= window.lilac.defaultSubtitleFont(localStorage.getItem('subtitleFont')||'기본체',localStorage.getItem('subtitleFontPath')||'').then(font=>font?.data?{family:font.family,data:new Uint8Array(font.data)}:null).catch(()=>null);return subtitleFontPromise}
 function assRendererReady(){return window.LilacAss?Promise.resolve(window.LilacAss):new Promise(resolve=>window.addEventListener('lilac-ass-ready',()=>resolve(window.LilacAss),{once:true}))}
-function clearSubtitle(){currentSubtitle=null;$('#video').querySelectorAll('track').forEach(x=>x.remove());window.LilacAss?.destroy();$('#subtitleToggle').classList.remove('active')}
+function clearSubtitle(){currentSubtitle=null;$('#video').querySelectorAll('track').forEach(x=>x.remove());window.LilacAss?.destroy()}
 function setVttVisible(){const track=$('#video').textTracks[0];if(track)track.mode=$('#subtitleEnabled').checked&&!currentSubtitle?.assRendering?'showing':'hidden'}
 async function renderAssSubtitle(){
   const subtitle=currentSubtitle;if(!subtitle?.assUrl)return;
@@ -301,7 +301,7 @@ async function renderAssSubtitle(){
 function attachSubtitle(src,label='자막',options={}){
   const video=$('#video');clearSubtitle();const subtitle={src,label,...options,assRendering:false};currentSubtitle=subtitle;
   const track=document.createElement('track');track.kind='subtitles';track.label=label;track.srclang='ko';track.src=src;track.default=true;video.append(track);
-  track.addEventListener('load',()=>{if(currentSubtitle!==subtitle)return;applyVttLayout();setVttVisible();$('#subtitleState').textContent=`${label} 적용됨${subtitle.assUrl&&assEffectsEnabled()?' · ASS 효과':''}`;$('#subtitleToggle').classList.add('active');toast(`${label}을 적용했습니다.`)});
+  track.addEventListener('load',()=>{if(currentSubtitle!==subtitle)return;applyVttLayout();setVttVisible();$('#subtitleState').textContent=`${label} 적용됨${subtitle.assUrl&&assEffectsEnabled()?' · ASS 효과':''}`;toast(`${label}을 적용했습니다.`)});
   track.addEventListener('error',()=>{if(currentSubtitle===subtitle)$('#subtitleState').textContent='자막 파일을 불러오지 못했습니다.'});
   renderAssSubtitle();
   if(options.source&&options.path&&!options.saved)rememberSubtitle(subtitle);else renderSavedSubtitles();
@@ -462,7 +462,7 @@ $('#forwardPlayer').onclick=()=>{const seconds=Number(localStorage.getItem('seek
 $('#playerSeek').oninput=e=>{const video=$('#video'),duration=playbackDuration();if(duration)video.currentTime=duration*Number(e.target.value)/1000};
 $('#fullscreenPlayer').onclick=async()=>{try{playerWindowFullscreen=!playerWindowFullscreen;setPlayerWindowed();await window.lilac.setPlayerFullscreen(playerWindowFullscreen)}catch(e){toast(`전체 화면 오류: ${e.message}`)}};
 $('#playerBack').onclick=async()=>{playbackRequestId++;window.LilacAss?.destroy();playerWindowFullscreen=false;setPlayerWindowed();setPlayerLocked(false);openPlayerSettings(false);await window.lilac.setPlayerFullscreen(false);$('#video').pause();renderContinue();renderHistory();switchView(viewBeforePlayer)};
-$('#subtitleEnabled').onchange=e=>{const track=$('#video').textTracks[0];setVttVisible();window.LilacAss?.setVisible(e.target.checked);$('#subtitleToggle').classList.toggle('active',e.target.checked&&!!track)};
+$('#subtitleEnabled').onchange=e=>{const track=$('#video').textTracks[0];setVttVisible();window.LilacAss?.setVisible(e.target.checked)};
 ['mousedown','touchstart'].forEach(type=>$('#immersivePlayer').addEventListener(type,event=>{if(event.target!==$('#video'))showPlayerControls()},{passive:true}));
 $('#video').addEventListener('click',()=>{const player=$('#immersivePlayer');if(playerLocked){flashUnlockButton();return}if(playerSettingsOpen()){openPlayerSettings(false);return}if(player.classList.contains('controls-visible')){clearTimeout(controlsTimer);player.classList.remove('controls-visible')}else showPlayerControls()});
 $('#downloadVideo').onclick=async()=>{const url=$('#streamUrl').value.trim();if(!/^https?:\/\//i.test(url)){toast('다운로드 가능한 영상 URL이 없습니다.');return;}$('#downloadStatus').textContent='저장 위치를 선택하세요.';try{const saved=await window.lilac.downloadMedia(url,`${($('#playerTitle').textContent||'episode').replace(/[<>:"/\\|?*]/g,'_')}.mp4`);$('#downloadStatus').textContent=saved?'다운로드 완료':'다운로드 취소';}catch(e){$('#downloadStatus').textContent=`다운로드 실패: ${e.message}`}};

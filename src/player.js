@@ -285,7 +285,6 @@ makeRemoteFocusable();
 // --- wiring ------------------------------------------------------------------------------------
 $('#playerSettingsButton').onclick = () => openPlayerSettings(!playerSettingsOpen());
 $('#closePlayerSettings').onclick = () => { openPlayerSettings(false); $('#playerSettingsButton').focus(); };
-$('#subtitleToggle').onclick = () => { const open = !playerSettingsOpen(); openPlayerSettings(open, open ? $('#subtitleEnabled').closest('.ps-section') : null); };
 $('#psAutoPlay').onchange = event => localStorage.setItem('playerAutoPlay', String(event.target.checked));
 $('#psSkipButton').onchange = event => { localStorage.setItem('playerSkipButton', String(event.target.checked)); updateSkipState($('#video')); };
 $('#psAutoSkip').onchange = event => localStorage.setItem('playerAutoSkip', String(event.target.checked));
