@@ -564,6 +564,44 @@ async function analyzeOfflineOpEd({title,episode,currentUrl,duration,candidates,
   if(segments.length){cache[key]=segments;try{fs.writeFileSync(cacheFile,JSON.stringify(cache),'utf8')}catch{}}
   return segments;
 }
+// Korean titles for Re:ANIME entries (Kairan/Csora posts are Korean). AniList sometimes lists a Korean
+// synonym and Wikidata usually has the series' Korean label (via the MAL or AniList ID); NamuWiki search
+// is the last resort. Seasons come from the original title, so a series-level name is enough.
+const koreanTitleCache=new Map();
+async function koreanTitleCandidates(title,anime={}){
+  const original=String(title||'').trim();if(!original||/[가-힣]/.test(original))return original?[original]:[];
+  const key=`v3:${anime.anilistId||anime.malId||anime.id||original}`;if(koreanTitleCache.has(key))return koreanTitleCache.get(key);
+  const disk=readNamuCache();if(Array.isArray(disk[key])&&disk[key].length){koreanTitleCache.set(key,disk[key]);return disk[key]}
+  const found=[],add=value=>{const clean=String(value||'').replace(/\((?:애니메이션|TV|애니)[^)]*\)/g,'').replace(/\s+/g,' ').trim();if(/[가-힣]{2}/.test(clean)&&!found.includes(clean))found.push(clean)};
+  let anilistId=Number(anime.anilistId)||null,malId=Number(anime.malId)||null;
+  try{
+    // Without an ID, search and prefer an exact title match, then a TV series: the top hit can be a
+    // spin-off ("Frieren" returns the mini anime first).
+    const query=`query($id:Int,$search:String){Page(perPage:5){media(id:$id,search:$search,type:ANIME,sort:SEARCH_MATCH){id idMal format synonyms title{romaji english}}}}`;
+    const response=await fetch('https://graphql.anilist.co',{signal:AbortSignal.timeout(25000),method:'POST',headers:{Accept:'application/json','Content-Type':'application/json','User-Agent':'LilacAnime Android'},body:JSON.stringify({query,variables:anilistId?{id:anilistId}:{search:original.replace(/…/g,'...')}})});
+    const list=response.ok?(await response.json())?.data?.Page?.media||[]:[],same=value=>namuCompareKey(value||'')===namuCompareKey(original);
+    const media=list.find(item=>same(item.title?.english)||same(item.title?.romaji))||list.find(item=>item.format==='TV')||list[0];
+    if(media){anilistId=anilistId||media.id;malId=malId||media.idMal;(media.synonyms||[]).forEach(add)}
+  }catch{/* Wikidata below */}
+  if(malId||anilistId){
+    try{
+      const where=[malId&&`{?item wdt:P4086 "${malId}"}`,anilistId&&`{?item wdt:P8729 "${anilistId}"}`].filter(Boolean).join(' UNION ');
+      const sparql=`SELECT ?ko ?seriesKo WHERE { ${where} OPTIONAL{?item rdfs:label ?ko FILTER(lang(?ko)="ko")} OPTIONAL{?item wdt:P179 ?series. ?series rdfs:label ?seriesKo FILTER(lang(?seriesKo)="ko")} } LIMIT 5`;
+      const response=await fetch(`https://query.wikidata.org/sparql?format=json&query=${encodeURIComponent(sparql)}`,{signal:AbortSignal.timeout(25000),headers:{Accept:'application/sparql-results+json','User-Agent':`LilacAnime-Desktop/${app.getVersion()} (https://github.com/whispelyn-byte/LilacAnime-desktop)`}});
+      if(response.ok)for(const row of (await response.json())?.results?.bindings||[]){add(row.ko?.value);add(row.seriesKo?.value)}
+    }catch{/* NamuWiki below */}
+  }
+  if(!found.length){const namu=await namuKoreanTitle(original,anime).catch(()=>original);if(namu!==original)add(namu)}
+  const result=found.length?found:[original];koreanTitleCache.set(key,result);
+  if(found.length){disk[key]=found;try{fs.writeFileSync(namuCacheFile(),JSON.stringify(disk),'utf8')}catch{}}
+  return result;
+}
+// Tries each Korean title until a Kairan/Csora post matches.
+async function findCommunitySubtitleByTitles(source,titles,episode,options){
+  let lastError=null;
+  for(const title of titles){try{return {...await findCommunitySubtitle(source,title,episode,options),searchTitle:title}}catch(error){lastError=error}}
+  throw lastError||new Error('자막 게시물을 찾지 못했습니다.');
+}
 async function namuKoreanTitle(title,anime={}){
   const original=String(title||'').trim();if(!original||/[가-힣]/.test(original))return original;
   const key=`v2:${anime.id||original}`;if(namuTitleCache.has(key))return namuTitleCache.get(key);
@@ -771,9 +809,9 @@ app.whenReady().then(async () => {
     const savedPreferred=saved.find(entry=>entry.source===preferred);if(savedPreferred)return fromSaved(savedPreferred);
     if(stream?.subtitleUrl)return {stream:true};
     if(saved[0])return fromSaved(saved[0]);
-    const anime=job.anime||{},title=job.title||anime.title||'',searchTitle=anime.provider==='reanime'?await namuKoreanTitle(title,anime).catch(()=>title):title;
+    const anime=job.anime||{},title=job.title||anime.title||'',titles=anime.provider==='reanime'?await koreanTitleCandidates(title,anime).catch(()=>[title]):[title];
     for(const source of ['kairan','csora'].includes(preferred)?[preferred,...['kairan','csora'].filter(x=>x!==preferred)]:['kairan','csora']){
-      try{const result=await findCommunitySubtitle(source,searchTitle,Number(job.episodeNumber)||1,{originalTitle:anime.title||''});return {path:result.path,assPath:result.assPath,fonts:result.fonts,label:`${source==='kairan'?'Kairan':'Csora'} 자막`}}catch{/* next source */}
+      try{const result=await findCommunitySubtitleByTitles(source,titles,Number(job.episodeNumber)||1,{originalTitle:anime.title||''});return {path:result.path,assPath:result.assPath,fonts:result.fonts,label:`${source==='kairan'?'Kairan':'Csora'} 자막`}}catch{/* next source */}
     }
     return null;
   };
@@ -937,9 +975,9 @@ app.whenReady().then(async () => {
   });
   // The sandboxed preload has no url.pathToFileURL, so file URLs are built here.
   ipcMain.handle('subtitle:find', async (_, source, title, episode, anime = null) => {
-    // Kairan/Csora posts use Korean titles; Re:ANIME titles are resolved through NamuWiki first.
-    const searchTitle = anime?.provider === 'reanime' ? await namuKoreanTitle(title, anime) : title;
-    return { ...await findCommunitySubtitle(source, searchTitle, Number(episode), { originalTitle: anime?.title || '' }), searchTitle };
+    // Kairan/Csora posts use Korean titles; Re:ANIME titles are resolved to Korean first (AniList, Wikidata, NamuWiki).
+    const titles = anime?.provider === 'reanime' ? await koreanTitleCandidates(title, anime).catch(() => [title]) : [title];
+    return findCommunitySubtitleByTitles(source, titles, Number(episode), { originalTitle: anime?.title || '' });
   });
   ipcMain.handle('mpv:status', () => ({available:Boolean(findExecutable('mpv')),path:findExecutable('mpv')}));
   ipcMain.handle('player:fullscreen', (event,enabled) => {const win=BrowserWindow.fromWebContents(event.sender);if(win)win.setFullScreen(Boolean(enabled));return Boolean(enabled)});

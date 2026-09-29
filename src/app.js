@@ -335,7 +335,7 @@ async function ensureSubtitle(stream,title,episode,{skipSaved=false}={}){
   for(const source of sources){try{const result=await window.lilac.findSubtitle(source,title,episode,subtitleSearchAnime());if(superseded())return false;currentSubtitlePath=result.path;attachSubtitle(result.url,`${source==='kairan'?'Kairan':'Csora'} 자막`,{path:result.path,assUrl:result.assUrl,assPath:result.assPath,fonts:result.fonts,source});return true}catch{}}
   if(superseded())return false;$('#subtitleState').textContent=currentPlaybackContext.episode?.provider==='reanime'?'한국어 자막이 없습니다. 아래 Re:Anime 트랙에서 다른 언어를 고르거나 내 자막 파일을 열 수 있어요.':'자동으로 찾은 자막이 없습니다. 내 자막 파일을 열 수 있어요.';return false;
 }
-function subtitleSearchAnime(){const anime=currentPlaybackContext.anime;return anime?{provider:anime.provider,id:anime.id,title:anime.title||anime.title_english||''}:null}
+function subtitleSearchAnime(){const anime=currentPlaybackContext.anime;return anime?{provider:anime.provider,id:anime.id,title:anime.title||anime.title_english||'',anilistId:anime.anilistId||null,malId:anime.malId||null}:null}
 function syncAssEffectsUI(){$('#assEffectsSheet').checked=assEffectsEnabled()}
 function syncSubtitleFontUI(){const choice=localStorage.getItem('subtitleFont')||'기본체',file=localStorage.getItem('subtitleFontPath')||'';$$('#fontChoices button').forEach(button=>button.classList.toggle('selected',!file&&button.dataset.value===choice));$('#subtitleFontFile').textContent=file?`사용자 폰트: ${file.split(/[\\/]/).pop()}`:'폰트 파일을 지정하면 선택한 폰트 대신 사용합니다.';$('#resetSubtitleFont').classList.toggle('hidden',!file)}
 async function subtitleFontChanged(){subtitleFontPromise=null;syncSubtitleFontUI();await applyCueStyle();if(currentSubtitle?.assUrl)renderAssSubtitle()}
