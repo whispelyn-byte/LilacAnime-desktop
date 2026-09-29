@@ -632,7 +632,7 @@ async function koreanTitleCandidates(title,anime={}){
 // Tries each Korean title until a Kairan/Csora post matches.
 async function findCommunitySubtitleByTitles(source,titles,episode,options){
   let lastError=null;
-  for(const title of titles){try{return {...await findCommunitySubtitle(source,title,episode,options),searchTitle:title}}catch(error){lastError=error}}
+  for(const title of titles){try{return {...await (source==='anissia'?findAnissiaSubtitle(title,episode,options):findCommunitySubtitle(source,title,episode,options)),searchTitle:title}}catch(error){lastError=error}}
   throw lastError||new Error('자막 게시물을 찾지 못했습니다.');
 }
 // Blogger feeds return at most 150 posts per request, so the whole blog is paged in. Like Android the index is
@@ -750,16 +750,25 @@ async function extractCommunityArchive(buffer,dir){
   }finally{fs.rmSync(work,{recursive:true,force:true})}
 }
 function communitySubtitleExt(buffer){const head=buffer.slice(0,4096).toString('utf8').replace(/^\uFEFF/,'');return /^WEBVTT/.test(head)?'.vtt':/\[Script Info\]/i.test(head)?'.ass':/<sami[\s>]/i.test(head)?'.smi':/\d+:\d{2}:\d{2}[,.]\d{3}\s*-->/.test(head)?'.srt':null}
-async function findCommunitySubtitle(source,title,episode,{originalTitle=''}={}){
-  const blog=source==='kairan'?'https://kairan03.blogspot.com':'https://csora556.blogspot.com',label=source==='kairan'?'Kairan':'Csora';
+// Posts of one blog ranked for a title and episode (best first).
+function rankCommunityPosts(posts,title,episode,originalTitle=''){
   const season=communitySeason(title)??communitySeason(originalTitle)??1,wanted=communityTitle(title);
-  const rank=posts=>posts.filter(post=>!/작업\s*중|하차/.test(post.title)&&(communitySeason(communityPostTitle(post.title))??1)===season)
+  return posts.filter(post=>!/작업\s*중|하차/.test(post.title)&&(communitySeason(communityPostTitle(post.title))??1)===season)
     .map(post=>({post,score:communityScore(wanted,communityPostTitle(post.title))})).filter(x=>x.score>=.52) // Android MIN_SIMILARITY
     .map(x=>({...x,...communityLinks(x.post,episode)})).filter(x=>x.links.length)
     // Per-episode links beat bundles of a similarly named post; newer posts come first in the feed.
     .sort((a,b)=>Math.round((b.score-a.score)*20)||Number(Boolean(a.strict))-Number(Boolean(b.strict)));
+}
+async function findCommunitySubtitle(source,title,episode,{originalTitle=''}={}){
+  const blog=source==='kairan'?'https://kairan03.blogspot.com':'https://csora556.blogspot.com',label=source==='kairan'?'Kairan':'Csora';
   // A cached index can predate the episode (Csora adds links to existing posts), so a miss refreshes once.
-  let match=rank(await communityPosts(blog))[0];if(!match)match=rank(await communityPosts(blog,{force:true}))[0];if(!match)throw new Error(`${label} 자막 게시물을 찾지 못했습니다.`);
+  let match=rankCommunityPosts(await communityPosts(blog),title,episode,originalTitle)[0];
+  if(!match)match=rankCommunityPosts(await communityPosts(blog,{force:true}),title,episode,originalTitle)[0];
+  if(!match)throw new Error(`${label} 자막 게시물을 찾지 못했습니다.`);
+  return downloadCommunityMatch(match,source,title,episode);
+}
+// Downloads a ranked post's links (Drive, zip/7z/RAR, subtitle files) and picks the episode's file.
+async function downloadCommunityMatch(match,source,title,episode){
   const dir=path.join(app.getPath('userData'),'subtitles',simpleTitle(title).replace(/\s+/g,'_')||'anime',String(episode));fs.mkdirSync(dir,{recursive:true});const candidates=[];
   for(const original of match.links){
     try{
@@ -774,6 +783,80 @@ async function findCommunitySubtitle(source,title,episode,{originalTitle=''}={})
   // A movie bundle has no numbered files (the main script, an MV, an older version...): take the largest.
   const unnumbered=episode===1&&!candidates.some(x=>communityFileMatches(x,2)),largest=()=>candidates.slice().sort((a,b)=>fs.statSync(b).size-fs.statSync(a).size)[0];
   const selected=candidates.find(x=>communityFileMatches(x,match.episode))||(!match.strict?candidates[0]:unnumbered?largest():null);if(!selected)throw new Error('사용 가능한 자막 파일을 추출하지 못했습니다.');return subtitleResult(selected,{source,post:match.post.url,postTitle:match.post.title,all:candidates});
+}
+const ANISSIA_API='https://api.anissia.net';
+// Online subtitle sources in their default search order.
+const COMMUNITY_SOURCES=['kairan','csora','anissia'];
+function communitySubtitleLabel(source,result={}){return source==='anissia'?`Anissia${result.maker?` · ${result.maker}`:''} 자막`:`${source==='kairan'?'Kairan':'Csora'} 자막`}
+async function anissiaFetch(pathname){
+  const response=await fetch(`${ANISSIA_API}${pathname}`,{signal:AbortSignal.timeout(20000),headers:{Accept:'application/json','User-Agent':'LilacAnime/1.0'}});
+  if(!response.ok)throw new Error(`Anissia HTTP ${response.status}`);
+  const root=await response.json();if(root?.code&&root.code!=='ok')throw new Error(`Anissia ${root.code}`);
+  return root?.data;
+}
+// The Anissia entry for a Korean title, with the season required to match ("2기", "Season 3").
+async function anissiaAnime(title,originalTitle=''){
+  const season=communitySeason(title)??communitySeason(originalTitle)??1,wanted=communityTitle(title);
+  const bare=wanted.replace(/[~〜～][^~〜～]*[~〜～]/g,' ').replace(/\s*(?:\d+\s*기|season\s*\d+|시즌\s*\d+)\s*$/i,'').replace(/\s+/g,' ').trim();
+  const queries=[...new Set([bare,bare.split(' ').slice(0,2).join(' ')])].filter(query=>query.length>=2);
+  const seen=new Map();
+  for(const query of queries){
+    for(const item of (await anissiaFetch(`/anime/list/0?q=${encodeURIComponent(query)}`).catch(()=>null))?.content||[])seen.set(item.animeNo,item);
+    const best=[...seen.values()].filter(item=>(communitySeason(item.subject)??1)===season).map(item=>({item,score:communityScore(wanted,item.subject)})).filter(x=>x.score>=.52).sort((a,b)=>b.score-a.score)[0];
+    if(best)return best.item;
+  }
+  return null;
+}
+// Tistory: the RSS feed carries the latest posts; the blog search finds older ones. Post pages are fetched
+// only for the few candidates whose title matches, since attachments are not in the listing.
+async function tistoryPosts(origin,subject){
+  const posts=new Map(),add=(url,title)=>{url=absoluteUrl(url,origin);title=String(title||'').replace(/\s+/g,' ').trim();if(url&&title&&!posts.has(url))posts.set(url,{url,title})};
+  try{
+    const rss=await providerFetch(`${origin}/rss`,{referer:`${origin}/`}),$=cheerio.load(rss,{xmlMode:true});
+    $('item').each((_,item)=>add($(item).find('link').first().text(),$(item).find('title').first().text()));
+  }catch{/* search below */}
+  try{
+    const html=await providerFetch(`${origin}/search/${encodeURIComponent(subject)}`,{referer:`${origin}/`}),$=cheerio.load(html);
+    $('a[href]').each((_,a)=>{const href=$(a).attr('href')||'';if(/^(?:https?:\/\/[^/]+)?\/(?:entry\/)?\d+$/.test(href)){
+      // Result cards repeat the title in their excerpt; keep the text up to the first episode number.
+      const text=$(a).text().replace(/\s+/g,' ').trim(),cut=text.match(/^.*?\d+\s*(?:화|회|편)(?:\s*\((?:끝|완|完)\)|\s*-끝-)?/)?.[0]||text.slice(0,80);add(href,cut)}});
+  }catch{/* RSS only */}
+  return [...posts.values()];
+}
+async function anissiaLinkedPost(url,subject,origin){
+  try{
+    const html=await providerFetch(url,{referer:`${origin}/`}),$=cheerio.load(html);
+    const pageTitle=($('meta[property="og:title"]').attr('content')||$('title').first().text()||'').replace(/\s*[-|:]\s*[^-|:]*$/,'').trim();
+    return {url,title:`${subject} ${pageTitle}`.trim(),html};
+  }catch{return null}
+}
+async function findAnissiaSubtitle(title,episode,{originalTitle=''}={}){
+  const anime=await anissiaAnime(title,originalTitle);if(!anime)throw new Error('Anissia에서 작품을 찾지 못했습니다.');
+  const captions=((await anissiaFetch(`/anime/caption/animeNo/${anime.animeNo}`))||[]).filter(item=>/^https?:\/\//i.test(item.website||'')).sort((a,b)=>String(b.updDt).localeCompare(String(a.updDt)));
+  for(const caption of captions){
+    let origin;try{origin=new URL(caption.website).origin}catch{continue}
+    const host=new URL(origin).hostname;
+    // Kairan and Csora have their own sources.
+    if(/^(?:kairan03|csora556)\.blogspot\.com$/i.test(host))continue;
+    try{
+      let match=null;
+      // The post Anissia links belongs to this anime even when the maker spells the title differently
+      // ("후리렌 1기(完)" for 장송의 프리렌), so it is ranked under the Anissia title.
+      const linked=await anissiaLinkedPost(caption.website,anime.subject,origin);
+      if(/\.blogspot\.com$/i.test(host)){
+        const posts=[...await communityPosts(origin),...(linked?[linked]:[])];
+        for(const name of [anime.subject,title])if(!match)match=rankCommunityPosts(posts,name,episode,originalTitle)[0];
+      }else if(/\.tistory\.com$/i.test(host)){
+        const listed=await tistoryPosts(origin,anime.subject),season=communitySeason(anime.subject)??1;
+        const likely=listed.filter(post=>communityPostEpisodes(post.title).has(episode)&&(communitySeason(communityPostTitle(post.title))??1)===season&&Math.max(communityScore(communityTitle(anime.subject),communityPostTitle(post.title)),communityScore(communityTitle(title),communityPostTitle(post.title)))>=.52).slice(0,3);
+        for(const post of likely){try{post.html=await providerFetch(post.url,{referer:`${origin}/`})}catch{post.html=''}}
+        const posts=[...likely.filter(post=>post.html),...(linked&&!likely.some(post=>post.url===linked.url)?[linked]:[])];
+        for(const name of [anime.subject,title])if(!match)match=rankCommunityPosts(posts,name,episode,originalTitle)[0];
+      }
+      if(match){const result=await downloadCommunityMatch(match,'anissia',anime.subject,episode);return {...result,maker:caption.name,anissiaTitle:anime.subject}}
+    }catch{/* next maker */}
+  }
+  throw new Error('Anissia 자막을 찾지 못했습니다.');
 }
 async function downloadHls(url,filePath,event){
   let playlistUrl=url;let text=await providerFetch(playlistUrl,{referer:new URL(url).origin+'/'});
@@ -818,8 +901,8 @@ app.whenReady().then(async () => {
     if(stream?.subtitleUrl)return {stream:true};
     if(saved[0])return fromSaved(saved[0]);
     const anime=job.anime||{},title=job.title||anime.title||'',titles=anime.provider==='reanime'?await koreanTitleCandidates(title,anime).catch(()=>[title]):[title];
-    for(const source of ['kairan','csora'].includes(preferred)?[preferred,...['kairan','csora'].filter(x=>x!==preferred)]:['kairan','csora']){
-      try{const result=await findCommunitySubtitleByTitles(source,titles,Number(job.episodeNumber)||1,{originalTitle:anime.title||''});return {path:result.path,assPath:result.assPath,fonts:result.fonts,label:`${source==='kairan'?'Kairan':'Csora'} 자막`}}catch{/* next source */}
+    for(const source of COMMUNITY_SOURCES.includes(preferred)?[preferred,...COMMUNITY_SOURCES.filter(x=>x!==preferred)]:COMMUNITY_SOURCES){
+      try{const result=await findCommunitySubtitleByTitles(source,titles,Number(job.episodeNumber)||1,{originalTitle:anime.title||''});return {path:result.path,assPath:result.assPath,fonts:result.fonts,label:communitySubtitleLabel(source,result)}}catch{/* next source */}
     }
     return null;
   };

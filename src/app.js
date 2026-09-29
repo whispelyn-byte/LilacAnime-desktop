@@ -281,7 +281,7 @@ function escapeHtml(v=''){const d=document.createElement('div');d.textContent=v;
 // Subtitle currently applied. ASS subtitles render through libass (ass-renderer.js) while
 // "ASS 자막 효과" is on; the WebVTT copy is the simplified fallback, as on Android.
 let currentSubtitle=null,subtitleFontPromise=null;
-const SUBTITLE_SOURCE_LABELS={linkkf:'Linkkf',reanime:'Re:Anime',kairan:'Kairan',csora:'Csora',user:'사용자',provider:'제공',download:'다운로드'};
+const SUBTITLE_SOURCE_LABELS={linkkf:'Linkkf',reanime:'Re:Anime',kairan:'Kairan',csora:'Csora',anissia:'Anissia',user:'사용자',provider:'제공',download:'다운로드'};
 function assEffectsEnabled(){return localStorage.getItem('assEffects')!=='false'}
 // 기본 자막 폰트 (기본체 / 나눔고딕 / 명조체 or a font file) as {family, data}, shared by VTT and ASS.
 function subtitleFontData(){subtitleFontPromise ||= window.lilac.defaultSubtitleFont(localStorage.getItem('subtitleFont')||'기본체',localStorage.getItem('subtitleFontPath')||'').then(font=>font?.data?{family:font.family,data:new Uint8Array(font.data)}:null).catch(()=>null);return subtitleFontPromise}
@@ -330,11 +330,12 @@ async function ensureSubtitle(stream,title,episode,{skipSaved=false}={}){
   const savedPreferred=saved.find(entry=>entry.source===preferred);if(savedPreferred){applySavedSubtitle(savedPreferred);return true}
   if(stream?.subtitleUrl){const track=(stream.subtitleTracks||[]).find(isKoreanTrack);if(track)currentPlaybackContext.selectedSubtitleTrack=track.url;renderSubtitleTracks();const source=track?'reanime':currentPlaybackContext.resolveKind==='linkkf'?'linkkf':'provider';if(!track)currentPlaybackContext.streamSubtitle={src:stream.subtitleUrl,label:stream.subtitleLabel||'제공 자막',options:{path:stream.subtitlePath||null,assUrl:stream.subtitleAss?.url||null,assPath:stream.subtitleAss?.path||null,fonts:stream.subtitleAss?.fonts||[],source:stream.subtitlePath?source:null}};attachSubtitle(stream.subtitleUrl,track?`Re:Anime ${track.label} 자막`:stream.subtitleLabel||'제공 자막',{path:stream.subtitlePath||null,assUrl:stream.subtitleAss?.url||null,assPath:stream.subtitleAss?.path||null,fonts:stream.subtitleAss?.fonts||[],source:stream.subtitlePath?source:null});return true}
   if(saved[0]){applySavedSubtitle(saved[0]);return true}
-  const sources=['kairan','csora'].includes(preferred)?[preferred,...['kairan','csora'].filter(x=>x!==preferred)]:['kairan','csora'];
+  const online=['kairan','csora','anissia'],sources=online.includes(preferred)?[preferred,...online.filter(x=>x!==preferred)]:online;
   const superseded=()=>requestId!==playbackRequestId||Boolean(currentPlaybackContext.selectedSubtitleTrack);$('#subtitleState').textContent='온라인 자막을 찾는 중...';
-  for(const source of sources){try{const result=await window.lilac.findSubtitle(source,title,episode,subtitleSearchAnime());if(superseded())return false;currentSubtitlePath=result.path;attachSubtitle(result.url,`${source==='kairan'?'Kairan':'Csora'} 자막`,{path:result.path,assUrl:result.assUrl,assPath:result.assPath,fonts:result.fonts,source});return true}catch{}}
+  for(const source of sources){try{const result=await window.lilac.findSubtitle(source,title,episode,subtitleSearchAnime());if(superseded())return false;currentSubtitlePath=result.path;attachSubtitle(result.url,communityLabel(source,result),{path:result.path,assUrl:result.assUrl,assPath:result.assPath,fonts:result.fonts,source});return true}catch{}}
   if(superseded())return false;const needsTmdb=currentPlaybackContext.episode?.provider==='reanime'&&!(await window.lilac.tmdbKey().catch(()=>({})))?.key;if(superseded())return false;$('#subtitleState').textContent=needsTmdb?'Kairan/Csora 자막을 찾지 못했습니다. 설정 > 한국어 제목 검색에서 TMDB API 키를 넣으면 더 많은 작품을 찾을 수 있어요.':currentPlaybackContext.episode?.provider==='reanime'?'한국어 자막이 없습니다. 아래 Re:Anime 트랙에서 다른 언어를 고르거나 내 자막 파일을 열 수 있어요.':'자동으로 찾은 자막이 없습니다. 내 자막 파일을 열 수 있어요.';return false;
 }
+function communityLabel(source,result={}){return source==='anissia'?`Anissia${result.maker?` · ${result.maker}`:''} 자막`:`${source==='kairan'?'Kairan':'Csora'} 자막`}
 function subtitleSearchAnime(){const anime=currentPlaybackContext.anime;return anime?{provider:anime.provider,id:anime.id,title:anime.title||anime.title_english||'',anilistId:anime.anilistId||null,malId:anime.malId||null}:null}
 function syncAssEffectsUI(){$('#assEffectsSheet').checked=assEffectsEnabled()}
 function syncSubtitleFontUI(){const choice=localStorage.getItem('subtitleFont')||'기본체',file=localStorage.getItem('subtitleFontPath')||'';$$('#fontChoices button').forEach(button=>button.classList.toggle('selected',!file&&button.dataset.value===choice));$('#subtitleFontFile').textContent=file?`사용자 폰트: ${file.split(/[\\/]/).pop()}`:'폰트 파일을 지정하면 선택한 폰트 대신 사용합니다.';$('#resetSubtitleFont').classList.toggle('hidden',!file)}

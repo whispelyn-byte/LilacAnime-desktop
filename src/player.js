@@ -77,11 +77,11 @@ async function selectSubtitleSource(source) {
   const key = subtitleStoreKey(), saved = key ? await window.lilac.savedSubtitles(key).catch(() => []) : [];
   const entry = saved.find(item => item.source === source);
   if (entry) { applySavedSubtitle(entry); return; }
-  if (source === 'kairan' || source === 'csora') {
+  if (source === 'kairan' || source === 'csora' || source === 'anissia') {
     const title = $('#skipTitle').value.trim(), episode = Number($('#skipEpisode').value) || 1, requestId = playbackRequestId;
-    $('#subtitleState').textContent = `${source === 'kairan' ? 'Kairan' : 'Csora'} 자막을 찾는 중...`;
-    try { const result = await window.lilac.findSubtitle(source, title, episode, subtitleSearchAnime()); if (requestId !== playbackRequestId) return; currentSubtitlePath = result.path; attachSubtitle(result.url, `${source === 'kairan' ? 'Kairan' : 'Csora'} 자막`, { path: result.path, assUrl: result.assUrl, assPath: result.assPath, fonts: result.fonts, source }); }
-    catch { if (requestId === playbackRequestId) $('#subtitleState').textContent = `${source === 'kairan' ? 'Kairan' : 'Csora'} 자막을 찾지 못했습니다.`; }
+    $('#subtitleState').textContent = `${SUBTITLE_SOURCE_LABELS[source]} 자막을 찾는 중...`;
+    try { const result = await window.lilac.findSubtitle(source, title, episode, subtitleSearchAnime()); if (requestId !== playbackRequestId) return; currentSubtitlePath = result.path; attachSubtitle(result.url, communityLabel(source, result), { path: result.path, assUrl: result.assUrl, assPath: result.assPath, fonts: result.fonts, source }); }
+    catch { if (requestId === playbackRequestId) $('#subtitleState').textContent = `${SUBTITLE_SOURCE_LABELS[source]} 자막을 찾지 못했습니다.`; }
     return;
   }
   if (source === 'reanime') {
