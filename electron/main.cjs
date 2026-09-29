@@ -568,20 +568,51 @@ async function analyzeOfflineOpEd({title,episode,currentUrl,duration,candidates,
 // synonym and Wikidata usually has the series' Korean label (via the MAL or AniList ID); NamuWiki search
 // is the last resort. Seasons come from the original title, so a series-level name is enough.
 const koreanTitleCache=new Map();
+// TMDB: the bundled key, unless the user entered their own in 설정 > TMDB API 키.
+const TMDB_BUILTIN_KEY='';
+function tmdbSettingsFile(){return path.join(app.getPath('userData'),'tmdb.json')}
+function tmdbUserKey(){try{return String(JSON.parse(fs.readFileSync(tmdbSettingsFile(),'utf8')).key||'').trim()}catch{return ''}}
+function tmdbKey(){return tmdbUserKey()||TMDB_BUILTIN_KEY}
+// A v4 "API Read Access Token" is a JWT sent as a bearer token; a v3 "API Key" goes in the query string.
+async function tmdbFetch(pathname,params={},key=tmdbKey()){
+  if(!key)throw new Error('TMDB API 키가 없습니다.');
+  const url=new URL(`https://api.themoviedb.org/3${pathname}`),bearer=key.includes('.');
+  for(const [name,value] of Object.entries(params))url.searchParams.set(name,value);
+  if(!bearer)url.searchParams.set('api_key',key);
+  const response=await fetch(url,{signal:AbortSignal.timeout(20000),headers:{Accept:'application/json',...(bearer?{Authorization:`Bearer ${key}`}:{})}});
+  if(!response.ok)throw new Error(response.status===401?'TMDB API 키가 올바르지 않습니다.':`TMDB HTTP ${response.status}`);
+  return response.json();
+}
+// Korean TV/movie names for a title. Season words are dropped because TMDB keeps seasons inside one series.
+async function tmdbKoreanTitles(titles){
+  const found=[];
+  for(const title of titles){
+    const query=String(title||'').replace(/…/g,'...').replace(/\s*(?:season\s*\d+|\d+(?:st|nd|rd|th)\s*season|part\s*\d+|第\d+期)\s*$/i,'').replace(/[:：]\s*$/,'').trim();
+    if(!query||/[가-힣]/.test(query))continue;
+    for(const kind of ['tv','movie']){
+      const root=await tmdbFetch(`/search/${kind}`,{query,language:'ko-KR',include_adult:'false'}).catch(()=>null);
+      // Animation (genre 16) from Japan first; the Korean name is present when TMDB has a ko-KR translation.
+      const results=(root?.results||[]).filter(item=>(item.genre_ids||[]).includes(16)).sort((a,b)=>Number(b.origin_country?.includes?.('JP')||b.original_language==='ja')-Number(a.origin_country?.includes?.('JP')||a.original_language==='ja'));
+      for(const item of results.slice(0,2)){const name=item.name||item.title||'';if(/[가-힣]{2}/.test(name)&&!found.includes(name))found.push(name)}
+      if(found.length)return found;
+    }
+  }
+  return found;
+}
 async function koreanTitleCandidates(title,anime={}){
   const original=String(title||'').trim();if(!original||/[가-힣]/.test(original))return original?[original]:[];
-  const key=`v3:${anime.anilistId||anime.malId||anime.id||original}`;if(koreanTitleCache.has(key))return koreanTitleCache.get(key);
+  const key=`v4:${anime.anilistId||anime.malId||anime.id||original}`;if(koreanTitleCache.has(key))return koreanTitleCache.get(key);
   const disk=readNamuCache();if(Array.isArray(disk[key])&&disk[key].length){koreanTitleCache.set(key,disk[key]);return disk[key]}
   const found=[],add=value=>{const clean=String(value||'').replace(/\((?:애니메이션|TV|애니)[^)]*\)/g,'').replace(/\s+/g,' ').trim();if(/[가-힣]{2}/.test(clean)&&!found.includes(clean))found.push(clean)};
-  let anilistId=Number(anime.anilistId)||null,malId=Number(anime.malId)||null;
+  let anilistId=Number(anime.anilistId)||null,malId=Number(anime.malId)||null;const englishTitles=[original];
   try{
     // Without an ID, search and prefer an exact title match, then a TV series: the top hit can be a
     // spin-off ("Frieren" returns the mini anime first).
-    const query=`query($id:Int,$search:String){Page(perPage:5){media(id:$id,search:$search,type:ANIME,sort:SEARCH_MATCH){id idMal format synonyms title{romaji english}}}}`;
+    const query=`query($id:Int,$search:String){Page(perPage:5){media(id:$id,search:$search,type:ANIME,sort:SEARCH_MATCH){id idMal format synonyms title{romaji english native}}}}`;
     const response=await fetch('https://graphql.anilist.co',{signal:AbortSignal.timeout(25000),method:'POST',headers:{Accept:'application/json','Content-Type':'application/json','User-Agent':'LilacAnime Android'},body:JSON.stringify({query,variables:anilistId?{id:anilistId}:{search:original.replace(/…/g,'...')}})});
     const list=response.ok?(await response.json())?.data?.Page?.media||[]:[],same=value=>namuCompareKey(value||'')===namuCompareKey(original);
     const media=list.find(item=>same(item.title?.english)||same(item.title?.romaji))||list.find(item=>item.format==='TV')||list[0];
-    if(media){anilistId=anilistId||media.id;malId=malId||media.idMal;(media.synonyms||[]).forEach(add)}
+    if(media){anilistId=anilistId||media.id;malId=malId||media.idMal;(media.synonyms||[]).forEach(add);englishTitles.push(media.title?.english,media.title?.romaji)}
   }catch{/* Wikidata below */}
   if(malId||anilistId){
     try{
@@ -591,6 +622,7 @@ async function koreanTitleCandidates(title,anime={}){
       if(response.ok)for(const row of (await response.json())?.results?.bindings||[]){add(row.ko?.value);add(row.seriesKo?.value)}
     }catch{/* NamuWiki below */}
   }
+  if(tmdbKey()){try{(await tmdbKoreanTitles([...new Set(englishTitles.filter(Boolean))])).forEach(add)}catch{/* NamuWiki below */}}
   if(!found.length){const namu=await namuKoreanTitle(original,anime).catch(()=>original);if(namu!==original)add(namu)}
   const result=found.length?found:[original];koreanTitleCache.set(key,result);
   if(found.length){disk[key]=found;try{fs.writeFileSync(namuCacheFile(),JSON.stringify(disk),'utf8')}catch{}}
@@ -1003,6 +1035,13 @@ app.whenReady().then(async () => {
   });
   // Default ASS font: the user's choice (설정 > 기본 자막 폰트) or a Korean system font,
   // since libass' bundled fallback font has no Hangul glyphs.
+  ipcMain.handle('tmdb:get',()=>({key:tmdbUserKey(),builtin:Boolean(TMDB_BUILTIN_KEY)}));
+  ipcMain.handle('tmdb:set',async(_,value='')=>{
+    const key=String(value||'').trim();
+    if(key)await tmdbFetch('/configuration',{},key);
+    fs.writeFileSync(tmdbSettingsFile(),JSON.stringify({key}),'utf8');koreanTitleCache.clear();
+    return {key,builtin:Boolean(TMDB_BUILTIN_KEY)};
+  });
   ipcMain.handle('font:default', (_, choice = '기본체', customPath = '') => {
     const windir = process.env.WINDIR || 'C:\\Windows', system = name => path.join(windir, 'Fonts', name), user = name => path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'Windows', 'Fonts', name);
     const presets = { '기본체': [system('malgun.ttf')], '나눔고딕': [system('NanumGothic.ttf'), user('NanumGothic.ttf')], '명조체': [system('batang.ttc'), system('NanumMyeongjo.ttf'), user('NanumMyeongjo.ttf')] };

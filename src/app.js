@@ -507,4 +507,8 @@ function renderUpdate(state={}){
 async function runUpdateAction(){const state=await window.lilac.updateState();try{if(state.status==='ready')await window.lilac.installUpdate();else if(state.status==='available')await window.lilac.downloadUpdate()}catch(e){toast(`업데이트 실패: ${e.message}`)}}
 $('#checkUpdate').onclick=async()=>{updateBannerDismissed=false;const state=await window.lilac.checkUpdate();if(state.status==='latest')toast('최신 버전입니다.')};
 $('#applyUpdate').onclick=runUpdateAction;$('#updateBannerAction').onclick=runUpdateAction;$('#updateBannerClose').onclick=()=>{updateBannerDismissed=true;$('#updateBanner').classList.add('hidden')};
+// TMDB key (설정 > 한국어 제목 검색): the user's own key overrides the bundled one.
+function renderTmdbState(value,message){$('#tmdbKey').value=value?.key||'';$('#tmdbKeyState').textContent=message||(value?.key?'내 API 키를 사용 중입니다.':value?.builtin?'앱 기본 키를 사용 중입니다. 내 키를 넣으면 그 키를 사용합니다.':'TMDB 키가 없어 AniList·Wikidata로만 찾습니다. themoviedb.org에서 발급한 키를 넣어 주세요.')}
+window.lilac.tmdbKey().then(value=>renderTmdbState(value)).catch(()=>{});
+$('#saveTmdbKey').onclick=async()=>{const button=$('#saveTmdbKey');button.disabled=true;$('#tmdbKeyState').textContent='키를 확인하는 중...';try{const value=await window.lilac.setTmdbKey($('#tmdbKey').value);renderTmdbState(value,value.key?'키를 확인하고 저장했습니다.':undefined);toast('TMDB 설정을 저장했습니다.')}catch(e){$('#tmdbKeyState').textContent=`저장하지 못했습니다: ${String(e.message||e).replace(/^Error invoking remote method '[^']+': (?:Error: )?/,'')}`}finally{button.disabled=false}};
 window.lilac.onUpdateState(renderUpdate);window.lilac.updateState().then(value=>{$('#appVersion').textContent=`Version ${value.current}`;renderUpdate(value)});
