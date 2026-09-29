@@ -512,50 +512,6 @@ function smiToVtt(file){
 }
 function srtToVtt(file){const text=readSubtitleText(file).replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g,'$1.$2');const out=file.replace(/\.srt$/i,'.vtt');fs.writeFileSync(out,`WEBVTT\n\n${text}`,'utf8');return out}
 function assToVtt(file){const lines=fs.readFileSync(file,'utf8').replace(/^\uFEFF/,'').split(/\r?\n/);let inEvents=false,fields=[];const cues=[];const stamp=value=>{const match=String(value).trim().match(/(\d+):(\d{2}):(\d{2})[.](\d{1,3})/);if(!match)return null;return `${String(match[1]).padStart(2,'0')}:${match[2]}:${match[3]}.${match[4].padEnd(3,'0').slice(0,3)}`};for(const line of lines){if(/^\[Events]/i.test(line)){inEvents=true;continue}if(/^\[/.test(line)){inEvents=false;continue}if(!inEvents)continue;if(/^Format:/i.test(line)){fields=line.slice(line.indexOf(':')+1).split(',').map(x=>x.trim().toLowerCase());continue}if(!/^Dialogue:/i.test(line)||!fields.length)continue;const raw=line.slice(line.indexOf(':')+1),parts=raw.split(','),values=parts.slice(0,fields.length-1);values.push(parts.slice(fields.length-1).join(','));const row=Object.fromEntries(fields.map((field,index)=>[field,values[index]||'']));const start=stamp(row.start),end=stamp(row.end);if(!start||!end)continue;const text=(row.text||'').replace(/\{[^}]*}/g,'').replace(/\\[Nn]/g,'\n').replace(/\\h/g,' ').trim();if(text)cues.push(`${start} --> ${end}\n${text}`)}const out=file.replace(/\.(ass|ssa)$/i,'.vtt');fs.writeFileSync(out,`WEBVTT\n\n${cues.join('\n\n')}\n`,'utf8');return out}
-// Port of Android NamuWikiTitleResolver: NamuWiki search is a SPA, so the search page is
-// rendered in a hidden window and Korean document titles whose result card contains the
-// query are ranked (English title first as on Android, then the Japanese native title).
-// Android takes the top card as-is, which often lands on songs or unrelated pages, so each
-// candidate document is opened and accepted only if it mentions the native or English title.
-const namuTitleCache=new Map();
-function namuCacheFile(){return path.join(app.getPath('userData'),'namuwiki-title-cache.json')}
-function readNamuCache(){try{return JSON.parse(fs.readFileSync(namuCacheFile(),'utf8'))||{}}catch{return {}}}
-async function renderNamuPage(url,script,isReady){
-  const win=new BrowserWindow({show:false,width:1100,height:900,webPreferences:{partition:'persist:lilac-namuwiki',contextIsolation:true,nodeIntegration:false,sandbox:true,images:false}});
-  try{
-    // Android's NamuWiki client allows 12 s to connect and 12 s to read.
-    await Promise.race([win.loadURL(url).catch(()=>{}),new Promise(resolve=>setTimeout(resolve,24000))]);
-    let result=null;
-    for(let attempt=0;attempt<16&&!win.isDestroyed();attempt++){
-      await new Promise(resolve=>setTimeout(resolve,500));
-      result=await win.webContents.executeJavaScript(script,true).catch(()=>null);
-      if(result&&isReady(result))break;
-    }
-    return result;
-  }finally{if(!win.isDestroyed())win.destroy()}
-}
-async function namuSearchLinks(query){
-  const result=await renderNamuPage(`https://namu.wiki/Search?q=${encodeURIComponent(query)}`,`(()=>{const text=document.body?.innerText||'';const done=/전체\s*\d+\s*건/.test(text);const links=[...document.querySelectorAll('a[href^="/w/"]')].filter(a=>a.closest('section')||a.parentElement?.tagName==='H4').map(a=>({label:a.textContent.replace(/\s+/g,' ').trim(),h4:a.parentElement?.tagName==='H4',card:(a.closest('section')||a.parentElement).innerText.replace(/\s+/g,' ')}));return {done,links}})()`,result=>result.links.length>0||result.done);
-  return result?.links||[];
-}
-async function namuDocumentText(title){
-  const result=await renderNamuPage(`https://namu.wiki/w/${encodeURIComponent(title)}`,`(()=>{const text=(document.querySelector('article')||document.body)?.innerText||'';return {text:text.slice(0,30000)}})()`,result=>result.text.length>2000);
-  return result?.text||'';
-}
-function namuCompareKey(value=''){return String(value).normalize('NFKC').toLowerCase().replace(/…/g,'...').replace(/[\s:：'’"“”!！?？.,·・\-–—~〜()（）]/g,'')}
-function namuCandidates(query,links){
-  const normalize=value=>String(value).toLowerCase().replace(/…/g,'...').replace(/\s+/g,'');
-  const tokens=[...new Set(query.replace(/…/g,'...').split(/\s+/).filter(token=>token.length>=2))];
-  return links.map(link=>{
-    // Subpages (시리즈/음반) count as their parent document; namespaces, list pages and
-    // titles whose only Hangul is a disambiguation suffix such as "(노래)" are ignored.
-    const label=link.label.replace(/^(파일|분류|틀|나무위키):.*/,'').split('/')[0].trim(),bare=label.replace(/\([^)]*\)/g,'').trim();
-    if(!/[가-힣]/.test(bare)||/문서로\s*가기/.test(link.label)||/^(애니메이션|일본 애니메이션|음반|노래|나무위키|최근변경|최근토론|특수기능)$/.test(bare)||/\d{4}년|분기/.test(bare))return null;
-    const card=normalize(link.card);let score=card.includes(normalize(query))?10000:0;
-    score+=tokens.filter(token=>card.includes(normalize(token))).length*500+(link.h4?300:0)+(label.length>=3?10:0);
-    return {label,score};
-  }).filter(Boolean).filter((item,index,array)=>array.findIndex(x=>x.label===item.label)===index).sort((a,b)=>b.score-a.score);
-}
 // Local audio analysis over downloaded episodes only (Android LinkkfChapterService.detectSkipSegmentsOffline).
 // Results are cached per title and episode.
 async function analyzeOfflineOpEd({title,episode,currentUrl,duration,candidates,status=()=>{}}){
@@ -564,15 +520,14 @@ async function analyzeOfflineOpEd({title,episode,currentUrl,duration,candidates,
   if(segments.length){cache[key]=segments;try{fs.writeFileSync(cacheFile,JSON.stringify(cache),'utf8')}catch{}}
   return segments;
 }
-// Korean titles for Re:ANIME entries (Kairan/Csora posts are Korean). AniList sometimes lists a Korean
-// synonym and Wikidata usually has the series' Korean label (via the MAL or AniList ID); NamuWiki search
-// is the last resort. Seasons come from the original title, so a series-level name is enough.
+// Korean titles for Re:ANIME entries (Kairan/Csora posts are Korean) come from TMDB's ko-KR names, which
+// needs the user's TMDB API key (설정 > 한국어 제목 검색). Seasons are read from the original title, so the
+// series name is enough.
 const koreanTitleCache=new Map();
-// TMDB: the bundled key, unless the user entered their own in 설정 > TMDB API 키.
-const TMDB_BUILTIN_KEY='';
+function koreanTitleCacheFile(){return path.join(app.getPath('userData'),'korean-title-cache.json')}
+function readKoreanTitleCache(){try{return JSON.parse(fs.readFileSync(koreanTitleCacheFile(),'utf8'))||{}}catch{return {}}}
 function tmdbSettingsFile(){return path.join(app.getPath('userData'),'tmdb.json')}
-function tmdbUserKey(){try{return String(JSON.parse(fs.readFileSync(tmdbSettingsFile(),'utf8')).key||'').trim()}catch{return ''}}
-function tmdbKey(){return tmdbUserKey()||TMDB_BUILTIN_KEY}
+function tmdbKey(){try{return String(JSON.parse(fs.readFileSync(tmdbSettingsFile(),'utf8')).key||'').trim()}catch{return ''}}
 // A v4 "API Read Access Token" is a JWT sent as a bearer token; a v3 "API Key" goes in the query string.
 async function tmdbFetch(pathname,params={},key=tmdbKey()){
   if(!key)throw new Error('TMDB API 키가 없습니다.');
@@ -583,17 +538,25 @@ async function tmdbFetch(pathname,params={},key=tmdbKey()){
   if(!response.ok)throw new Error(response.status===401?'TMDB API 키가 올바르지 않습니다.':`TMDB HTTP ${response.status}`);
   return response.json();
 }
-// Korean TV/movie names for a title. Season words are dropped because TMDB keeps seasons inside one series.
+// TMDB keeps seasons inside one series, so season words are dropped; a subtitle after ":" is dropped on a
+// second try ("Ascendance of a Bookworm: Adopted Daughter of an Archduke" is listed as the series).
 async function tmdbKoreanTitles(titles){
-  const found=[];
+  const queries=[];
   for(const title of titles){
-    const query=String(title||'').replace(/…/g,'...').replace(/\s*(?:season\s*\d+|\d+(?:st|nd|rd|th)\s*season|part\s*\d+|第\d+期)\s*$/i,'').replace(/[:：]\s*$/,'').trim();
-    if(!query||/[가-힣]/.test(query))continue;
+    const base=String(title||'').replace(/…/g,'...').replace(/\s*(?:season\s*\d+|\d+(?:st|nd|rd|th)\s*season|part\s*\d+|第\d+期)\s*$/i,'').replace(/[:：]\s*$/,'').trim();
+    for(const query of [base,base.split(/\s*[:：]\s+|\s+-\s+/)[0]])if(query&&!/[가-힣]/.test(query)&&!queries.includes(query))queries.push(query);
+  }
+  const found=[];
+  for(const query of queries){
     for(const kind of ['tv','movie']){
-      const root=await tmdbFetch(`/search/${kind}`,{query,language:'ko-KR',include_adult:'false'}).catch(()=>null);
-      // Animation (genre 16) from Japan first; the Korean name is present when TMDB has a ko-KR translation.
+      const root=await tmdbFetch(`/search/${kind}`,{query,language:'ko-KR',include_adult:'false'});
+      // Animation (genre 16) from Japan first; the name is Korean when TMDB has a ko-KR translation.
       const results=(root?.results||[]).filter(item=>(item.genre_ids||[]).includes(16)).sort((a,b)=>Number(b.origin_country?.includes?.('JP')||b.original_language==='ja')-Number(a.origin_country?.includes?.('JP')||a.original_language==='ja'));
-      for(const item of results.slice(0,2)){const name=item.name||item.title||'';if(/[가-힣]{2}/.test(name)&&!found.includes(name))found.push(name)}
+      const add=name=>{name=String(name||'').trim();if(/[가-힣]{2}/.test(name)&&!found.includes(name))found.push(name)};
+      for(const item of results.slice(0,2))add(item.name||item.title);
+      // Fan subtitle blogs often use a different Korean title than the official one
+      // ("봇치 더 록!" rather than "외톨이 THE ROCK!"); TMDB lists those as Korean alternative titles.
+      if(results[0]){const alt=await tmdbFetch(`/${kind}/${results[0].id}/alternative_titles`).catch(()=>null);for(const item of [...(alt?.results||[]),...(alt?.titles||[])])if(item.iso_3166_1==='KR')add(item.title)}
       if(found.length)return found;
     }
   }
@@ -601,31 +564,15 @@ async function tmdbKoreanTitles(titles){
 }
 async function koreanTitleCandidates(title,anime={}){
   const original=String(title||'').trim();if(!original||/[가-힣]/.test(original))return original?[original]:[];
-  const key=`v4:${anime.anilistId||anime.malId||anime.id||original}`;if(koreanTitleCache.has(key))return koreanTitleCache.get(key);
-  const disk=readNamuCache();if(Array.isArray(disk[key])&&disk[key].length){koreanTitleCache.set(key,disk[key]);return disk[key]}
-  const found=[],add=value=>{const clean=String(value||'').replace(/\((?:애니메이션|TV|애니)[^)]*\)/g,'').replace(/\s+/g,' ').trim();if(/[가-힣]{2}/.test(clean)&&!found.includes(clean))found.push(clean)};
-  let anilistId=Number(anime.anilistId)||null,malId=Number(anime.malId)||null;const englishTitles=[original];
-  try{
-    // Without an ID, search and prefer an exact title match, then a TV series: the top hit can be a
-    // spin-off ("Frieren" returns the mini anime first).
-    const query=`query($id:Int,$search:String){Page(perPage:5){media(id:$id,search:$search,type:ANIME,sort:SEARCH_MATCH){id idMal format synonyms title{romaji english native}}}}`;
-    const response=await fetch('https://graphql.anilist.co',{signal:AbortSignal.timeout(25000),method:'POST',headers:{Accept:'application/json','Content-Type':'application/json','User-Agent':'LilacAnime Android'},body:JSON.stringify({query,variables:anilistId?{id:anilistId}:{search:original.replace(/…/g,'...')}})});
-    const list=response.ok?(await response.json())?.data?.Page?.media||[]:[],same=value=>namuCompareKey(value||'')===namuCompareKey(original);
-    const media=list.find(item=>same(item.title?.english)||same(item.title?.romaji))||list.find(item=>item.format==='TV')||list[0];
-    if(media){anilistId=anilistId||media.id;malId=malId||media.idMal;(media.synonyms||[]).forEach(add);englishTitles.push(media.title?.english,media.title?.romaji)}
-  }catch{/* Wikidata below */}
-  if(malId||anilistId){
-    try{
-      const where=[malId&&`{?item wdt:P4086 "${malId}"}`,anilistId&&`{?item wdt:P8729 "${anilistId}"}`].filter(Boolean).join(' UNION ');
-      const sparql=`SELECT ?ko ?seriesKo WHERE { ${where} OPTIONAL{?item rdfs:label ?ko FILTER(lang(?ko)="ko")} OPTIONAL{?item wdt:P179 ?series. ?series rdfs:label ?seriesKo FILTER(lang(?seriesKo)="ko")} } LIMIT 5`;
-      const response=await fetch(`https://query.wikidata.org/sparql?format=json&query=${encodeURIComponent(sparql)}`,{signal:AbortSignal.timeout(25000),headers:{Accept:'application/sparql-results+json','User-Agent':`LilacAnime-Desktop/${app.getVersion()} (https://github.com/whispelyn-byte/LilacAnime-desktop)`}});
-      if(response.ok)for(const row of (await response.json())?.results?.bindings||[]){add(row.ko?.value);add(row.seriesKo?.value)}
-    }catch{/* NamuWiki below */}
-  }
-  if(tmdbKey()){try{(await tmdbKoreanTitles([...new Set(englishTitles.filter(Boolean))])).forEach(add)}catch{/* NamuWiki below */}}
-  if(!found.length){const namu=await namuKoreanTitle(original,anime).catch(()=>original);if(namu!==original)add(namu)}
+  if(!tmdbKey())return [original];
+  const key=`tmdb:${anime.id||original}`;if(koreanTitleCache.has(key))return koreanTitleCache.get(key);
+  const disk=readKoreanTitleCache();if(Array.isArray(disk[key])&&disk[key].length){koreanTitleCache.set(key,disk[key]);return disk[key]}
+  // Re:ANIME also knows the Japanese title, which TMDB matches as the original name.
+  let native='';
+  if(anime.id){try{const media=await providerFetch(`${REANIME_WEB}/api/v1/anime/${encodeURIComponent(anime.id)}`,{json:true,referer:`${REANIME_WEB}/`});native=String(media?.title?.native||'')}catch{/* English only */}}
+  const found=await tmdbKoreanTitles([original,native]).catch(()=>[]);
   const result=found.length?found:[original];koreanTitleCache.set(key,result);
-  if(found.length){disk[key]=found;try{fs.writeFileSync(namuCacheFile(),JSON.stringify(disk),'utf8')}catch{}}
+  if(found.length){disk[key]=found;try{fs.writeFileSync(koreanTitleCacheFile(),JSON.stringify(disk),'utf8')}catch{}}
   return result;
 }
 // Tries each Korean title until a Kairan/Csora post matches.
@@ -633,30 +580,6 @@ async function findCommunitySubtitleByTitles(source,titles,episode,options){
   let lastError=null;
   for(const title of titles){try{return {...await findCommunitySubtitle(source,title,episode,options),searchTitle:title}}catch(error){lastError=error}}
   throw lastError||new Error('자막 게시물을 찾지 못했습니다.');
-}
-async function namuKoreanTitle(title,anime={}){
-  const original=String(title||'').trim();if(!original||/[가-힣]/.test(original))return original;
-  const key=`v2:${anime.id||original}`;if(namuTitleCache.has(key))return namuTitleCache.get(key);
-  const disk=readNamuCache();if(disk[key]){namuTitleCache.set(key,disk[key]);return disk[key]}
-  let native='';
-  if(anime.id){try{const media=await providerFetch(`${REANIME_WEB}/api/v1/anime/${encodeURIComponent(anime.id)}`,{json:true,referer:`${REANIME_WEB}/`});native=String(media?.title?.native||'')}catch{/* English only */}}
-  // The Japanese title is distinctive; English titles also appear on unrelated pages, so they only count without one.
-  const english=original.replace(/…/g,'...'),markers=[native||english].map(namuCompareKey).filter(value=>value.length>=4);
-  let korean=null;const checked=new Set();
-  for(const query of [...new Set([english,native].filter(Boolean))]){
-    let candidates=[];try{candidates=namuCandidates(query,await namuSearchLinks(query)).filter(x=>x.score>=500)}catch{}
-    for(const candidate of candidates.slice(0,3)){
-      if(checked.has(candidate.label))continue;checked.add(candidate.label);
-      // A work's own document shows the original title in its infobox at the top; actor or
-      // character pages only mention it further down.
-      const text=namuCompareKey((await namuDocumentText(candidate.label).catch(()=>'')).slice(0,2500));
-      if(markers.some(marker=>text.includes(marker))){korean=candidate.label.replace(/\([^)]*\)/g,'').trim();break}
-    }
-    if(korean)break;
-  }
-  const result=korean||original;namuTitleCache.set(key,result);
-  if(korean){disk[key]=korean;try{fs.writeFileSync(namuCacheFile(),JSON.stringify(disk),'utf8')}catch{}}
-  return result;
 }
 // Blogger feeds return at most 150 posts per request, so the whole blog is paged in. Like Android the index is
 // kept on disk for a day, a failed refresh falls back to the stale copy, and a miss refreshes once (below).
@@ -1007,7 +930,7 @@ app.whenReady().then(async () => {
   });
   // The sandboxed preload has no url.pathToFileURL, so file URLs are built here.
   ipcMain.handle('subtitle:find', async (_, source, title, episode, anime = null) => {
-    // Kairan/Csora posts use Korean titles; Re:ANIME titles are resolved to Korean first (AniList, Wikidata, NamuWiki).
+    // Kairan/Csora posts use Korean titles; Re:ANIME titles are resolved to Korean through TMDB first.
     const titles = anime?.provider === 'reanime' ? await koreanTitleCandidates(title, anime).catch(() => [title]) : [title];
     return findCommunitySubtitleByTitles(source, titles, Number(episode), { originalTitle: anime?.title || '' });
   });
@@ -1035,12 +958,12 @@ app.whenReady().then(async () => {
   });
   // Default ASS font: the user's choice (설정 > 기본 자막 폰트) or a Korean system font,
   // since libass' bundled fallback font has no Hangul glyphs.
-  ipcMain.handle('tmdb:get',()=>({key:tmdbUserKey(),builtin:Boolean(TMDB_BUILTIN_KEY)}));
+  ipcMain.handle('tmdb:get',()=>({key:tmdbKey()}));
   ipcMain.handle('tmdb:set',async(_,value='')=>{
     const key=String(value||'').trim();
     if(key)await tmdbFetch('/configuration',{},key);
     fs.writeFileSync(tmdbSettingsFile(),JSON.stringify({key}),'utf8');koreanTitleCache.clear();
-    return {key,builtin:Boolean(TMDB_BUILTIN_KEY)};
+    return {key};
   });
   ipcMain.handle('font:default', (_, choice = '기본체', customPath = '') => {
     const windir = process.env.WINDIR || 'C:\\Windows', system = name => path.join(windir, 'Fonts', name), user = name => path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'Windows', 'Fonts', name);
