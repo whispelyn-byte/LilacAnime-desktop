@@ -467,7 +467,9 @@ async function resolveStreamPage(targetUrl, referer = '', timeoutMs = 30000) {
 
 function simpleTitle(value=''){return value.toLowerCase().normalize('NFKC').replace(/\[[^\]]*]|\([^)]*\)/g,' ').replace(/\b(?:subtitle|sub)\b|(?:한글|한국어)?\s*자막/gi,' ').replace(/[^a-z0-9가-힣]+/g,' ').trim()}
 function titleKey(value=''){const clean=simpleTitle(value),hangul=(clean.match(/[가-힣]+/g)||[]).join('');return hangul.length>=2?hangul:clean.replace(/\s+/g,'')}
-function titleScore(target,candidate){const keyA=titleKey(target),keyB=titleKey(candidate);if(!keyA||!keyB)return 0;if(keyA===keyB)return 1;if(keyA.includes(keyB)||keyB.includes(keyA))return Math.min(keyA.length,keyB.length)/Math.max(keyA.length,keyB.length);const a=new Set(simpleTitle(target).split(' ').filter(Boolean)),b=new Set(simpleTitle(candidate).split(' ').filter(Boolean));let hits=0;a.forEach(x=>{if([...b].some(y=>Math.min(x.length,y.length)>=2&&(y.includes(x)||x.includes(y))))hits++});return a.size?hits/a.size:0}
+// Words such as "청춘 돼지는 ○○의 꿈을 꾸지 않는다" are shared across a whole franchise, so word overlap only
+// counts when one title's words all appear in the other; words missing on both sides mean another work.
+function titleScore(target,candidate){const keyA=titleKey(target),keyB=titleKey(candidate);if(!keyA||!keyB)return 0;if(keyA===keyB)return 1;if(keyA.includes(keyB)||keyB.includes(keyA))return Math.min(keyA.length,keyB.length)/Math.max(keyA.length,keyB.length);const a=[...new Set(simpleTitle(target).split(' ').filter(Boolean))],b=[...new Set(simpleTitle(candidate).split(' ').filter(Boolean))];if(!a.length||!b.length)return 0;const found=(x,list)=>list.some(y=>Math.min(x.length,y.length)>=2&&(y.includes(x)||x.includes(y)));const missingA=a.filter(x=>x.length>=2&&!found(x,b)),missingB=b.filter(y=>y.length>=2&&!found(y,a));if(missingA.length&&missingB.length)return 0;return Math.min((a.length-missingA.length)/a.length,(b.length-missingB.length)/b.length)}
 // Same as Android KairanSubtitleService/GoogleDriveDownloader: 15 s to connect, 60 s without data.
 async function downloadBuffer(url,referer){
   const controller=new AbortController();let timer=setTimeout(()=>controller.abort(),15000);
@@ -540,6 +542,31 @@ async function tmdbFetch(pathname,params={},key=tmdbKey()){
 }
 // TMDB keeps seasons inside one series, so season words are dropped; a subtitle after ":" is dropped on a
 // second try ("Ascendance of a Bookworm: Adopted Daughter of an Archduke" is listed as the series).
+// TMDB keeps a franchise's seasons in one series, so its alternative titles can name another season
+// ("청춘 돼지는 산타클로스의…" under "청춘 돼지는 바니걸 선배의…"). Such a title shares several words with the
+// main name but each has words the other lacks; a genuinely different name ("봇치 더 록!" for
+// "외톨이 THE ROCK!") shares none.
+function siblingTitle(main,other){
+  if(!main||!other)return false;
+  const words=value=>[...new Set(simpleTitle(value).split(' ').filter(word=>word.length>=2))],a=words(main),b=words(other);
+  const found=(word,list)=>list.some(item=>item.includes(word)||word.includes(item));
+  const shared=a.filter(word=>found(word,b)).length;
+  return shared>=2&&a.some(word=>!found(word,b))&&b.some(word=>!found(word,a));
+}
+// TMDB lists later seasons with their own names ("Rascal Does Not Dream of Santa Claus" is season 2 of
+// "…Bunny Girl Senpai"). When the English title matches a named season, that season's Korean name is used;
+// a ko-KR name that is only a subtitle ("시즌 2: 영주의 양녀") is appended to the series name. Seasons named
+// just "Season N" are left to the series name and the season number in the English title.
+async function tmdbSeasonTitle(id,original){
+  const [en,ko]=await Promise.all([tmdbFetch(`/tv/${id}`,{language:'en-US'}),tmdbFetch(`/tv/${id}`,{language:'ko-KR'})]);
+  const key=titleCompareKey(original);
+  // Season 1 is often named after the series, which every later title also contains: take the longest match.
+  const season=(en.seasons||[]).filter(item=>!/^(?:season\s*\d+|specials)$/i.test(item.name||'')&&titleCompareKey(item.name).length>=6&&key.includes(titleCompareKey(item.name))).sort((a,b)=>titleCompareKey(b.name).length-titleCompareKey(a.name).length)[0];
+  const name=String((ko.seasons||[]).find(item=>item.season_number===season?.season_number)?.name||'').replace(/^시즌\s*\d+\s*[:：]?\s*/,'').trim();
+  if(!season||!/[가-힣]{2}/.test(name))return '';
+  const series=String(ko.name||'').trim(),firstWord=simpleTitle(series).split(' ')[0]||'';
+  return firstWord&&simpleTitle(name).includes(firstWord)?name:`${series.replace(/\s*[~〜～][^~〜～]*[~〜～]\s*/g,' ').trim()} ${name}`;
+}
 async function tmdbKoreanTitles(titles){
   const queries=[];
   for(const title of titles){
@@ -552,8 +579,10 @@ async function tmdbKoreanTitles(titles){
       const root=await tmdbFetch(`/search/${kind}`,{query,language:'ko-KR',include_adult:'false'});
       // Animation (genre 16) from Japan first; the name is Korean when TMDB has a ko-KR translation.
       const results=(root?.results||[]).filter(item=>(item.genre_ids||[]).includes(16)).sort((a,b)=>Number(b.origin_country?.includes?.('JP')||b.original_language==='ja')-Number(a.origin_country?.includes?.('JP')||a.original_language==='ja'));
-      const add=name=>{name=String(name||'').trim();if(/[가-힣]{2}/.test(name)&&!found.includes(name))found.push(name)};
-      for(const item of results.slice(0,2))add(item.name||item.title);
+      // Everything after the first title must not name another season of the same franchise.
+      const add=name=>{name=String(name||'').trim();if(/[가-힣]{2}/.test(name)&&!found.includes(name)&&!siblingTitle(found[0],name))found.push(name)};
+      if(kind==='tv'&&results[0])add(await tmdbSeasonTitle(results[0].id,titles[0]).catch(()=>''));
+      if(results[0])add(results[0].name||results[0].title);
       // Fan subtitle blogs often use a different Korean title than the official one
       // ("봇치 더 록!" rather than "외톨이 THE ROCK!"); TMDB lists those as Korean alternative titles.
       if(results[0]){const alt=await tmdbFetch(`/${kind}/${results[0].id}/alternative_titles`).catch(()=>null);for(const item of [...(alt?.results||[]),...(alt?.titles||[])])if(item.iso_3166_1==='KR')add(item.title)}
@@ -641,25 +670,24 @@ function communitySeason(text=''){
 // 0.3-0.4, so spelling variants ("카구야"/"가구야") still count as the same title.
 function hangulEditSimilarity(first,second){
   const clean=value=>String(value).toLowerCase().normalize('NFC').replace(/[^가-힣a-z0-9\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/gu,'');
-  const a=[...clean(first)],b=[...clean(second)];if(!a.length||!b.length)return 0;if(a.join('')===b.join(''))return 1;
+  const a=[...clean(first)],b=[...clean(second)];if(!a.length||!b.length)return {similarity:0,distance:Infinity};if(a.join('')===b.join(''))return {similarity:1,distance:0};
   const jamo=c=>{const code=c.codePointAt(0)-0xac00;return code>=0&&code<11172?[Math.floor(code/588),Math.floor(code/28)%21,code%28]:null};
   const cost=(x,y)=>{if(x===y)return 0;const p=jamo(x),q=jamo(y);return p&&q?(p[0]!==q[0]?.4:0)+(p[1]!==q[1]?.3:0)+(p[2]!==q[2]?.3:0):1};
   let previous=Array.from({length:b.length+1},(_,i)=>i);
   for(let i=0;i<a.length;i++){const current=[i+1];for(let j=0;j<b.length;j++)current[j+1]=Math.min(previous[j+1]+1,current[j]+1,previous[j]+cost(a[i],b[j]));previous=current}
-  return Math.max(0,1-previous[b.length]/Math.max(a.length,b.length));
+  return {similarity:Math.max(0,1-previous[b.length]/Math.max(a.length,b.length)),distance:previous[b.length]};
 }
-// Android languageAwareSimilarity: mixed Korean/English titles are also compared one script at a time.
-function scriptRuns(value){return (String(value).normalize('NFC').match(/[가-힣]+(?:\s+[가-힣]+)*|[a-z0-9]+(?:\s+[a-z0-9]+)*/gi)||[]).map(run=>run.trim()).filter(run=>run.replace(/\s/g,'').length>=2)}
 // Posts often drop the "~부제~" part ("무직전생3"), so a distinctive shared prefix of 4+ Hangul counts as a match too.
 function communityScore(target,candidate){
   const bare=value=>value.replace(/[~〜～][^~〜～]*[~〜～]/g,' ').replace(/\s+/g,' ').trim(),score=Math.max(titleScore(target,candidate),titleScore(bare(target),bare(candidate)));
   const a=titleKey(bare(target)),b=titleKey(bare(candidate)),short=a.length<b.length?a:b,long=short===a?b:a;
   let best=/^[가-힣]{4,}$/.test(short)&&long.startsWith(short)?Math.max(score,.6):score;
-  // Edit distance only settles near-identical spellings; lower values also fit unrelated titles of similar length.
+  // Edit distance only settles spelling variants of a letter or two ("카구야"/"가구야", "푸른"/"포론"). Long
+  // franchise titles differing in one word ("바니걸 선배" / "란도셀걸") also score high as a ratio, so the raw
+  // distance is capped too. Korean/English runs are not compared separately (a shared "BanG Dream!" would
+  // match every season).
   const variant=value=>value.replace(/카구야/g,'가구야');
-  // Android also compares Korean/English runs separately, but a shared franchise name ("BanG Dream!") then
-  // matches every season, so only whole titles are compared here.
-  const edit=hangulEditSimilarity(variant(a),variant(b));if(edit>=.75)best=Math.max(best,edit);
+  const edit=hangulEditSimilarity(variant(a),variant(b));if(edit.similarity>=.75&&edit.distance<=1.5)best=Math.max(best,edit.similarity);
   return best;
 }
 // Older Kairan titles end in a bare episode number ("히로아카7 20", "... 12(완)").
