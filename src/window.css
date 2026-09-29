@@ -8,3 +8,21 @@
     padding-right: 148px;
   }
 }
+
+/* The top bar is sticky inside the scrolling <main>, where Electron drops its drag region.
+   A fixed strip outside the scroller keeps the window draggable; the search box stays no-drag. */
+.window-drag {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 54px;
+  z-index: 0;
+  -webkit-app-region: drag;
+}
+
+/* Full-window layers drawn over the strip must stay clickable. */
+.immersive-player,
+dialog {
+  -webkit-app-region: no-drag;
+}

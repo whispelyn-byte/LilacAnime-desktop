@@ -706,6 +706,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('subtitle-store:list',(_,key)=>subtitleStore.list(String(key||'')));
   ipcMain.handle('subtitle-store:save',(_,key,entry)=>subtitleStore.save(String(key||''),entry));
   ipcMain.handle('subtitle-store:remove',(_,key,id)=>subtitleStore.remove(String(key||''),String(id||'')));
+  ipcMain.handle('window:theme',(event,light)=>{const win=BrowserWindow.fromWebContents(event.sender);if(win&&!win.isDestroyed())win.setTitleBarOverlay(light?{color:'#ffffff',symbolColor:'#242026'}:{color:'#0d0b12',symbolColor:'#c9c2d4'});});
   ipcMain.handle('update:state',()=>updater.state);
   ipcMain.handle('update:check',()=>updater.check());
   ipcMain.handle('update:download',()=>updater.download());
