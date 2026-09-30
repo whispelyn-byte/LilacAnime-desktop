@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, session } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, session, screen } = require('electron');
 const path = require('path');
 const cheerio = require('cheerio');
 const fs = require('fs');
@@ -676,8 +676,9 @@ async function resolveDisplayTitle(anime={}){
   let ko=hasHangul(title)?title:await displayKoreanTitle(title,anime).catch(()=>'');
   const season=communitySeason(title);if(ko&&!hasHangul(title)&&season>1&&communitySeason(ko)==null)ko=`${ko} ${season}기`;
   const en=await englishTitleFor(anime).catch(()=>'');
-  store[key]={ko,en,time:Date.now()};saveDisplayTitles();
-  return {key,ko,en};
+  const merged={ko:ko||cached?.ko||'',en:en||cached?.en||''};
+  store[key]={...merged,time:Date.now()};saveDisplayTitles();
+  return {key,...merged};
 }
 // Other-language spellings of a search query, so Korean and English searches both reach every source.
 async function titleSearchVariants(query){
@@ -1018,7 +1019,7 @@ app.whenReady().then(async () => {
     return segments;
   };
   const analyzeDownload=async(job,siblings)=>analyzeOfflineOpEd({title:job.title,episode:job.episodeNumber,currentUrl:pathToFileURL(job.filePath).href,duration:job.duration,candidates:siblings.map(item=>({...item.episode,number:item.episodeNumber,localUrl:pathToFileURL(item.filePath).href}))});
-  downloadManager=new DownloadManager({app,findSubtitle:findDownloadSubtitle,findSkips:findDownloadSkips,analyzeOpEd:analyzeDownload,resolveEpisode:resolveProviderEpisode,resolveLinkkf:async episode=>{
+  downloadManager=new DownloadManager({app,resolveTitles:anime=>resolveDisplayTitle(anime),findSubtitle:findDownloadSubtitle,findSkips:findDownloadSkips,analyzeOpEd:analyzeDownload,resolveEpisode:resolveProviderEpisode,resolveLinkkf:async episode=>{
     let playerUrl='';try{const root=await linkkfFetch(`https://emdlinkkf.5imgdarr.top/apilink2.php?data=${encodeURIComponent(episode.token)}`);const links=Array.isArray(root.data)?root.data:[];playerUrl=(links.find(x=>String(x.server).toUpperCase()==='NR-HD')||links[0]||{}).link||'';}catch{}
     if(!playerUrl)playerUrl=`${LINKKF_WEB}/up/${encodeURIComponent(episode.postId)}/watch/?slug=${encodeURIComponent(episode.slug)}`;return resolveStreamPage(playerUrl,`${LINKKF_WEB}/`,15000);
   },broadcast});
@@ -1176,6 +1177,27 @@ app.whenReady().then(async () => {
     return findCommunitySubtitleByTitles(source, titles, Number(episode), { originalTitle: anime?.title || '', offsets });
   });
   ipcMain.handle('mpv:status', () => ({available:Boolean(findExecutable('mpv')),path:findExecutable('mpv')}));
+  // Mini player: the app window itself shrinks to a small always-on-top 16:9 window in the corner, so the
+  // subtitles (VTT and the ASS canvas) keep rendering. Electron closes Document Picture-in-Picture windows at once.
+  const miniState=new WeakMap();
+  ipcMain.handle('player:mini',(event,enabled)=>{
+    const win=BrowserWindow.fromWebContents(event.sender);if(!win)return false;
+    const apply=()=>{
+      if(enabled){
+        if(!miniState.has(win))miniState.set(win,{bounds:win.getBounds(),maximized:win.isMaximized()});
+        if(win.isMaximized())win.unmaximize();
+        const area=screen.getDisplayMatching(win.getBounds()).workArea,width=480,height=270;
+        win.setMinimumSize(320,180);win.setAspectRatio(16/9);win.setAlwaysOnTop(true,'floating');
+        win.setBounds({x:area.x+area.width-width-24,y:area.y+area.height-height-24,width,height});
+      }else{
+        const saved=miniState.get(win);miniState.delete(win);
+        win.setAlwaysOnTop(false);win.setAspectRatio(0);win.setMinimumSize(980,680);
+        if(saved){win.setBounds(saved.bounds);if(saved.maximized)win.maximize()}
+      }
+    };
+    if(enabled&&win.isFullScreen()){win.once('leave-full-screen',()=>setTimeout(apply,50));win.setFullScreen(false)}else apply();
+    return Boolean(enabled);
+  });
   ipcMain.handle('player:fullscreen', (event,enabled) => {const win=BrowserWindow.fromWebContents(event.sender);if(win)win.setFullScreen(Boolean(enabled));return Boolean(enabled)});
   ipcMain.handle('mpv:play', (_, mediaUrl, subtitlePath, title = 'LilacAnime') => {
     const executable=findExecutable('mpv');if(!executable)throw new Error('mpv를 찾지 못했습니다. 설정에서 경로를 확인하거나 mpv를 설치하세요.');

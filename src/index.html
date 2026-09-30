@@ -86,7 +86,8 @@
 
       <section id="playerView" class="view">
         <div id="immersivePlayer" class="immersive-player controls-visible">
-          <video id="video" playsinline preload="auto"></video>
+          <div id="videoStage" class="video-stage"><video id="video" playsinline preload="auto"></video></div>
+          <button id="miniRestore" class="mini-restore" type="button" aria-label="원래 크기로"><svg viewBox="0 0 24 24"><path d="M4 14v6h6M20 10V4h-6M4 20l7-7M20 4l-7 7"/></svg></button>
           <div id="playerEmpty" class="player-loading"><span class="player-spinner"></span><p>영상을 준비하고 있어요</p></div>
           <div class="player-shade player-shade-top"></div><div class="player-shade player-shade-bottom"></div>
           <header class="player-top">

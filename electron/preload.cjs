@@ -44,6 +44,7 @@ contextBridge.exposeInMainWorld('lilac', {
   mpvStatus: () => ipcRenderer.invoke('mpv:status'),
   mpvPlay: (url, subtitlePath, title) => ipcRenderer.invoke('mpv:play', url, subtitlePath, title),
   setPlayerFullscreen: enabled => ipcRenderer.invoke('player:fullscreen', Boolean(enabled)),
+  setMiniPlayer: enabled => ipcRenderer.invoke('player:mini', Boolean(enabled)),
   // Main returns {path,url}: url.pathToFileURL is unavailable in the sandboxed preload.
   chooseVideo: async () => (await ipcRenderer.invoke('file:video'))?.url || null,
   chooseSubtitle: async () => (await ipcRenderer.invoke('file:subtitle'))?.url || null,

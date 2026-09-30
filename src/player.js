@@ -173,6 +173,26 @@ function flashUnlockButton() { $('#unlockPlayer').classList.remove('hidden'); cl
 
 function setPlayerWindowed() { $('#immersivePlayer').classList.toggle('windowed', !playerWindowFullscreen); }
 
+// --- Mini player ----------------------------------------------------------------------------
+// The window becomes a small always-on-top player (main process) and the player shows only play/pause and a
+// restore button, so subtitles keep rendering. The video's own picture-in-picture would drop them.
+let miniPlayerActive = false, fullscreenBeforeMini = false;
+async function setMiniPlayer(active) {
+  if (active === miniPlayerActive) return;
+  miniPlayerActive = active;
+  document.body.classList.toggle('mini-mode', active);
+  openPlayerSettings(false); setPlayerLocked(false);
+  if (active) { fullscreenBeforeMini = playerWindowFullscreen; playerWindowFullscreen = false; }
+  setPlayerWindowed();
+  try {
+    await window.lilac.setMiniPlayer(active);
+    // Back to full screen if the player was full screen before.
+    if (!active && fullscreenBeforeMini && document.body.classList.contains('player-mode')) { playerWindowFullscreen = true; setPlayerWindowed(); await window.lilac.setPlayerFullscreen(true); }
+  } catch (error) { toast(`미니 플레이어 오류: ${error.message}`); }
+  if (!active) showPlayerControls();
+}
+function toggleMiniPlayer() { if (!miniPlayerActive && $('#video').readyState < 2) { toast('먼저 영상을 재생하세요.'); return; } setMiniPlayer(!miniPlayerActive); }
+
 // --- Media controls (Android MediaSession) ---------------------------------------------------
 // Windows shows these in the media flyout, on the lock screen and on hardware media keys.
 function updateMediaSession() {
@@ -239,7 +259,8 @@ function handlePlayerKey(event) {
   const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName) && !['checkbox', 'range'].includes(document.activeElement?.type);
   if (key === 'Escape' || key === 'BrowserBack' || key === 'GoBack') {
     event.preventDefault();
-    if (playerSettingsOpen()) { openPlayerSettings(false); $('#playerSettingsButton').focus(); }
+    if (miniPlayerActive) setMiniPlayer(false);
+    else if (playerSettingsOpen()) { openPlayerSettings(false); $('#playerSettingsButton').focus(); }
     else if (document.fullscreenElement) document.exitFullscreen();
     else $('#playerBack').click();
     return;
@@ -322,7 +343,8 @@ $$('#psSpeeds button').forEach(button => button.onclick = () => {
 $('#previousEpisode').onclick = () => playSiblingEpisode(siblingEpisode(-1));
 $('#nextEpisode').onclick = () => playSiblingEpisode(siblingEpisode(1));
 $('#lockPlayer').onclick = () => setPlayerLocked(true);
-$('#playerBack').addEventListener('click', () => { if ('mediaSession' in navigator) { navigator.mediaSession.metadata = null; navigator.mediaSession.playbackState = 'none'; } });
+$('#miniRestore').onclick = () => setMiniPlayer(false);
+$('#playerBack').addEventListener('click', () => { if (miniPlayerActive) setMiniPlayer(false); if ('mediaSession' in navigator) { navigator.mediaSession.metadata = null; navigator.mediaSession.playbackState = 'none'; } });
 $('#unlockPlayer').onclick = event => { event.stopPropagation(); setPlayerLocked(false); };
 // Settings stay open while the pointer is on them; a click on the video closes them (Android dropdown).
 $('#playerSettings').addEventListener('pointerdown', event => event.stopPropagation());

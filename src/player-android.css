@@ -115,3 +115,25 @@
 .subtitle-offer button { border: 0; border-radius: 10px; padding: 7px 12px; background: #ffffff1f; color: #fff; font: inherit; cursor: pointer; }
 .subtitle-offer #subtitleOfferApply { background: #c8a2c8; color: #1c1b1f; font-weight: 700; }
 .subtitle-offer button:hover { filter: brightness(1.1); }
+
+/* Video + ASS canvas wrapper. */
+.video-stage { position: absolute; inset: 0; }
+
+/* Mini player: the window is small and always on top; only play/pause and restore remain, shown on hover.
+   The whole window can be dragged. */
+.mini-restore { display: none; }
+body.mini-mode .immersive-player { -webkit-app-region: drag; cursor: default; }
+body.mini-mode :is(.player-top, .player-bottom, .player-lock, .player-episode, .player-skip, .player-shade, .subtitle-offer, .player-settings) { display: none !important; }
+body.mini-mode .player-center { opacity: 0; pointer-events: none; transition: opacity .15s ease; }
+body.mini-mode .immersive-player:hover .player-center { opacity: 1; pointer-events: auto; }
+body.mini-mode .player-play { width: 52px; height: 52px; -webkit-app-region: no-drag; }
+body.mini-mode .player-play svg { width: 24px; height: 24px; }
+body.mini-mode .mini-restore {
+  position: absolute; z-index: 5; top: 8px; left: 8px; display: grid; place-items: center; width: 34px; height: 34px;
+  border: 0; border-radius: 50%; background: #000000b3; color: #fff; cursor: pointer;
+  opacity: 0; transition: opacity .15s ease; -webkit-app-region: no-drag;
+}
+body.mini-mode .immersive-player:hover .mini-restore, body.mini-mode .mini-restore:focus-visible { opacity: 1; }
+.mini-restore svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; }
+body.mini-mode .skip-chip { bottom: 8px; right: 8px; -webkit-app-region: no-drag; }
+body.mini-mode .window-drag { display: none; }

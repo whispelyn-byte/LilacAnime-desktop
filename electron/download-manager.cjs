@@ -15,12 +15,13 @@ function seconds(value = '') {
 const MAX_CONCURRENT_DOWNLOADS = 2;
 
 class DownloadManager {
-  constructor({ app, resolveEpisode, resolveLinkkf, findSubtitle, findSkips, analyzeOpEd, broadcast }) {
+  constructor({ app, resolveEpisode, resolveLinkkf, findSubtitle, findSkips, analyzeOpEd, resolveTitles, broadcast }) {
     this.root = path.join(app.getPath('videos'), 'LilacAnime');
     this.stateFile = path.join(app.getPath('userData'), 'downloads.json');
     this.resolveEpisode = resolveEpisode;
     this.resolveLinkkf = resolveLinkkf;
     this.findSubtitle = findSubtitle;
+    this.resolveTitles = resolveTitles;
     this.findSkips = findSkips;
     this.analyzeOpEd = analyzeOpEd;
     this.broadcast = broadcast;
@@ -85,6 +86,7 @@ class DownloadManager {
       try{fs.unlinkSync(job.filePath)}catch{}fs.renameSync(job.partialPath,job.filePath);job.partialPath='';job.status='completed';job.progress=100;job.completed=Date.now();job.updated=Date.now();
       job.stage='subtitle';this.save();await this.attachSubtitle(job,stream);job.stage='';job.updated=Date.now();this.save();
       await this.attachSkips(job);
+      await this.attachTitles(job);
     } catch (error) {
       if(job.status!=='paused'){job.status='failed';job.error=error?.message||String(error);job.updated=Date.now();this.save();}
     } finally { this.active.delete(job.id); setImmediate(()=>this.pump()); }
@@ -98,7 +100,7 @@ class DownloadManager {
       args.push('-rw_timeout','180000000'); // Android MpvHlsDownloader read timeout: 180 s
       args.push('-i',stream.url,'-map','0:v?','-map','0:a?','-c','copy','-movflags','+faststart','-f','mp4',job.partialPath);
       const child=spawn(ffmpeg,args,{windowsHide:true});this.active.set(job.id,{job,process:child});let duration=0,stderr='';
-      child.stderr.on('data',chunk=>{const text=chunk.toString();stderr=(stderr+text).slice(-12000);const d=text.match(/Duration:\s*([^,]+)/)?.[1];if(d){duration=seconds(d);job.duration=duration}const t=[...text.matchAll(/time=\s*([^\s]+)/g)].pop()?.[1];if(t&&duration){job.progress=Math.max(0,Math.min(99,Math.round(seconds(t)/duration*100)));job.updated=Date.now();this.save();}});
+      child.stderr.on('data',chunk=>{const text=chunk.toString();stderr=(stderr+text).slice(-12000);const d=text.match(/Duration:\s*([^,]+)/)?.[1];if(d){duration=seconds(d);job.duration=duration}const t=[...text.matchAll(/time=\s*([^\s]+)/g)].pop()?.[1];if(t&&duration){const progress=Math.max(0,Math.min(99,Math.round(seconds(t)/duration*100)));if(progress!==job.progress){job.progress=progress;job.updated=Date.now();this.save();}}});
       child.once('error',reject);child.once('close',code=>{if(job.status==='paused')return resolve();if(code===0&&fs.existsSync(job.partialPath))resolve();else reject(new Error((stderr.match(/([^\r\n]+)$/)?.[1]||`FFmpeg 종료 코드 ${code}`).trim()));});
     });
   }
@@ -118,6 +120,15 @@ class DownloadManager {
       if (fonts.length) { const dir = path.join(path.dirname(job.filePath), 'fonts'); fs.mkdirSync(dir, { recursive: true }); job.subtitleFonts = fonts.map(file => { const out = path.join(dir, path.basename(file)); if (!fs.existsSync(out)) fs.copyFileSync(file, out); return out; }); }
       job.subtitleLabel = found.label || '';
     } catch { /* the video is still usable without a subtitle */ }
+  }
+
+  // Korean and English titles, stored with the job so the download is labelled correctly offline.
+  async attachTitles(job) {
+    if (!job.anime || job.displayTitles?.ko && job.displayTitles?.en) return;
+    try {
+      const titles = await this.resolveTitles?.({ ...job.anime, title: job.anime.title || job.title });
+      if (titles && (titles.ko || titles.en)) { job.displayTitles = { ko: titles.ko || '', en: titles.en || '' }; this.save(); }
+    } catch { /* titles stay as they were */ }
   }
 
   // OP/ED timestamps for offline playback. A failed lookup is not stored, so the analyzer can fill it later.
@@ -141,6 +152,7 @@ class DownloadManager {
         job.stage = 'subtitle'; this.save(); await this.attachSubtitle(job, null); job.stage = ''; job.updated = Date.now(); this.save();
       }
       for (const job of this.jobs.filter(item => item.status === 'completed' && !item.skipChecked && fs.existsSync(item.filePath || ''))) await this.attachSkips(job);
+      for (const job of this.jobs.filter(item => item.status === 'completed' && item.anime && !(item.displayTitles?.ko && item.displayTitles?.en))) await this.attachTitles(job);
     } finally { this.backfilling = false; }
   }
 
