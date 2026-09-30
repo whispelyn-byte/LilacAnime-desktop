@@ -19,6 +19,10 @@ app.commandLine.appendSwitch('disable-background-media-suspend');
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.setAppUserModelId('com.lilac.anime.desktop');
 let mainWindow = null;
+// Caption-button colours of the current theme, restored when the mini player ends.
+let themeOverlay = { color: '#121212', symbolColor: '#d0cdd6', height: 42 };
+// Mini player windows and the bounds to restore.
+const miniState = new WeakMap();
 const singleInstanceLock = app.requestSingleInstanceLock();
 if (!singleInstanceLock) {
   app.quit();
@@ -1130,7 +1134,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('subtitle-store:list',(_,key)=>subtitleStore.list(String(key||'')));
   ipcMain.handle('subtitle-store:save',(_,key,entry)=>subtitleStore.save(String(key||''),entry));
   ipcMain.handle('subtitle-store:remove',(_,key,id)=>subtitleStore.remove(String(key||''),String(id||'')));
-  ipcMain.handle('window:theme',(event,light)=>{const win=BrowserWindow.fromWebContents(event.sender);if(win&&!win.isDestroyed())win.setTitleBarOverlay(light?{color:'#ffffff',symbolColor:'#1c1b1f'}:{color:'#121212',symbolColor:'#d0cdd6'});});
+  ipcMain.handle('window:theme',(event,light)=>{const win=BrowserWindow.fromWebContents(event.sender);themeOverlay=light?{color:'#ffffff',symbolColor:'#1c1b1f',height:42}:{color:'#121212',symbolColor:'#d0cdd6',height:42};if(win&&!win.isDestroyed()&&!miniState.has(win))win.setTitleBarOverlay(themeOverlay);});
   ipcMain.handle('update:state',()=>updater.state);
   ipcMain.handle('update:check',()=>updater.check());
   ipcMain.handle('update:download',()=>updater.download());
@@ -1179,7 +1183,11 @@ app.whenReady().then(async () => {
   ipcMain.handle('mpv:status', () => ({available:Boolean(findExecutable('mpv')),path:findExecutable('mpv')}));
   // Mini player: the app window itself shrinks to a small always-on-top 16:9 window in the corner, so the
   // subtitles (VTT and the ASS canvas) keep rendering. Electron closes Document Picture-in-Picture windows at once.
-  const miniState=new WeakMap();
+  // The caption buttons cannot be removed at runtime; in the mini player they are transparent unless the
+  // cursor is over the window. The whole mini window is a drag region, which gets no mouse events, so the
+  // cursor is polled here and the page is told as well (it shows play/pause and restore the same way).
+  const miniChrome=(win,visible)=>{if(win.isDestroyed())return;win.setTitleBarOverlay(visible?{color:'#000000',symbolColor:'#ffffff',height:32}:{color:'#00000000',symbolColor:'#00000000',height:32});win.webContents.send('mini:hover',visible)};
+  const watchMini=win=>{let last=null;const timer=setInterval(()=>{if(win.isDestroyed()||!miniState.has(win)){clearInterval(timer);return}const point=screen.getCursorScreenPoint(),b=win.getBounds(),inside=point.x>=b.x&&point.x<b.x+b.width&&point.y>=b.y&&point.y<b.y+b.height;if(inside!==last){last=inside;miniChrome(win,inside)}},200);};
   ipcMain.handle('player:mini',(event,enabled)=>{
     const win=BrowserWindow.fromWebContents(event.sender);if(!win)return false;
     const apply=()=>{
@@ -1189,8 +1197,9 @@ app.whenReady().then(async () => {
         const area=screen.getDisplayMatching(win.getBounds()).workArea,width=480,height=270;
         win.setMinimumSize(320,180);win.setAspectRatio(16/9);win.setAlwaysOnTop(true,'floating');
         win.setBounds({x:area.x+area.width-width-24,y:area.y+area.height-height-24,width,height});
+        miniChrome(win,false);watchMini(win);
       }else{
-        const saved=miniState.get(win);miniState.delete(win);
+        const saved=miniState.get(win);miniState.delete(win);win.setTitleBarOverlay(themeOverlay);win.webContents.send('mini:hover',false);
         win.setAlwaysOnTop(false);win.setAspectRatio(0);win.setMinimumSize(980,680);
         if(saved){win.setBounds(saved.bounds);if(saved.maximized)win.maximize()}
       }

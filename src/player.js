@@ -344,6 +344,7 @@ $('#previousEpisode').onclick = () => playSiblingEpisode(siblingEpisode(-1));
 $('#nextEpisode').onclick = () => playSiblingEpisode(siblingEpisode(1));
 $('#lockPlayer').onclick = () => setPlayerLocked(true);
 $('#miniRestore').onclick = () => setMiniPlayer(false);
+window.lilac.onMiniHover?.(hover => document.body.classList.toggle('mini-hover', hover));
 $('#playerBack').addEventListener('click', () => { if (miniPlayerActive) setMiniPlayer(false); if ('mediaSession' in navigator) { navigator.mediaSession.metadata = null; navigator.mediaSession.playbackState = 'none'; } });
 $('#unlockPlayer').onclick = event => { event.stopPropagation(); setPlayerLocked(false); };
 // Settings stay open while the pointer is on them; a click on the video closes them (Android dropdown).
