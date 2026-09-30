@@ -660,11 +660,10 @@ function releaseNotesHtml(text){
   }
   close();return html;
 }
-// Shown once on the first start of a new version. A fresh install shows nothing; installs from before this
-// existed are told apart by their history or library.
+// Shown once on the first start of each version, a fresh install included.
 async function showChangelogIfUpdated(version){
   let seen=null;try{seen=localStorage.getItem('lastSeenVersion');localStorage.setItem('lastSeenVersion',version)}catch{return}
-  if(seen===version||(seen===null&&!state.history?.length&&!state.library?.length))return;
+  if(seen===version)return;
   const data=await window.lilac.updateNotes().catch(()=>null),dialog=$('#changelogDialog');
   $('#changelogTitle').textContent=`v${version} 변경 사항`;
   // Release texts start with their own "## v0.3.19" heading, which the dialog title already says.
