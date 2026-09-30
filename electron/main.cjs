@@ -12,6 +12,9 @@ const { detectOpEd } = require('./oped-fingerprint.cjs');
 const { DownloadManager } = require('./download-manager.cjs');
 const { Updater } = require('./updater.cjs');
 const { SubtitleStore } = require('./subtitle-store.cjs');
+const { createTranslator } = require('./subtitle-translator.cjs');
+let subtitleTranslator = null;
+const translator = () => subtitleTranslator ||= createTranslator(app.getPath('userData'));
 
 app.commandLine.appendSwitch('disable-blink-features','AutomationControlled');
 // Android BackgroundAudioService: playback continues while the window is hidden or minimized.
@@ -1058,7 +1061,8 @@ app.whenReady().then(async () => {
   const findDownloadSubtitle=async(job,stream)=>{
     const episode=job.episode||{},key=encodeURIComponent(String(episode.url||episode.token||episode.id||episode.number||'')),saved=key?subtitleStore.list(key):[],preferred=job.subtitleSource||'reanime';
     const fromSaved=entry=>({path:entry.path,assPath:entry.assPath,fonts:entry.fonts||[],label:entry.label});
-    const savedPreferred=saved.find(entry=>entry.source===preferred);if(savedPreferred)return fromSaved(savedPreferred);
+    // A Gemini translation stands for the Re:Anime subtitle it was made from.
+    const savedPreferred=(preferred==='reanime'&&saved.find(entry=>entry.source==='gemini'))||saved.find(entry=>entry.source===preferred);if(savedPreferred)return fromSaved(savedPreferred);
     if(stream?.subtitleUrl)return {stream:true};
     if(saved[0])return fromSaved(saved[0]);
     const anime=job.anime||{},title=job.title||anime.title||'',titles=anime.provider==='reanime'?await koreanTitleCandidates(title,anime).catch(()=>[title]):[title];
@@ -1266,6 +1270,15 @@ app.whenReady().then(async () => {
   // Default ASS font: the user's choice (설정 > 기본 자막 폰트) or a Korean system font,
   // since libass' bundled fallback font has no Hangul glyphs.
   ipcMain.handle('tmdb:get',()=>({key:tmdbKey()}));
+  // Gemini translation of subtitle tracks (the user's own key); progress goes to the page that asked.
+  ipcMain.handle('gemini:get',()=>translator().settings());
+  ipcMain.handle('gemini:set',(_,value={})=>translator().saveSettings(value||{}));
+  ipcMain.handle('subtitle:translate',async(event,{path:file='',title='',id=0}={})=>{
+    const resolved=path.resolve(String(file||''));
+    if(!resolved.startsWith(path.join(app.getPath('userData'),'subtitles')+path.sep)||!/\.vtt$/i.test(resolved)||!fs.existsSync(resolved))throw new Error('번역할 자막 파일이 없습니다.');
+    const result=await translator().translate({file:resolved,title:String(title||''),progress:(done,total)=>{if(!event.sender.isDestroyed())event.sender.send('translate:progress',{id,done,total})}});
+    return subtitleResult(result.path,{model:result.model,failed:result.failed,cached:result.cached});
+  });
   // Several lookups at a time (TMDB answers quickly; AniList allows about 90 requests a minute).
   ipcMain.handle('titles:resolve',async(_,list=[])=>{
     const items=(Array.isArray(list)?list:[]).slice(0,60),results=[];let next=0;

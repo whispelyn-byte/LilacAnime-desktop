@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { pathToFileURL } = require('url');
 
-const SOURCES = ['linkkf', 'reanime', 'kairan', 'csora', 'anissia', 'user', 'provider', 'download'];
+const SOURCES = ['linkkf', 'reanime', 'kairan', 'csora', 'anissia', 'user', 'provider', 'download', 'gemini'];
 
 class SubtitleStore {
   constructor({ app }) {

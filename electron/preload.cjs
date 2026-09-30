@@ -59,6 +59,10 @@ contextBridge.exposeInMainWorld('lilac', {
   resolveTitles: list => ipcRenderer.invoke('titles:resolve', list),
   titleVariants: query => ipcRenderer.invoke('titles:variants', query),
   setTmdbKey: key => ipcRenderer.invoke('tmdb:set', key),
+  geminiSettings: () => ipcRenderer.invoke('gemini:get'),
+  setGeminiSettings: value => ipcRenderer.invoke('gemini:set', value),
+  translateSubtitle: options => ipcRenderer.invoke('subtitle:translate', options),
+  onTranslateProgress: callback => ipcRenderer.on('translate:progress', (_, value) => callback(value)),
   defaultSubtitleFont: (choice, customPath) => ipcRenderer.invoke('font:default', choice, customPath),
   chooseFont: () => ipcRenderer.invoke('file:font'),
   openExternal: url => ipcRenderer.invoke('open:external', url)
