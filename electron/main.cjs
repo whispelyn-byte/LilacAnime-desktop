@@ -771,7 +771,7 @@ function communityTitle(text=''){return String(text).replace(/(\d+)\s*[~∼\-,]\
 // title, series posts (Csora) label each link ("13화", "1 ~ 12화") and add a separate "폰트" link.
 function communityLinks(post,episode){
   const $=cheerio.load(post.html),anchors=[];
-  $('a[href]').each((_,a)=>{const href=absoluteUrl($(a).attr('href'),post.url);if(/drive\.google\.com|docs\.google\.com|\.zip(?:$|\?)|\.(?:ass|ssa|srt|vtt)(?:$|\?)/i.test(href))anchors.push({href,label:$(a).text().trim()})});
+  $('a[href]').each((_,a)=>{const href=absoluteUrl($(a).attr('href'),post.url);if(/drive\.google\.com|docs\.google\.com|\.zip(?:$|\?)|\.(?:ass|ssa|srt|vtt|smi)(?:$|\?)/i.test(href))anchors.push({href,label:$(a).text().trim()})});
   const fonts=anchors.filter(a=>/폰트|font/i.test(a.label)),subs=anchors.filter(a=>!fonts.includes(a)),withFonts=list=>list.length?[...new Set([...list,...fonts].map(a=>a.href))]:[];
   const titleEpisodes=communityPostEpisodes(post.title);
   if(titleEpisodes.any)return titleEpisodes.has(episode)?{links:withFonts(subs),episode}:{links:[],episode};
@@ -821,7 +821,8 @@ async function extractCommunityArchive(buffer,dir){
     return files;
   }finally{fs.rmSync(work,{recursive:true,force:true})}
 }
-function communitySubtitleExt(buffer){const head=buffer.slice(0,4096).toString('utf8').replace(/^\uFEFF/,'');return /^WEBVTT/.test(head)?'.vtt':/\[Script Info\]/i.test(head)?'.ass':/<sami[\s>]/i.test(head)?'.smi':/\d+:\d{2}:\d{2}[,.]\d{3}\s*-->/.test(head)?'.srt':null}
+// UTF-16 files (common for SMI) are read by their byte order mark.
+function communitySubtitleExt(buffer){const bom=buffer[0]===0xff&&buffer[1]===0xfe?'utf-16le':buffer[0]===0xfe&&buffer[1]===0xff?'utf-16be':'utf-8',head=new TextDecoder(bom).decode(buffer.subarray(0,8192)).replace(/^\uFEFF/,'');return /^WEBVTT/.test(head)?'.vtt':/\[Script Info\]/i.test(head)?'.ass':/<sami[\s>]/i.test(head)?'.smi':/\d+:\d{2}:\d{2}[,.]\d{3}\s*-->/.test(head)?'.srt':null}
 // Posts of one blog ranked for a title and episode (best first).
 function rankCommunityPosts(posts,title,episode,originalTitle='',{offsets=[]}={}){
   const season=communitySeason(title)??communitySeason(originalTitle)??1,wanted=communityTitle(title);
@@ -901,7 +902,9 @@ async function anissiaFetch(pathname){
 async function anissiaAnime(title,originalTitle=''){
   const season=communitySeason(title)??communitySeason(originalTitle)??1,wanted=communityTitle(title);
   const bare=wanted.replace(/[~〜～][^~〜～]*[~〜～]/g,' ').replace(/\s*(?:\d+\s*기|season\s*\d+|시즌\s*\d+)\s*$/i,'').replace(/\s+/g,' ').trim();
-  const queries=[...new Set([bare,bare.split(' ').slice(0,2).join(' ')])].filter(query=>query.length>=2);
+  // Anissia's search misses titles typed with their punctuation ("명탐정 프리큐어!").
+  const plain=bare.replace(/[!?！？.,:;·'"“”‘’♡♥☆★]+/g,' ').replace(/\s+/g,' ').trim();
+  const queries=[...new Set([bare,plain,plain.split(' ').slice(0,2).join(' ')])].filter(query=>query.length>=2);
   const seen=new Map();
   for(const query of queries){
     for(const item of (await anissiaFetch(`/anime/list/0?q=${encodeURIComponent(query)}`).catch(()=>null))?.content||[])seen.set(item.animeNo,item);
@@ -932,7 +935,8 @@ async function tistoryPosts(origin,subject,extraQueries=[]){
 // A maker's own name for the anime: the linked post's title without episode numbers or marks, when it is not
 // simply the official title.
 function anissiaNickname(pageTitle,subject){
-  const name=String(pageTitle||'').replace(/\d+\s*(?:화|회|편)?|\((?:끝|완|完)\)|完|자막|-끝-/g,' ').replace(/\s+/g,' ').trim();
+  const title=String(pageTitle||''),head=title.match(/^(.*?\S)\s*\d+\s*(?:화|회|편)/)?.[1];
+  const name=(head||title).replace(/\d+\s*(?:화|회|편)?|\((?:끝|완|完)\)|完|자막|-끝-/g,' ').replace(/\s+/g,' ').trim();
   return name.length>=2&&communityScore(communityTitle(subject),name)<.52?name:'';
 }
 async function anissiaLinkedPost(url,subject,origin){
@@ -942,11 +946,39 @@ async function anissiaLinkedPost(url,subject,origin){
     return {url,title:`${subject} ${pageTitle}`.trim(),pageTitle,html};
   }catch{return null}
 }
-// Makers whose blogs can be read: Blogger and Tistory. Kairan/Csora have their own sources; Naver blocks scripts.
+// Naver blogs: a post page lists its attachments in aPostFiles, and the mobile API lists and searches posts.
+function naverBlogRef(url){
+  try{
+    const u=new URL(url);if(!/^(?:m\.)?blog\.naver\.com$/i.test(u.hostname))return null;
+    const parts=u.pathname.split('/').filter(Boolean),blogId=u.searchParams.get('blogId')||(/\.naver$/i.test(parts[0]||'')?'':parts[0]||'');
+    return blogId?{blogId,logNo:u.searchParams.get('logNo')||(/^\d+$/.test(parts[1]||'')?parts[1]:'')}:null;
+  }catch{return null}
+}
+async function naverPost(blogId,logNo){
+  const url=`https://blog.naver.com/PostView.naver?blogId=${encodeURIComponent(blogId)}&logNo=${encodeURIComponent(logNo)}`;
+  const page=await providerFetch(url,{referer:`https://blog.naver.com/${blogId}`}),escape=value=>String(value||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const files=[...page.matchAll(/aPostFiles\[\d+\] = JSON\.parse\('(.*?)'\.replace/g)].flatMap(x=>{try{return JSON.parse(x[1].replace(/\\'/g,''))}catch{return []}});
+  const pageTitle=cheerio.load(page)('title').first().text().replace(/\s*:\s*네이버\s*블로그\s*$/,'').trim();
+  // The attachments become plain links, so the post is matched like any other blog post.
+  return {url,pageTitle,html:files.filter(file=>file?.encodedAttachFileUrl).map(file=>`<a href="${escape(file.encodedAttachFileUrl)}">${escape(file.encodedAttachFileName)}</a>`).join('')};
+}
+async function naverPosts(blogId,subject,extraQueries=[]){
+  const posts=new Map(),api=pathname=>providerFetch(`https://m.blog.naver.com/api/blogs/${encodeURIComponent(blogId)}${pathname}`,{json:true,referer:`https://m.blog.naver.com/${blogId}`});
+  const add=item=>{const logNo=String(item?.logNo||''),title=cheerio.load(`<p>${item?.title||item?.titleWithInspectMessage||''}</p>`)('p').text().replace(/\s+/g,' ').trim();if(logNo&&title&&!posts.has(logNo))posts.set(logNo,{url:`https://blog.naver.com/PostView.naver?blogId=${encodeURIComponent(blogId)}&logNo=${logNo}`,logNo,title})};
+  try{((await api('/post-list?categoryNo=0&itemCount=30&page=1'))?.result?.items||[]).forEach(add)}catch{/* search below */}
+  const series=subject.replace(/\s*(?:\d+\s*기(?![가-힣])|season\s*\d+|시즌\s*\d+)\s*$/i,'').trim();
+  for(const query of [...new Set([subject,series,...extraQueries])].filter(Boolean)){
+    for(let page=1;page<=4;page++){
+      try{const result=(await api(`/search/post?query=${encodeURIComponent(query)}&page=${page}`))?.result,list=result?.list||[];list.forEach(add);if(!list.length||page*list.length>=Number(result?.totalCount||0))break}catch{break}
+    }
+  }
+  return [...posts.values()];
+}
+// Makers whose blogs can be read: Blogger, Tistory and Naver. Kairan/Csora have their own sources.
 function anissiaMakerSupport(website){
   let host='';try{host=new URL(website).hostname}catch{return 'invalid'}
   if(/^(?:kairan03|csora556)\.blogspot\.com$/i.test(host))return 'own-source';
-  return /\.blogspot\.com$|\.tistory\.com$/i.test(host)?'ok':'unsupported';
+  return /\.blogspot\.com$|\.tistory\.com$|^(?:m\.)?blog\.naver\.com$/i.test(host)?'ok':'unsupported';
 }
 async function anissiaMakers(title,originalTitle=''){
   const anime=await anissiaAnime(title,originalTitle);if(!anime)return null;
@@ -966,21 +998,23 @@ async function findAnissiaSubtitle(title,episode,{originalTitle='',offsets=[],ma
       let match=null;
       // The post Anissia links belongs to this anime even when the maker spells the title differently
       // ("후리렌 1기(完)" for 장송의 프리렌), so it is ranked under the Anissia title.
-      const linked=await anissiaLinkedPost(caption.website,anime.subject,origin);
+      const naver=naverBlogRef(caption.website);
+      const linked=naver?(naver.logNo?await naverPost(naver.blogId,naver.logNo).then(post=>({...post,title:`${anime.subject} ${post.pageTitle}`.trim()})).catch(()=>null):null):await anissiaLinkedPost(caption.website,anime.subject,origin);
       if(/\.blogspot\.com$/i.test(host)){
         const posts=[...await communityPosts(origin),...(linked?[linked]:[])];
         for(const name of [anime.subject,title])if(!match)match=rankCommunityPosts(posts,name,episode,originalTitle,{offsets})[0];
-      }else if(/\.tistory\.com$/i.test(host)){
+      }else if(/\.tistory\.com$/i.test(host)||naver){
         // Some makers use their own short name ("츠레카노 12"); the post Anissia links gives it away, so it is
         // searched too and its posts count as this anime's.
         const nickname=anissiaNickname(linked?.pageTitle||'',anime.subject);
         const nicknameEpisode=title=>{const at=title.indexOf(nickname),number=at<0?null:title.slice(at+nickname.length).match(/^\s*(\d{1,3})(?!\d)/)?.[1];return number?`${anime.subject} ${Number(number)}화`:null};
-        const listed=(await tistoryPosts(origin,anime.subject,nickname?[nickname]:[])).map(post=>{const renamed=nickname&&post.title.includes(nickname)&&communityScore(communityTitle(anime.subject),communityPostTitle(post.title))<.52?nicknameEpisode(post.title):null;return renamed?{...post,title:renamed}:post}),season=communitySeason(anime.subject)??1;
+        const nicknames=nickname?[...new Set([nickname,nickname.replace(/\([^)]*\)/g,' ').replace(/\s+/g,' ').trim()])].filter(Boolean):[];
+        const listed=(naver?await naverPosts(naver.blogId,anime.subject,nicknames):await tistoryPosts(origin,anime.subject,nicknames)).map(post=>{const renamed=nickname&&post.title.includes(nickname)&&communityScore(communityTitle(anime.subject),communityPostTitle(post.title))<.52?nicknameEpisode(post.title):null;return renamed?{...post,title:renamed}:post}),season=communitySeason(anime.subject)??1;
         // The season's own number, or a continued one on posts without a season ("15화" for 2기 3화).
         const numbered=post=>{const postSeason=communitySeason(communityPostTitle(post.title)),episodes=communityPostEpisodes(post.title);return ((postSeason??1)===season&&episodes.has(episode))||(season>1&&postSeason==null&&offsets.some(offset=>episodes.has(episode+offset)))};
         const base=value=>communityTitle(value).replace(/\s*(?:\d+\s*기|season\s*\d+|시즌\s*\d+)\s*$/i,'');
         const likely=listed.filter(post=>numbered(post)&&Math.max(communityScore(base(anime.subject),communityPostTitle(post.title)),communityScore(base(title),communityPostTitle(post.title)))>=.52).slice(0,4);
-        for(const post of likely){try{post.html=await providerFetch(post.url,{referer:`${origin}/`})}catch{post.html=''}}
+        for(const post of likely){try{post.html=naver?(await naverPost(naver.blogId,post.logNo)).html:await providerFetch(post.url,{referer:`${origin}/`})}catch{post.html=''}}
         const posts=[...likely.filter(post=>post.html),...(linked&&!likely.some(post=>post.url===linked.url)?[linked]:[])];
         for(const name of [anime.subject,title])if(!match)match=rankCommunityPosts(posts,name,episode,originalTitle,{offsets})[0];
       }

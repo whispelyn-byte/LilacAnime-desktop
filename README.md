@@ -27,7 +27,7 @@
 |---|---|
 | Kairan | [kairan03.blogspot.com](https://kairan03.blogspot.com) |
 | Csora | [csora556.blogspot.com](https://csora556.blogspot.com) |
-| Anissia | [anissia.net](https://anissia.net) 자막 편성표에 등록된 제작자의 블로그 (Blogger, 티스토리). 네이버 블로그 제작자는 지원하지 않습니다. |
+| Anissia | [anissia.net](https://anissia.net) 자막 편성표에 등록된 제작자의 블로그 (Blogger, 티스토리, 네이버 블로그). Anissia 소스를 고르면 플레이어 설정에서 제작자를 직접 고를 수 있습니다. |
 
 2기 이후 시즌을 1기에 이어서 번호 매기는 블로그(예: 2기 3화를 "15화"로 올린 글)도 찾습니다.
 

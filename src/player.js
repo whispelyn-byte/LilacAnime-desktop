@@ -64,11 +64,13 @@ function renderDiscoveredFonts() {
 }
 
 // Anissia makers of the playing anime: fansubs are timed for different releases, so another maker's subtitle
-// may match the video better. Loaded once per title; Naver blogs cannot be read and are shown disabled.
+// may match the video better. Shown while Anissia is the chosen source or the playing subtitle; loaded once
+// per title. Makers on blogs that cannot be read are shown disabled.
 let anissiaMakerKey = null, anissiaMakerData = null;
+const anissiaChosen = () => localStorage.getItem('subtitleSource') === 'anissia' || currentSubtitle?.source === 'anissia';
 async function loadAnissiaMakers() {
   const title = $('#skipTitle').value.trim(), box = $('#anissiaMakers');
-  if (!title) { box.classList.add('hidden'); return; }
+  if (!title || !anissiaChosen()) { box.classList.add('hidden'); return; }
   const key = `${title}|${currentPlaybackContext.anime?.id || ''}`;
   if (anissiaMakerKey !== key) {
     anissiaMakerKey = key; anissiaMakerData = null;
@@ -82,12 +84,12 @@ async function loadAnissiaMakers() {
 function renderAnissiaMakers() {
   const box = $('#anissiaMakers'), makers = anissiaMakerData?.makers || [];
   if (!anissiaMakerData) return;
-  box.classList.toggle('hidden', !makers.length);
+  box.classList.toggle('hidden', !makers.length || !anissiaChosen());
   $('#anissiaMakerState').textContent = makers.length ? `${makers.length}명` : '';
   const current = currentSubtitle?.source === 'anissia' ? currentSubtitle.label : '';
   $('#anissiaMakerList').replaceChildren(...makers.map(maker => {
     const button = document.createElement('button'); button.type = 'button';
-    const reason = maker.support === 'own-source' ? 'Kairan/Csora 소스에서 선택' : maker.support === 'unsupported' ? '네이버 블로그는 지원하지 않음' : '';
+    const reason = maker.support === 'own-source' ? 'Kairan/Csora 소스에서 선택' : maker.support === 'unsupported' ? '지원하지 않는 블로그' : '';
     button.textContent = maker.name; button.title = reason || `${maker.episode}화까지`;
     button.disabled = maker.support !== 'ok'; button.classList.toggle('selected', current.includes(`· ${maker.name} `));
     button.onclick = () => selectAnissiaMaker(maker.name);
