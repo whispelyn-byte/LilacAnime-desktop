@@ -1079,7 +1079,9 @@ app.whenReady().then(async () => {
     return segments;
   };
   const analyzeDownload=async(job,siblings)=>analyzeOfflineOpEd({title:job.title,episode:job.episodeNumber,currentUrl:pathToFileURL(job.filePath).href,duration:job.duration,candidates:siblings.map(item=>({...item.episode,number:item.episodeNumber,localUrl:pathToFileURL(item.filePath).href}))});
-  downloadManager=new DownloadManager({app,resolveTitles:anime=>resolveDisplayTitle(anime),findSubtitle:findDownloadSubtitle,findSkips:findDownloadSkips,analyzeOpEd:analyzeDownload,resolveEpisode:resolveProviderEpisode,resolveLinkkf:async episode=>{
+  downloadManager=new DownloadManager({app,resolveTitles:anime=>resolveDisplayTitle(anime),
+    saveTrack:(url,referer)=>saveRemoteSubtitle(String(url),{referer:/^https:\/\//i.test(referer||'')?referer:'https://flixcloud.cc/',userAgent:ANDROID_WEBVIEW_UA}).then(file=>subtitleResult(file)),
+    translateTrack:(file,title)=>{const settings=translator().settings();return settings.key&&settings.translateDownloads?translator().translate({file,title}):null},findSubtitle:findDownloadSubtitle,findSkips:findDownloadSkips,analyzeOpEd:analyzeDownload,resolveEpisode:resolveProviderEpisode,resolveLinkkf:async episode=>{
     let playerUrl='';try{const root=await linkkfFetch(`https://emdlinkkf.5imgdarr.top/apilink2.php?data=${encodeURIComponent(episode.token)}`);const links=Array.isArray(root.data)?root.data:[];playerUrl=(links.find(x=>String(x.server).toUpperCase()==='NR-HD')||links[0]||{}).link||'';}catch{}
     if(!playerUrl)playerUrl=`${LINKKF_WEB}/up/${encodeURIComponent(episode.postId)}/watch/?slug=${encodeURIComponent(episode.slug)}`;return resolveStreamPage(playerUrl,`${LINKKF_WEB}/`,15000);
   },broadcast});
@@ -1275,7 +1277,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('gemini:set',(_,value={})=>translator().saveSettings(value||{}));
   ipcMain.handle('subtitle:translate',async(event,{path:file='',title='',id=0}={})=>{
     const resolved=path.resolve(String(file||''));
-    if(!resolved.startsWith(path.join(app.getPath('userData'),'subtitles')+path.sep)||!/\.vtt$/i.test(resolved)||!fs.existsSync(resolved))throw new Error('번역할 자막 파일이 없습니다.');
+    // App subtitle files and the tracks saved with downloads.
+    if(![path.join(app.getPath('userData'),'subtitles'),downloadManager?.root].some(root=>root&&resolved.startsWith(root+path.sep))||!/\.vtt$/i.test(resolved)||!fs.existsSync(resolved))throw new Error('번역할 자막 파일이 없습니다.');
     const result=await translator().translate({file:resolved,title:String(title||''),progress:(done,total)=>{if(!event.sender.isDestroyed())event.sender.send('translate:progress',{id,done,total})}});
     return subtitleResult(result.path,{model:result.model,failed:result.failed,cached:result.cached});
   });

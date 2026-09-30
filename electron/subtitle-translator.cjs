@@ -10,7 +10,7 @@ const BATCH_LINES = 120, BATCH_CHARS = 7000, PARALLEL = 3;
 
 function createTranslator(userData) {
   const settingsFile = path.join(userData, 'gemini.json'), cacheDir = path.join(userData, 'subtitles', 'translated');
-  const read = () => { try { const value = JSON.parse(fs.readFileSync(settingsFile, 'utf8')); return { key: String(value.key || '').trim(), model: String(value.model || '').trim(), models: Array.isArray(value.models) ? value.models : [] }; } catch { return { key: '', model: '', models: [] }; } };
+  const read = () => { try { const value = JSON.parse(fs.readFileSync(settingsFile, 'utf8')); return { key: String(value.key || '').trim(), model: String(value.model || '').trim(), models: Array.isArray(value.models) ? value.models : [], translateDownloads: value.translateDownloads !== false }; } catch { return { key: '', model: '', models: [], translateDownloads: true }; } };
   const write = value => { fs.mkdirSync(path.dirname(settingsFile), { recursive: true }); fs.writeFileSync(settingsFile, JSON.stringify(value), 'utf8'); return value; };
 
   async function api(pathname, key, init = {}) {
@@ -35,12 +35,12 @@ function createTranslator(userData) {
     return models.find(name => /flash/.test(name) && !/lite|preview/.test(name)) || models.find(name => /flash/.test(name)) || models[0] || '';
   }
 
-  async function saveSettings({ key, model } = {}) {
-    key = String(key || '').trim();
-    if (!key) return write({ key: '', model: '', models: [] });
+  async function saveSettings({ key, model, translateDownloads = true } = {}) {
+    key = String(key || '').trim(); translateDownloads = translateDownloads !== false;
+    if (!key) return write({ key: '', model: '', models: [], translateDownloads });
     const models = await listModels(key);
     if (!models.length) throw new Error('이 키로 쓸 수 있는 Gemini 모델이 없습니다.');
-    return write({ key, models, model: models.includes(model) ? model : defaultModel(models) });
+    return write({ key, models, model: models.includes(model) ? model : defaultModel(models), translateDownloads });
   }
 
   // Gemini 2.5 takes a thinking budget, later models a thinking level; subtitles need little of either.

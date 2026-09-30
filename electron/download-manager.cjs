@@ -15,12 +15,15 @@ function seconds(value = '') {
 const MAX_CONCURRENT_DOWNLOADS = 2;
 
 class DownloadManager {
-  constructor({ app, resolveEpisode, resolveLinkkf, findSubtitle, findSkips, analyzeOpEd, resolveTitles, broadcast }) {
+  constructor({ app, resolveEpisode, resolveLinkkf, findSubtitle, findSkips, analyzeOpEd, resolveTitles, saveTrack, translateTrack, broadcast }) {
     this.root = path.join(app.getPath('videos'), 'LilacAnime');
     this.stateFile = path.join(app.getPath('userData'), 'downloads.json');
     this.resolveEpisode = resolveEpisode;
     this.resolveLinkkf = resolveLinkkf;
     this.findSubtitle = findSubtitle;
+    this.saveTrack = saveTrack;
+    this.translateTrack = translateTrack;
+    this.trackQueue = Promise.resolve();
     this.resolveTitles = resolveTitles;
     this.findSkips = findSkips;
     this.analyzeOpEd = analyzeOpEd;
@@ -60,6 +63,7 @@ class DownloadManager {
     const job = this.jobs.find(item => item.id === id); if (!job) return false;
     this.active.get(id)?.process?.kill?.();
     for (const file of [job.filePath, job.subtitlePath, job.subtitleAssPath, job.partialPath]) { if (file) try { fs.unlinkSync(file); } catch {} }
+    if (job.filePath && job.subtitleTracks) try { fs.rmSync(trackDir(job), { recursive: true, force: true }); } catch {}
     this.jobs = this.jobs.filter(item => item.id !== id); this.save(); return true;
   }
 
@@ -87,6 +91,7 @@ class DownloadManager {
       job.stage='subtitle';this.save();await this.attachSubtitle(job,stream);job.stage='';job.updated=Date.now();this.save();
       await this.attachSkips(job);
       await this.attachTitles(job);
+      this.queueTracks(job, stream);
     } catch (error) {
       if(job.status!=='paused'){job.status='failed';job.error=error?.message||String(error);job.updated=Date.now();this.save();}
     } finally { this.active.delete(job.id); setImmediate(()=>this.pump()); }
@@ -120,6 +125,45 @@ class DownloadManager {
       if (fonts.length) { const dir = path.join(path.dirname(job.filePath), 'fonts'); fs.mkdirSync(dir, { recursive: true }); job.subtitleFonts = fonts.map(file => { const out = path.join(dir, path.basename(file)); if (!fs.existsSync(out)) fs.copyFileSync(file, out); return out; }); }
       job.subtitleLabel = found.label || '';
     } catch { /* the video is still usable without a subtitle */ }
+  }
+
+  // Re:Anime subtitle tracks are all kept with the episode and, when the user set up Gemini, translated into
+  // Korean, so the track list and the translations work offline. This runs one episode at a time after the
+  // download has finished, so it never holds a download slot.
+  queueTracks(job, stream) {
+    if (!stream?.subtitleTracks?.length || !this.saveTrack) return;
+    this.trackQueue = this.trackQueue.then(() => this.attachTracks(job, stream)).catch(() => {});
+  }
+  async attachTracks(job, stream) {
+    if (!this.jobs.includes(job) || !fs.existsSync(job.filePath || '')) return;
+    const dir = trackDir(job), saved = [];
+    fs.mkdirSync(dir, { recursive: true });
+    for (const [index, track] of stream.subtitleTracks.entries()) {
+      try {
+        const file = await this.saveTrack(track.url, stream.referer), name = `${String(index + 1).padStart(2, '0')}_${safeName(track.label || 'track')}`;
+        const entry = { label: track.label || `트랙 ${index + 1}`, format: track.format || 'vtt', language: track.language || '', url: track.url, path: path.join(dir, `${name}${path.extname(file.path)}`) };
+        fs.copyFileSync(file.path, entry.path);
+        if (file.assPath && fs.existsSync(file.assPath)) { entry.assPath = path.join(dir, `${name}${path.extname(file.assPath)}`); fs.copyFileSync(file.assPath, entry.assPath); }
+        saved.push(entry);
+      } catch { /* the other tracks are still kept */ }
+    }
+    if (!saved.length || !this.jobs.includes(job)) return;
+    job.subtitleTracks = saved; job.updated = Date.now(); this.save();
+    const title = job.displayTitles?.ko || job.title;
+    try {
+      for (const [index, track] of saved.entries()) {
+        if (!this.jobs.includes(job)) return;
+        job.stage = 'translate'; job.translateProgress = `${index + 1}/${saved.length}`; this.save();
+        let result = null;
+        try { result = await this.translateTrack?.(track.path, title); } catch (error) {
+          // A bad key or an exhausted quota fails every track the same way.
+          if ([400, 401, 403, 404, 429].includes(error?.status)) break; continue;
+        }
+        if (!result) break; // no key, or translation of downloads is turned off
+        track.translatedPath = track.path.replace(/\.[^.]+$/, '.ko.vtt'); fs.copyFileSync(result.path, track.translatedPath);
+        track.translatedFailed = result.failed || 0; this.save();
+      }
+    } finally { job.stage = ''; delete job.translateProgress; job.updated = Date.now(); this.save(); }
   }
 
   // Korean and English titles, stored with the job so the download is labelled correctly offline.
@@ -164,7 +208,14 @@ class DownloadManager {
     if(!url)return;try{let data,ext='.vtt';if(url.startsWith('file:')){const source=fileURLToPath(url);ext=path.extname(source)||ext;data=fs.readFileSync(source)}else{const response=await fetch(url);if(!response.ok)return;data=Buffer.from(await response.arrayBuffer())}job.subtitlePath=job.filePath.replace(/\.mp4$/i,ext);fs.writeFileSync(job.subtitlePath,data)}catch{}
   }
 
-  localPlayback(id) { const job=this.jobs.find(item=>item.id===id);if(!job||job.status!=='completed'||!fs.existsSync(job.filePath))throw new Error('다운로드 파일을 찾지 못했습니다.');return {url:pathToFileURL(job.filePath).href,subtitleUrl:job.subtitlePath&&fs.existsSync(job.subtitlePath)?pathToFileURL(job.subtitlePath).href:null,subtitleAss:job.subtitleAssPath&&fs.existsSync(job.subtitleAssPath)?{url:pathToFileURL(job.subtitleAssPath).href,path:job.subtitleAssPath,fonts:(job.subtitleFonts||[]).filter(file=>fs.existsSync(file)).map(file=>pathToFileURL(file).href)}:null,subtitleLabel:job.subtitleLabel||'',job}; }
+  localPlayback(id) { const job=this.jobs.find(item=>item.id===id);if(!job||job.status!=='completed'||!fs.existsSync(job.filePath))throw new Error('다운로드 파일을 찾지 못했습니다.');return {url:pathToFileURL(job.filePath).href,subtitleUrl:job.subtitlePath&&fs.existsSync(job.subtitlePath)?pathToFileURL(job.subtitlePath).href:null,subtitleAss:job.subtitleAssPath&&fs.existsSync(job.subtitleAssPath)?{url:pathToFileURL(job.subtitleAssPath).href,path:job.subtitleAssPath,fonts:(job.subtitleFonts||[]).filter(file=>fs.existsSync(file)).map(file=>pathToFileURL(file).href)}:null,subtitleLabel:job.subtitleLabel||'',subtitleTracks:offlineTracks(job),job}; }
 }
+
+// Saved tracks with file URLs for the player; the remote URL stays as the track's identity.
+function offlineTracks(job) {
+  const url = file => file && fs.existsSync(file) ? pathToFileURL(file).href : null;
+  return (job.subtitleTracks || []).filter(track => fs.existsSync(track.path || '')).map(track => ({ ...track, localUrl: url(track.path), assUrl: url(track.assPath), translatedUrl: url(track.translatedPath), translatedPath: url(track.translatedPath) ? track.translatedPath : null }));
+}
+function trackDir(job) { return job.filePath.replace(/\.mp4$/i, '_자막트랙'); }
 
 module.exports = { DownloadManager };

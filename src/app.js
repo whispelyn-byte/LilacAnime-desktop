@@ -106,7 +106,7 @@ function toggleLibrary(a, button) {
   else{state.library.unshift(normalize(a));updateLibraryButton(button,true,!button?.classList.contains('heart'));toast('내 목록에 추가했어요.');}
   store.set('library',state.library); renderLibrary();
 }
-function downloadStatusText(job){return job.status==='completed'?job.stage==='subtitle'?'다운로드 완료 · 자막 찾는 중':job.subtitlePath?'다운로드 완료 · 자막 포함':'다운로드 완료':job.status==='downloading'?`${job.progress||0}% 다운로드 중`:job.status==='resolving'?'영상 주소 확인 중':job.status==='queued'?'대기 중':job.status==='paused'?'일시 중지':job.status==='failed'?`실패 · ${job.error||'다시 시도해 주세요'}`:job.status}
+function downloadStatusText(job){return job.status==='completed'?job.stage==='subtitle'?'다운로드 완료 · 자막 찾는 중':job.stage==='translate'?`다운로드 완료 · 자막 트랙 번역 중 (${job.translateProgress||''})`:job.subtitlePath?'다운로드 완료 · 자막 포함':'다운로드 완료':job.status==='downloading'?`${job.progress||0}% 다운로드 중`:job.status==='resolving'?'영상 주소 확인 중':job.status==='queued'?'대기 중':job.status==='paused'?'일시 중지':job.status==='failed'?`실패 · ${job.error||'다시 시도해 주세요'}`:job.status}
 // Titles saved with a download fill in for lookups that are unavailable offline.
 function seedDownloadTitles(){for(const job of state.downloads){const titles=job.displayTitles;if(!job.anime||!titles||!(titles.ko||titles.en))continue;const key=animeTitleKey(job.anime),known=displayTitles.get(key);if(!known?.ko&&!known?.en)displayTitles.set(key,{ko:titles.ko||'',en:titles.en||''})}}
 function renderDownloads(){seedDownloadTitles();const list=$('#downloadList'),completed=state.downloads.filter(x=>x.status==='completed').length;$('#downloadCount').textContent=String(completed);list.replaceChildren(...state.downloads.map(job=>{const el=document.createElement('article');el.className='download-card';el.innerHTML=`<div class="download-cover"${job.image?` style="background-image:url('${job.image}')"`:''}></div><div class="download-copy"><b ${job.anime?titleAttr(job.anime):''}>${escapeHtml(storedTitle(job))}</b><span>${escapeHtml(String(job.episodeNumber))}화 · ${escapeHtml(downloadStatusText(job))}</span><div class="download-progress"><i style="width:${job.status==='completed'?100:job.progress||0}%"></i></div></div><div class="download-actions">${job.status==='completed'?`<button data-action="play">${downloadIcon('play')}<span>재생</span></button>`:job.status==='paused'||job.status==='failed'?`<button data-action="resume">${downloadIcon('retry')}<span>다시 시작</span></button>`:`<button data-action="cancel">${downloadIcon('close')}<span>중지</span></button>`}<button class="danger" data-action="remove">${downloadIcon('delete')}<span>삭제</span></button></div>`;el.querySelector('[data-action="play"]')?.addEventListener('click',async()=>{try{const local=await window.lilac.playDownload(job.id),seriesEpisodes=downloadedSeries(job);play(local.url,`${job.title} · ${job.episodeNumber}화`,{episode:job.episode,subtitleTitle:job.title,image:job.image,offline:true,anime:job.anime,resolveKind:job.resolveKind,seriesEpisodes});if(local.subtitleUrl)attachSubtitle(local.subtitleUrl,local.subtitleLabel||'다운로드 자막',{assUrl:local.subtitleAss?.url||null,assPath:local.subtitleAss?.path||null,fonts:local.subtitleAss?.fonts||[]})}catch(e){toast(e.message)}});el.querySelector('[data-action="cancel"]')?.addEventListener('click',()=>window.lilac.cancelDownload(job.id));el.querySelector('[data-action="resume"]')?.addEventListener('click',()=>window.lilac.resumeDownload(job.id));el.querySelector('[data-action="remove"]')?.addEventListener('click',()=>window.lilac.removeDownload(job.id));return el;}));$('#emptyDownloads').classList.toggle('hidden',state.downloads.length>0);refreshEpisodeDownloadButtons()}
@@ -428,7 +428,7 @@ function renderSubtitleTracks(){
   const box=$('#subtitleTracks'),list=$('#subtitleTrackList'),tracks=currentPlaybackContext.subtitleTracks||[],isReAnime=currentPlaybackContext.episode?.provider==='reanime';
   box.classList.toggle('hidden',!isReAnime);if(!isReAnime){list.replaceChildren();return}
   $('#subtitleTrackState').textContent=tracks.length?`${tracks.length}개 트랙`:currentPlaybackContext.resolving||currentPlaybackContext.tracksLoading?'현재 회차의 자막 트랙을 불러오는 중…':'자막 트랙을 불러오지 못했습니다.';$('#reloadSubtitleTracks').classList.toggle('hidden',Boolean(tracks.length||currentPlaybackContext.resolving||currentPlaybackContext.tracksLoading));
-  list.replaceChildren(...tracks.map(track=>{const button=document.createElement('button'),selected=currentPlaybackContext.selectedSubtitleTrack===track.url;button.type='button';button.className=`track-option${selected?' selected':''}`;button.setAttribute('aria-pressed',String(selected));button.innerHTML=`<span>${escapeHtml(track.label)}</span><small>${escapeHtml(track.format.toUpperCase())}</small>`;button.onclick=()=>selectSubtitleTrack(track);return button}));
+  list.replaceChildren(...tracks.map(track=>{const button=document.createElement('button'),selected=currentPlaybackContext.selectedSubtitleTrack===track.url;button.type='button';button.className=`track-option${selected?' selected':''}`;button.setAttribute('aria-pressed',String(selected));button.innerHTML=`<span>${escapeHtml(track.label)}</span><small>${escapeHtml(String(track.format||'vtt').toUpperCase())}${track.translatedUrl?' · 번역됨':''}</small>`;button.onclick=()=>selectSubtitleTrack(track);return button}));
 }
 // Downloaded episodes play from disk, so fetch the Re:ANIME track list separately.
 async function loadMissingSubtitleTracks(){
@@ -437,20 +437,22 @@ async function loadMissingSubtitleTracks(){
   try{const result=await window.lilac.providerSubtitleTracks(episode);if(requestId!==playbackRequestId)return;context.subtitleTracks=result.tracks||[];context.subtitleReferer=result.referer||context.subtitleReferer}catch{}
   finally{if(requestId===playbackRequestId){context.tracksLoading=false;renderSubtitleTracks()}}
 }
-// Gemini translation of a Re:Anime track: the selected one, else a full English one, else the first full one.
-// "Signs & Songs" / forced tracks carry only on-screen text and lyrics, so they are never picked by themselves.
-const TRANSLATE_LABEL='선택한 트랙 한국어 자동 번역 (Gemini)',partialTrack=track=>/sign|song|forced|lyrics?|간판|노래|강제/i.test(`${track.label} ${track.language||''}`);
+// Gemini translation of the selected Re:Anime track. Tracks saved with a download carry their translation,
+// which is applied as is (also offline).
+const TRANSLATE_LABEL='선택한 트랙 한국어 자동 번역 (Gemini)';
+// A Re:Anime track's file: the copy saved with the download, else fetched.
+const trackFile=track=>track.localUrl?Promise.resolve({path:track.path,url:track.localUrl,assPath:track.assUrl?track.assPath:null,assUrl:track.assUrl||null,fonts:[]}):window.lilac.remoteSubtitle(track.url,currentPlaybackContext.subtitleReferer);
 const ipcMessage=error=>String(error?.message||error).replace(/^Error invoking remote method '[^']+': (?:Error: )?/,'');
 async function translateSubtitleTrack(){
   const context=currentPlaybackContext,tracks=context.subtitleTracks||[],button=$('#translateSubtitle');
-  const full=tracks.filter(item=>!partialTrack(item)),track=tracks.find(item=>item.url===context.selectedSubtitleTrack)||full.find(item=>/english|\beng?\b/i.test(`${item.label} ${item.language||''}`))||full[0];
-  if(!track){toast('번역할 Re:Anime 자막 트랙이 없습니다.');return}
-  if(partialTrack(track))toast(`${track.label}은 간판·노래 가사만 있는 트랙이라 대사는 번역되지 않아요. 대사 전체를 번역하려면 다른 트랙을 고르세요.`);
+  const track=tracks.find(item=>item.url===context.selectedSubtitleTrack);
+  if(!track){toast(tracks.length?'번역할 자막 트랙을 먼저 선택하세요.':'번역할 Re:Anime 자막 트랙이 없습니다.');return}
+  if(track.translatedUrl){currentSubtitlePath=track.translatedPath;attachSubtitle(track.translatedUrl,`Gemini 번역 (${track.label})`,{path:track.translatedPath,source:'gemini'});return}
   if(!(await window.lilac.geminiSettings().catch(()=>null))?.key){toast('설정 > 자막 자동 번역에서 Gemini API 키를 넣어 주세요.');return}
   const requestId=playbackRequestId,title=context.subtitleTitle||$('#skipTitle').value.trim();
   button.disabled=true;button.textContent='번역 준비 중…';$('#subtitleState').textContent=`${track.label} 자막을 한국어로 번역하는 중...`;
   try{
-    const file=await window.lilac.remoteSubtitle(track.url,context.subtitleReferer);if(requestId!==playbackRequestId)return;
+    const file=await trackFile(track);if(requestId!==playbackRequestId)return;
     const result=await window.lilac.translateSubtitle({path:file.path,title,id:requestId});if(requestId!==playbackRequestId)return;
     currentSubtitlePath=result.path;attachSubtitle(result.url,`Gemini 번역 (${track.label})`,{path:result.path,source:'gemini'});
     if(result.failed)toast(`${result.failed}줄은 번역하지 못해 원문으로 남겼습니다.`);
@@ -461,7 +463,7 @@ $('#translateSubtitle').onclick=()=>translateSubtitleTrack();
 window.lilac.onTranslateProgress(({id,done,total})=>{if(id===playbackRequestId&&$('#translateSubtitle').disabled)$('#translateSubtitle').textContent=`번역 중… ${Math.round(done/Math.max(1,total)*100)}%`});
 async function selectSubtitleTrack(track){
   const requestId=playbackRequestId;$('#subtitleState').textContent=`${track.label} 자막을 불러오는 중...`;
-  try{const file=await window.lilac.remoteSubtitle(track.url,currentPlaybackContext.subtitleReferer);if(requestId!==playbackRequestId)return;currentPlaybackContext.selectedSubtitleTrack=track.url;currentSubtitlePath=file.path;localStorage.setItem('subtitleSource','reanime');$('#subtitleSource').value='reanime';syncSettingChoices();renderSubtitleTracks();attachSubtitle(file.url,`Re:Anime ${track.label} 자막`,{path:file.path,assUrl:file.assUrl,assPath:file.assPath,fonts:file.fonts,source:'reanime'})}
+  try{const file=await trackFile(track);if(requestId!==playbackRequestId)return;currentPlaybackContext.selectedSubtitleTrack=track.url;currentSubtitlePath=file.path;localStorage.setItem('subtitleSource','reanime');$('#subtitleSource').value='reanime';syncSettingChoices();renderSubtitleTracks();attachSubtitle(file.url,`Re:Anime ${track.label} 자막`,{path:file.path,assUrl:file.assUrl,assPath:file.assPath,fonts:file.fonts,source:'reanime'})}
   catch(e){$('#subtitleState').textContent='자막을 불러오지 못했습니다.';toast(`자막을 불러오지 못했습니다: ${e.message}`)}
 }
 function formatTime(value){if(!Number.isFinite(value))return '00:00';const seconds=Math.max(0,Math.floor(value)),h=Math.floor(seconds/3600),m=Math.floor(seconds%3600/60),s=seconds%60;return h?`${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`}
@@ -618,17 +620,17 @@ $('#applyUpdate').onclick=runUpdateAction;$('#updateBannerAction').onclick=runUp
 function renderTmdbState(value,message){$('#tmdbKey').value=value?.key||'';$('#tmdbKeyState').textContent=message||(value?.key?'TMDB API 키를 사용 중입니다.':'키가 없으면 AniList·Wikidata로만 찾아서 못 찾는 작품이 많습니다. themoviedb.org 설정 > API에서 발급한 키를 넣어 주세요.')}
 window.lilac.tmdbKey().then(value=>renderTmdbState(value)).catch(()=>{});
 function renderGeminiState(value,message){
-  $('#geminiKey').value=value?.key||'';const select=$('#geminiModel'),models=value?.models||[];
+  $('#geminiKey').value=value?.key||'';$('#geminiDownloads').checked=value?.translateDownloads!==false;const select=$('#geminiModel'),models=value?.models||[];
   select.replaceChildren(...models.map(name=>{const option=document.createElement('option');option.value=name;option.textContent=name;return option}));select.value=value?.model||'';select.disabled=!models.length;
   $('#geminiKeyState').textContent=message||(value?.key?`Gemini API 키를 사용 중입니다 (${value.model}).`:'aistudio.google.com에서 발급한 API 키를 넣어 주세요.');
 }
 window.lilac.geminiSettings().then(value=>renderGeminiState(value)).catch(()=>{});
 async function saveGeminiSettings(){
   const button=$('#saveGeminiKey');button.disabled=true;$('#geminiKeyState').textContent='키를 확인하는 중...';
-  try{const value=await window.lilac.setGeminiSettings({key:$('#geminiKey').value,model:$('#geminiModel').value});renderGeminiState(value,value.key?`키를 확인하고 저장했습니다 (${value.model}).`:undefined);toast('Gemini 설정을 저장했습니다.')}
+  try{const value=await window.lilac.setGeminiSettings({key:$('#geminiKey').value,model:$('#geminiModel').value,translateDownloads:$('#geminiDownloads').checked});renderGeminiState(value,value.key?`키를 확인하고 저장했습니다 (${value.model}).`:undefined);toast('Gemini 설정을 저장했습니다.')}
   catch(error){$('#geminiKeyState').textContent=`저장하지 못했습니다: ${ipcMessage(error)}`}
   finally{button.disabled=false}
 }
-$('#saveGeminiKey').onclick=saveGeminiSettings;$('#geminiModel').onchange=saveGeminiSettings;
+$('#saveGeminiKey').onclick=saveGeminiSettings;$('#geminiModel').onchange=saveGeminiSettings;$('#geminiDownloads').onchange=saveGeminiSettings;
 $('#saveTmdbKey').onclick=async()=>{const button=$('#saveTmdbKey');button.disabled=true;$('#tmdbKeyState').textContent='키를 확인하는 중...';try{const value=await window.lilac.setTmdbKey($('#tmdbKey').value);renderTmdbState(value,value.key?'키를 확인하고 저장했습니다.':undefined);toast('TMDB 설정을 저장했습니다.')}catch(e){$('#tmdbKeyState').textContent=`저장하지 못했습니다: ${String(e.message||e).replace(/^Error invoking remote method '[^']+': (?:Error: )?/,'')}`}finally{button.disabled=false}};
 window.lilac.onUpdateState(renderUpdate);window.lilac.updateState().then(value=>{$('#appVersion').textContent=`Version ${value.current}`;renderUpdate(value)});
