@@ -218,25 +218,83 @@ function flashUnlockButton() { $('#unlockPlayer').classList.remove('hidden'); cl
 
 function setPlayerWindowed() { $('#immersivePlayer').classList.toggle('windowed', !playerWindowFullscreen); }
 
-// --- Mini player ----------------------------------------------------------------------------
-// The window becomes a small always-on-top player (main process) and the player shows only play/pause and a
-// restore button, so subtitles keep rendering. The video's own picture-in-picture would drop them.
-let miniPlayerActive = false, fullscreenBeforeMini = false;
-async function setMiniPlayer(active) {
-  if (active === miniPlayerActive) return;
-  miniPlayerActive = active;
-  document.body.classList.toggle('mini-mode', active);
-  openPlayerSettings(false); setPlayerLocked(false);
-  if (active) { fullscreenBeforeMini = playerWindowFullscreen; playerWindowFullscreen = false; }
-  setPlayerWindowed();
-  try {
-    await window.lilac.setMiniPlayer(active);
-    // Back to full screen if the player was full screen before.
-    if (!active && fullscreenBeforeMini && document.body.classList.contains('player-mode')) { playerWindowFullscreen = true; setPlayerWindowed(); await window.lilac.setPlayerFullscreen(true); }
-  } catch (error) { toast(`미니 플레이어 오류: ${error.message}`); }
-  if (!active) showPlayerControls();
+// --- Picture-in-picture ---------------------------------------------------------------------
+// Chromium's picture-in-picture window shows a bare <video>: caption tracks and the libass canvas stay behind.
+// So each frame is composed on a canvas (the picture, then the ASS canvas or the active VTT cues), streamed
+// into a hidden video, and that video goes into picture-in-picture. Its play/pause and the real video's
+// follow each other; the media session buttons (previous/next episode, seek) work there too.
+const pip = { video: null, canvas: null, timer: 0 };
+function pipSourceVideo() {
+  if (pip.video) return pip.video;
+  const video = document.createElement('video'), real = $('#video');
+  video.className = 'pip-source'; video.muted = true; video.playsInline = true;
+  video.addEventListener('pause', () => { if (document.pictureInPictureElement === video && !real.paused) real.pause(); });
+  video.addEventListener('play', () => { if (document.pictureInPictureElement === video && real.paused) real.play().catch(() => {}); });
+  video.addEventListener('leavepictureinpicture', stopPictureInPicture);
+  real.addEventListener('pause', () => { if (document.pictureInPictureElement === video) video.pause(); });
+  real.addEventListener('play', () => { if (document.pictureInPictureElement === video) video.play().catch(() => {}); });
+  document.body.append(video);
+  return pip.video = video;
 }
-function toggleMiniPlayer() { if (!miniPlayerActive && $('#video').readyState < 2) { toast('먼저 영상을 재생하세요.'); return; } setMiniPlayer(!miniPlayerActive); }
+function vttLines(ctx, text, maxWidth) {
+  const plain = text.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  return plain.split(/\r?\n/).flatMap(line => {
+    const words = line.split(' '), lines = [];
+    let current = '';
+    for (const word of words) { const next = current ? `${current} ${word}` : word; if (current && ctx.measureText(next).width > maxWidth) { lines.push(current); current = word; } else current = next; }
+    return current ? [...lines, current] : lines;
+  });
+}
+// VTT cues drawn the way the player styles them: size, bold, outline and the raised baseline of "자막 위치".
+function drawPipCues(ctx, width, height, video) {
+  const track = video.textTracks[0], cues = track?.activeCues ? [...track.activeCues] : [];
+  if (!cues.length) return;
+  const size = Number(localStorage.getItem('subtitleSize') || 100) / 100, bold = localStorage.getItem('vttBold') !== 'false';
+  const outline = Math.max(0, Number(localStorage.getItem('vttOutline') ?? 2)) * height / (video.clientHeight || height), position = Number(localStorage.getItem('subtitlePosition') || 10);
+  const fontSize = Math.round(height * 0.05 * size), lineHeight = fontSize * 1.25;
+  ctx.font = `${bold ? 700 : 400} ${fontSize}px LilacSubtitle, 'Malgun Gothic', sans-serif`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; ctx.lineJoin = 'round';
+  const lines = cues.flatMap(cue => vttLines(ctx, cue.text || '', width * 0.9));
+  let y = height * (100 - position) / 100 - (lines.length - 1) * lineHeight;
+  for (const line of lines) {
+    if (outline) { ctx.lineWidth = outline * 2; ctx.strokeStyle = '#000'; ctx.strokeText(line, width / 2, y); }
+    ctx.fillStyle = '#fff'; ctx.fillText(line, width / 2, y);
+    y += lineHeight;
+  }
+}
+function drawPipFrame() {
+  const video = $('#video'), canvas = pip.canvas, ctx = canvas.getContext('2d');
+  const sourceWidth = video.videoWidth || 1280, sourceHeight = video.videoHeight || 720, scale = Math.min(1, 1280 / sourceWidth);
+  const width = Math.round(sourceWidth * scale), height = Math.round(sourceHeight * scale);
+  if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, width, height);
+  if (video.readyState >= 2) ctx.drawImage(video, 0, 0, width, height);
+  if (!$('#subtitleEnabled')?.checked) return;
+  if (currentSubtitle?.assRendering) { const ass = window.LilacAss?.frame(video); if (ass?.width) ctx.drawImage(ass, 0, 0, width, height); }
+  else drawPipCues(ctx, width, height, video);
+}
+function stopPictureInPicture() {
+  clearInterval(pip.timer); pip.timer = 0;
+  if (pip.video) { pip.video.srcObject?.getTracks().forEach(track => track.stop()); pip.video.srcObject = null; }
+  $('#miniPlayer').classList.remove('active');
+}
+async function togglePictureInPicture() {
+  if (document.pictureInPictureElement) { await document.exitPictureInPicture().catch(() => {}); return; }
+  const real = $('#video');
+  if (real.readyState < 2) { toast('먼저 영상을 재생하세요.'); return; }
+  const video = pipSourceVideo();
+  pip.canvas ||= document.createElement('canvas');
+  drawPipFrame();
+  // A timer rather than animation frames: those stop while the app window is minimized.
+  clearInterval(pip.timer); pip.timer = setInterval(drawPipFrame, 1000 / 30);
+  video.srcObject = pip.canvas.captureStream(30);
+  try {
+    await video.play();
+    await video.requestPictureInPicture();
+    if (real.paused) video.pause();
+    $('#miniPlayer').classList.add('active');
+  } catch (error) { stopPictureInPicture(); toast(`PIP를 열지 못했습니다: ${error.message}`); }
+}
 
 // --- Media controls (Android MediaSession) ---------------------------------------------------
 // Windows shows these in the media flyout, on the lock screen and on hardware media keys.
@@ -304,8 +362,7 @@ function handlePlayerKey(event) {
   const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName) && !['checkbox', 'range'].includes(document.activeElement?.type);
   if (key === 'Escape' || key === 'BrowserBack' || key === 'GoBack') {
     event.preventDefault();
-    if (miniPlayerActive) setMiniPlayer(false);
-    else if (playerSettingsOpen()) { openPlayerSettings(false); $('#playerSettingsButton').focus(); }
+    if (playerSettingsOpen()) { openPlayerSettings(false); $('#playerSettingsButton').focus(); }
     else if (document.fullscreenElement) document.exitFullscreen();
     else $('#playerBack').click();
     return;
@@ -388,9 +445,7 @@ $$('#psSpeeds button').forEach(button => button.onclick = () => {
 $('#previousEpisode').onclick = () => playSiblingEpisode(siblingEpisode(-1));
 $('#nextEpisode').onclick = () => playSiblingEpisode(siblingEpisode(1));
 $('#lockPlayer').onclick = () => setPlayerLocked(true);
-$('#miniRestore').onclick = () => setMiniPlayer(false);
-window.lilac.onMiniHover?.(hover => document.body.classList.toggle('mini-hover', hover));
-$('#playerBack').addEventListener('click', () => { if (miniPlayerActive) setMiniPlayer(false); if ('mediaSession' in navigator) { navigator.mediaSession.metadata = null; navigator.mediaSession.playbackState = 'none'; } });
+$('#playerBack').addEventListener('click', () => { if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {}); if ('mediaSession' in navigator) { navigator.mediaSession.metadata = null; navigator.mediaSession.playbackState = 'none'; } });
 $('#unlockPlayer').onclick = event => { event.stopPropagation(); setPlayerLocked(false); };
 // Settings stay open while the pointer is on them; a click on the video closes them (Android dropdown).
 $('#playerSettings').addEventListener('pointerdown', event => event.stopPropagation());

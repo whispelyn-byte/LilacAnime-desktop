@@ -119,21 +119,6 @@
 /* Video + ASS canvas wrapper. */
 .video-stage { position: absolute; inset: 0; }
 
-/* Mini player: the window is small and always on top; only play/pause and restore remain, shown on hover.
-   The whole window can be dragged. */
-.mini-restore { display: none; }
-body.mini-mode .immersive-player { -webkit-app-region: drag; cursor: default; }
-body.mini-mode :is(.player-top, .player-bottom, .player-lock, .player-episode, .player-skip, .player-shade, .subtitle-offer, .player-settings) { display: none !important; }
-body.mini-mode .player-center { opacity: 0; pointer-events: none; transition: opacity .15s ease; }
-body.mini-mode.mini-hover .player-center { opacity: 1; pointer-events: auto; }
-body.mini-mode .player-play { width: 52px; height: 52px; -webkit-app-region: no-drag; }
-body.mini-mode .player-play svg { width: 24px; height: 24px; }
-body.mini-mode .mini-restore {
-  position: absolute; z-index: 5; top: 8px; left: 8px; display: grid; place-items: center; width: 34px; height: 34px;
-  border: 0; border-radius: 50%; background: #000000b3; color: #fff; cursor: pointer;
-  opacity: 0; transition: opacity .15s ease; -webkit-app-region: no-drag;
-}
-body.mini-mode.mini-hover .mini-restore, body.mini-mode .mini-restore:focus-visible { opacity: 1; }
-.mini-restore svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; }
-body.mini-mode .skip-chip { bottom: 8px; right: 8px; -webkit-app-region: no-drag; }
-body.mini-mode .window-drag { display: none; }
+/* Picture-in-picture source: composed frames with subtitles; it only has to exist in the page. */
+.pip-source { position: fixed; left: 0; top: 0; width: 2px; height: 2px; opacity: 0; pointer-events: none; }
+#miniPlayer.active { color: var(--lilac, #c8a2c8); }

@@ -54,5 +54,14 @@ function setOffset(offsetMs) {
   if (instance) instance.timeOffset = -(Number(offsetMs) || 0) / 1000;
 }
 
-window.LilacAss = { attach, destroy, setVisible, setOffset, get active() { return Boolean(instance); } };
+// The libass canvas at the video's current time, for the picture-in-picture composer. libass renders on video
+// frame callbacks, which stop while the app window is minimized, so a stale frame is rendered here instead.
+function frame(video) {
+  if (!instance?._canvas || instance._canvas.style.visibility === 'hidden') return null;
+  const last = instance._lastDemandTime?.mediaTime;
+  if (video.videoWidth && (last === undefined || Math.abs(last - video.currentTime) > 0.25)) instance.manualRender({ mediaTime: video.currentTime, width: video.videoWidth, height: video.videoHeight, expectedDisplayTime: performance.now() }).catch(() => {});
+  return instance._canvas;
+}
+
+window.LilacAss = { attach, destroy, setVisible, setOffset, frame, get active() { return Boolean(instance); } };
 window.dispatchEvent(new Event('lilac-ass-ready'));
