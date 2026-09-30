@@ -351,7 +351,7 @@ function attachSubtitle(src,label='자막',options={}){
   track.addEventListener('load',()=>{if(currentSubtitle!==subtitle)return;applyVttLayout();setVttVisible();$('#subtitleState').textContent=`${label} 적용됨${subtitle.assUrl&&assEffectsEnabled()?' · ASS 효과':''}`;toast(`${label}을 적용했습니다.`)});
   track.addEventListener('error',()=>{if(currentSubtitle===subtitle)$('#subtitleState').textContent='자막 파일을 불러오지 못했습니다.'});
   renderAssSubtitle();
-  if(options.source&&options.path&&!options.saved)rememberSubtitle(subtitle);else renderSavedSubtitles();
+  if(options.source&&options.path&&!options.saved)rememberSubtitle(subtitle);else renderSavedSubtitles();if(typeof renderDiscoveredFonts==='function')renderDiscoveredFonts();
 }
 
 // Android SubtitleStore parity: subtitles are remembered per episode and source.

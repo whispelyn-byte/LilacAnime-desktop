@@ -46,6 +46,20 @@ function syncPlayerSettingsUI() {
   const seconds = Number(localStorage.getItem('seekSeconds') || 10);
   $('#psSeekNote').textContent = `뒤로/앞으로 버튼 이동: ${seconds}초`;
   renderQualityChoices();
+  renderDiscoveredFonts();
+}
+
+// Android "발견된 ASS 폰트": fonts shipped with the current Kairan/Csora/Anissia subtitle. The chosen one becomes the
+// subtitle font (VTT text and the ASS fallback), like a custom font file; all of them stay available to the ASS script.
+function fontPathOf(url) { try { return decodeURIComponent(new URL(url).pathname).replace(/^\/([A-Za-z]:)/, '$1').replace(/\//g, '\\'); } catch { return ''; } }
+function renderDiscoveredFonts() {
+  const fonts = [...new Set(currentSubtitle?.fonts || [])].map(url => ({ url, path: fontPathOf(url) })).filter(font => font.path);
+  $('#psDiscoveredFonts').classList.toggle('hidden', !fonts.length);
+  if (!fonts.length) { $('#psFontChips').replaceChildren(); return; }
+  const chosen = localStorage.getItem('subtitleFontPath') || '', inList = fonts.some(font => font.path === chosen);
+  const choose = path => { if (path) localStorage.setItem('subtitleFontPath', path); else localStorage.removeItem('subtitleFontPath'); subtitleFontChanged(); renderDiscoveredFonts(); syncPlayerSettingsUI(); };
+  const chip = (label, path, selected) => { const button = document.createElement('button'); button.type = 'button'; button.textContent = label; button.classList.toggle('selected', selected); button.onclick = () => choose(path); return button; };
+  $('#psFontChips').replaceChildren(chip('기본', '', !inList), ...fonts.map(font => chip(font.path.split(/[\\/]/).pop().replace(/\.(ttf|otf|ttc|woff2?)$/i, ''), font.path, font.path === chosen)));
 }
 
 // Writes one subtitle setting and keeps the settings page controls in step.
