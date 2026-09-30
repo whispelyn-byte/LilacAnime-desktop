@@ -31,7 +31,7 @@ function syncPlayerSettingsUI() {
   $('#assEffectsHint').textContent = assEffectsEnabled() ? '원본 위치·색상·효과를 유지합니다' : '효과를 단순화해 성능을 우선합니다';
   const source = localStorage.getItem('subtitleSource') || 'reanime';
   $$('#psSubtitleSources button').forEach(button => button.classList.toggle('selected', button.dataset.source === source));
-  const size = Number(localStorage.getItem('subtitleSize') || 100), position = Number(localStorage.getItem('subtitlePosition') || 10), outline = Number(localStorage.getItem('vttOutline') || 2), sync = Number(localStorage.getItem('subtitleSync') || 0);
+  const size = Number(localStorage.getItem('subtitleSize') || 100), position = Number(localStorage.getItem('subtitlePosition') || 12), outline = Number(localStorage.getItem('vttOutline') || 2), sync = Number(localStorage.getItem('subtitleSync') || 0);
   $('#psSubtitleSize').value = String(size); $('#psSizeLabel').textContent = `${size}%`;
   $('#psSubtitlePosition').value = String(position); $('#psPositionLabel').textContent = `${position}%`;
   $('#psVttOutline').value = String(outline); $('#psOutlineLabel').textContent = `${outline.toFixed(1)}px`;
@@ -118,13 +118,19 @@ function setSubtitleSetting(key, value) {
 
 // VTT placement and sync. Android moves the cue baseline up by "자막 위치" percent and shifts every cue by the
 // sync offset; the original cue times are kept so repeated changes do not accumulate.
+// Android's mpv placement: sub-pos = 100 − 자막 위치 (kept within 55–97), and mpv's 22-pixel bottom margin on a
+// 720-line screen below that. Returns the cue's bottom edge in percent of the video height.
+function vttBaseline() {
+  const position = Number(localStorage.getItem('subtitlePosition') || 12);
+  return Math.min(97, Math.max(55, Math.round(100 - position))) - 22 / 720 * 100;
+}
 function applyVttLayout() {
   const track = $('#video').textTracks[0]; if (!track?.cues) return;
-  const position = Number(localStorage.getItem('subtitlePosition') || 10), offset = Number(localStorage.getItem('subtitleSync') || 0) / 1000;
+  const line = vttBaseline(), offset = Number(localStorage.getItem('subtitleSync') || 0) / 1000;
   for (const cue of track.cues) {
     if (cue.lilacStart === undefined) { cue.lilacStart = cue.startTime; cue.lilacEnd = cue.endTime; }
     cue.startTime = Math.max(0, cue.lilacStart + offset); cue.endTime = Math.max(0, cue.lilacEnd + offset);
-    cue.snapToLines = false; cue.line = 100 - position; cue.lineAlign = 'end';
+    cue.snapToLines = false; cue.line = line; cue.lineAlign = 'end';
   }
 }
 
@@ -250,12 +256,12 @@ function drawPipCues(ctx, width, height, video) {
   const track = video.textTracks[0], cues = track?.activeCues ? [...track.activeCues] : [];
   if (!cues.length) return;
   const size = Number(localStorage.getItem('subtitleSize') || 100) / 100, bold = localStorage.getItem('vttBold') !== 'false';
-  const outline = Math.max(0, Number(localStorage.getItem('vttOutline') ?? 2)) * height / (video.clientHeight || height), position = Number(localStorage.getItem('subtitlePosition') || 10);
+  const outline = Math.max(0, Number(localStorage.getItem('vttOutline') ?? 2)) * height / 720;
   const fontSize = Math.round(height * 0.05 * size), lineHeight = fontSize * 1.25;
   ctx.font = `${bold ? 700 : 400} ${fontSize}px LilacSubtitle, 'Malgun Gothic', sans-serif`;
   ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; ctx.lineJoin = 'round';
   const lines = cues.flatMap(cue => vttLines(ctx, cue.text || '', width * 0.9));
-  let y = height * (100 - position) / 100 - (lines.length - 1) * lineHeight;
+  let y = height * vttBaseline() / 100 - (lines.length - 1) * lineHeight;
   for (const line of lines) {
     if (outline) { ctx.lineWidth = outline * 2; ctx.strokeStyle = '#000'; ctx.strokeText(line, width / 2, y); }
     ctx.fillStyle = '#fff'; ctx.fillText(line, width / 2, y);

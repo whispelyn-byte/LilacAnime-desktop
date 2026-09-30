@@ -137,8 +137,8 @@
                 <div id="subtitleTracks" class="sheet-tracks hidden"><div class="sheet-tracks-head"><b>Re:Anime 자막 트랙</b><span id="subtitleTrackState"></span></div><button id="translateSubtitle" type="button" class="sheet-button">선택한 트랙 한국어 자동 번역 (Gemini)</button><button id="reloadSubtitleTracks" type="button" class="sheet-button hidden">자막 트랙 다시 불러오기</button><div id="subtitleTrackList" class="track-list"></div></div>
                 <p class="ps-label">자막 크기 <span id="psSizeLabel">100%</span></p>
                 <input id="psSubtitleSize" type="range" min="50" max="180" step="5" value="100" aria-label="자막 크기">
-                <p class="ps-label">자막 위치 <span id="psPositionLabel">10%</span></p>
-                <input id="psSubtitlePosition" type="range" min="3" max="30" step="1" value="10" aria-label="자막 위치">
+                <p class="ps-label">자막 위치 <span id="psPositionLabel">12%</span></p>
+                <input id="psSubtitlePosition" type="range" min="3" max="30" step="1" value="12" aria-label="자막 위치">
                 <p class="ps-label">자막 싱크 <span id="psSyncLabel">0ms</span></p>
                 <div class="ps-chips"><button type="button" data-ps-sync="-250">-250ms</button><button type="button" data-ps-sync="0">초기화</button><button type="button" data-ps-sync="250">+250ms</button></div>
                 <label class="ps-switch ps-small"><span><b>VTT 원본 스타일</b><small>원본 색상/스타일 유지</small></span><input id="psVttStyle" type="checkbox"></label>
@@ -174,7 +174,7 @@
             <div class="setting-block"><b>기본 자막 폰트</b><div class="choice-row" id="fontChoices"><button data-value="기본체">기본체</button><button data-value="나눔고딕">나눔고딕</button><button data-value="명조체">명조체</button></div><p id="subtitleFontFile">폰트 파일을 지정하면 선택한 폰트 대신 사용합니다.</p><div class="button-row"><button id="chooseSubtitleFont">폰트 파일 선택</button><button id="resetSubtitleFont" class="hidden">파일 해제</button></div></div>
             <label class="setting-switch"><span><b>VTT 자막 굵게</b></span><input id="vttBold" type="checkbox" checked></label>
             <div class="setting-block"><b>VTT 자막 테두리 두께 (<span id="outlineLabel">2.0</span>px)</b><input id="vttOutline" type="range" min="0.5" max="6" step="0.5" value="2"><p>2px는 기본 VTT 배치를 사용하고, 다른 값에서는 사용자 지정 테두리를 적용합니다.</p></div>
-            <div class="setting-block"><b>기본 VTT 자막 위치 (<span id="positionLabel">10%</span>)</b><input id="subtitlePosition" type="range" min="3" max="30" step="1" value="10"></div>
+            <div class="setting-block"><b>기본 VTT 자막 위치 (<span id="positionLabel">12%</span>)</b><input id="subtitlePosition" type="range" min="3" max="30" step="1" value="12"></div>
             <div class="setting-block"><b>자막 싱크 미세 조정 (<span id="subtitleSyncLabel">0 ms</span>)</b><input id="subtitleSync" class="setting-native" type="range" min="-5000" max="5000" step="250" value="0"><div class="button-row"><button data-sync="-250">-250ms</button><button data-sync="0">초기화</button><button data-sync="250">+250ms</button></div></div>
             <div class="setting-block input-setting"><b>뒤로/앞으로 버튼 이동 시간</b><p>재생 화면 중앙 버튼과 방향키로 이동할 시간입니다.</p><label><input id="seekSeconds" type="number" min="1" max="120" value="10"><span>초</span></label></div>
             <div class="setting-block"><b>자막 소스</b><div class="choice-row" id="subtitleChoices"><button data-value="linkkf">Linkkf</button><button data-value="reanime">Re:Anime</button><button data-value="kairan">Kairan</button><button data-value="csora">Csora</button><button data-value="anissia">Anissia</button><button data-value="user">사용자 자막</button></div><select id="subtitleSource" class="setting-native"><option value="linkkf">Linkkf</option><option value="reanime">Re:Anime</option><option value="kairan">Kairan</option><option value="csora">Csora</option><option value="anissia">Anissia</option><option value="user">사용자 자막</option></select></div>
