@@ -437,13 +437,15 @@ async function loadMissingSubtitleTracks(){
   try{const result=await window.lilac.providerSubtitleTracks(episode);if(requestId!==playbackRequestId)return;context.subtitleTracks=result.tracks||[];context.subtitleReferer=result.referer||context.subtitleReferer}catch{}
   finally{if(requestId===playbackRequestId){context.tracksLoading=false;renderSubtitleTracks()}}
 }
-// Gemini translation of a Re:Anime track: the selected one, else an English one, else the first.
-const TRANSLATE_LABEL='선택한 트랙 한국어 자동 번역 (Gemini)';
+// Gemini translation of a Re:Anime track: the selected one, else a full English one, else the first full one.
+// "Signs & Songs" / forced tracks carry only on-screen text and lyrics, so they are never picked by themselves.
+const TRANSLATE_LABEL='선택한 트랙 한국어 자동 번역 (Gemini)',partialTrack=track=>/sign|song|forced|lyrics?|간판|노래|강제/i.test(`${track.label} ${track.language||''}`);
 const ipcMessage=error=>String(error?.message||error).replace(/^Error invoking remote method '[^']+': (?:Error: )?/,'');
 async function translateSubtitleTrack(){
   const context=currentPlaybackContext,tracks=context.subtitleTracks||[],button=$('#translateSubtitle');
-  const track=tracks.find(item=>item.url===context.selectedSubtitleTrack)||tracks.find(item=>/english|\beng?\b/i.test(item.label))||tracks[0];
+  const full=tracks.filter(item=>!partialTrack(item)),track=tracks.find(item=>item.url===context.selectedSubtitleTrack)||full.find(item=>/english|\beng?\b/i.test(`${item.label} ${item.language||''}`))||full[0];
   if(!track){toast('번역할 Re:Anime 자막 트랙이 없습니다.');return}
+  if(partialTrack(track))toast(`${track.label}은 간판·노래 가사만 있는 트랙이라 대사는 번역되지 않아요. 대사 전체를 번역하려면 다른 트랙을 고르세요.`);
   if(!(await window.lilac.geminiSettings().catch(()=>null))?.key){toast('설정 > 자막 자동 번역에서 Gemini API 키를 넣어 주세요.');return}
   const requestId=playbackRequestId,title=context.subtitleTitle||$('#skipTitle').value.trim();
   button.disabled=true;button.textContent='번역 준비 중…';$('#subtitleState').textContent=`${track.label} 자막을 한국어로 번역하는 중...`;
