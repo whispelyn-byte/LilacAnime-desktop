@@ -47,6 +47,7 @@ function syncPlayerSettingsUI() {
   $('#psSeekNote').textContent = `뒤로/앞으로 버튼 이동: ${seconds}초`;
   renderQualityChoices();
   renderDiscoveredFonts();
+  loadAnissiaMakers();
 }
 
 // Android "발견된 ASS 폰트": fonts shipped with the current Kairan/Csora/Anissia subtitle. The chosen one becomes the
@@ -60,6 +61,48 @@ function renderDiscoveredFonts() {
   const choose = path => { if (path) localStorage.setItem('subtitleFontPath', path); else localStorage.removeItem('subtitleFontPath'); subtitleFontChanged(); renderDiscoveredFonts(); syncPlayerSettingsUI(); };
   const chip = (label, path, selected) => { const button = document.createElement('button'); button.type = 'button'; button.textContent = label; button.classList.toggle('selected', selected); button.onclick = () => choose(path); return button; };
   $('#psFontChips').replaceChildren(chip('기본', '', !inList), ...fonts.map(font => chip(font.path.split(/[\\/]/).pop().replace(/\.(ttf|otf|ttc|woff2?)$/i, ''), font.path, font.path === chosen)));
+}
+
+// Anissia makers of the playing anime: fansubs are timed for different releases, so another maker's subtitle
+// may match the video better. Loaded once per title; Naver blogs cannot be read and are shown disabled.
+let anissiaMakerKey = null, anissiaMakerData = null;
+async function loadAnissiaMakers() {
+  const title = $('#skipTitle').value.trim(), box = $('#anissiaMakers');
+  if (!title) { box.classList.add('hidden'); return; }
+  const key = `${title}|${currentPlaybackContext.anime?.id || ''}`;
+  if (anissiaMakerKey !== key) {
+    anissiaMakerKey = key; anissiaMakerData = null;
+    box.classList.remove('hidden'); $('#anissiaMakerState').textContent = '불러오는 중…'; $('#anissiaMakerList').replaceChildren();
+    const data = await window.lilac.anissiaMakers(title, subtitleSearchAnime()).catch(() => null);
+    if (anissiaMakerKey !== key) return;
+    anissiaMakerData = data || { makers: [] };
+  }
+  renderAnissiaMakers();
+}
+function renderAnissiaMakers() {
+  const box = $('#anissiaMakers'), makers = anissiaMakerData?.makers || [];
+  if (!anissiaMakerData) return;
+  box.classList.toggle('hidden', !makers.length);
+  $('#anissiaMakerState').textContent = makers.length ? `${makers.length}명` : '';
+  const current = currentSubtitle?.source === 'anissia' ? currentSubtitle.label : '';
+  $('#anissiaMakerList').replaceChildren(...makers.map(maker => {
+    const button = document.createElement('button'); button.type = 'button';
+    const reason = maker.support === 'own-source' ? 'Kairan/Csora 소스에서 선택' : maker.support === 'unsupported' ? '네이버 블로그는 지원하지 않음' : '';
+    button.textContent = maker.name; button.title = reason || `${maker.episode}화까지`;
+    button.disabled = maker.support !== 'ok'; button.classList.toggle('selected', current.includes(`· ${maker.name} `));
+    button.onclick = () => selectAnissiaMaker(maker.name);
+    return button;
+  }));
+}
+async function selectAnissiaMaker(name) {
+  const title = $('#skipTitle').value.trim(), episode = Number($('#skipEpisode').value) || 1, requestId = playbackRequestId;
+  $('#subtitleState').textContent = `Anissia · ${name} 자막을 찾는 중...`;
+  try {
+    const result = await window.lilac.findSubtitle('anissia', title, episode, subtitleSearchAnime(), { maker: name });
+    if (requestId !== playbackRequestId) return;
+    currentSubtitlePath = result.path; attachSubtitle(result.url, communityLabel('anissia', result), { path: result.path, assUrl: result.assUrl, assPath: result.assPath, fonts: result.fonts, source: 'anissia' });
+    renderAnissiaMakers();
+  } catch { if (requestId === playbackRequestId) $('#subtitleState').textContent = `${name}의 ${episode}화 자막을 찾지 못했습니다.`; }
 }
 
 // Writes one subtitle setting and keeps the settings page controls in step.

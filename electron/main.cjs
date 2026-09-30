@@ -912,7 +912,7 @@ async function anissiaAnime(title,originalTitle=''){
 }
 // Tistory: the RSS feed carries the latest posts; the blog search finds older ones. Post pages are fetched
 // only for the few candidates whose title matches, since attachments are not in the listing.
-async function tistoryPosts(origin,subject){
+async function tistoryPosts(origin,subject,extraQueries=[]){
   const posts=new Map(),add=(url,title)=>{url=absoluteUrl(url,origin);title=String(title||'').replace(/\s+/g,' ').trim();if(url&&title&&!posts.has(url))posts.set(url,{url,title})};
   try{
     // Tistory answers 406 to an HTML-only Accept header.
@@ -921,7 +921,7 @@ async function tistoryPosts(origin,subject){
   }catch{/* search below */}
   // Posts of a later season often omit "2기", so the series name is searched as well.
   const series=subject.replace(/\s*(?:\d+\s*기(?![가-힣])|season\s*\d+|시즌\s*\d+)\s*$/i,'').trim();
-  for(const query of [...new Set([subject,series])].filter(Boolean))try{
+  for(const query of [...new Set([subject,series,...extraQueries])].filter(Boolean))try{
     const html=await providerFetch(`${origin}/search/${encodeURIComponent(query)}`,{referer:`${origin}/`}),$=cheerio.load(html);
     $('a[href]').each((_,a)=>{const href=$(a).attr('href')||'';if(/^(?:https?:\/\/[^/]+)?\/(?:entry\/)?\d+$/.test(href)){
       // Result cards repeat the title in their excerpt; keep the text up to the first episode number.
@@ -929,16 +929,34 @@ async function tistoryPosts(origin,subject){
   }catch{/* RSS only */}
   return [...posts.values()];
 }
+// A maker's own name for the anime: the linked post's title without episode numbers or marks, when it is not
+// simply the official title.
+function anissiaNickname(pageTitle,subject){
+  const name=String(pageTitle||'').replace(/\d+\s*(?:화|회|편)?|\((?:끝|완|完)\)|完|자막|-끝-/g,' ').replace(/\s+/g,' ').trim();
+  return name.length>=2&&communityScore(communityTitle(subject),name)<.52?name:'';
+}
 async function anissiaLinkedPost(url,subject,origin){
   try{
     const html=await providerFetch(url,{referer:`${origin}/`}),$=cheerio.load(html);
     const pageTitle=($('meta[property="og:title"]').attr('content')||$('title').first().text()||'').replace(/\s*[-|:]\s*[^-|:]*$/,'').trim();
-    return {url,title:`${subject} ${pageTitle}`.trim(),html};
+    return {url,title:`${subject} ${pageTitle}`.trim(),pageTitle,html};
   }catch{return null}
 }
-async function findAnissiaSubtitle(title,episode,{originalTitle='',offsets=[]}={}){
-  const anime=await anissiaAnime(title,originalTitle);if(!anime)throw new Error('Anissia에서 작품을 찾지 못했습니다.');
+// Makers whose blogs can be read: Blogger and Tistory. Kairan/Csora have their own sources; Naver blocks scripts.
+function anissiaMakerSupport(website){
+  let host='';try{host=new URL(website).hostname}catch{return 'invalid'}
+  if(/^(?:kairan03|csora556)\.blogspot\.com$/i.test(host))return 'own-source';
+  return /\.blogspot\.com$|\.tistory\.com$/i.test(host)?'ok':'unsupported';
+}
+async function anissiaMakers(title,originalTitle=''){
+  const anime=await anissiaAnime(title,originalTitle);if(!anime)return null;
   const captions=((await anissiaFetch(`/anime/caption/animeNo/${anime.animeNo}`))||[]).filter(item=>/^https?:\/\//i.test(item.website||'')).sort((a,b)=>String(b.updDt).localeCompare(String(a.updDt)));
+  return {anime,captions};
+}
+async function findAnissiaSubtitle(title,episode,{originalTitle='',offsets=[],maker=''}={}){
+  const found=await anissiaMakers(title,originalTitle);if(!found)throw new Error('Anissia에서 작품을 찾지 못했습니다.');
+  // A maker picked in the player is the only one tried.
+  const anime=found.anime,captions=maker?found.captions.filter(item=>item.name===maker):found.captions;
   for(const caption of captions){
     let origin;try{origin=new URL(caption.website).origin}catch{continue}
     const host=new URL(origin).hostname;
@@ -953,7 +971,11 @@ async function findAnissiaSubtitle(title,episode,{originalTitle='',offsets=[]}={
         const posts=[...await communityPosts(origin),...(linked?[linked]:[])];
         for(const name of [anime.subject,title])if(!match)match=rankCommunityPosts(posts,name,episode,originalTitle,{offsets})[0];
       }else if(/\.tistory\.com$/i.test(host)){
-        const listed=await tistoryPosts(origin,anime.subject),season=communitySeason(anime.subject)??1;
+        // Some makers use their own short name ("츠레카노 12"); the post Anissia links gives it away, so it is
+        // searched too and its posts count as this anime's.
+        const nickname=anissiaNickname(linked?.pageTitle||'',anime.subject);
+        const nicknameEpisode=title=>{const at=title.indexOf(nickname),number=at<0?null:title.slice(at+nickname.length).match(/^\s*(\d{1,3})(?!\d)/)?.[1];return number?`${anime.subject} ${Number(number)}화`:null};
+        const listed=(await tistoryPosts(origin,anime.subject,nickname?[nickname]:[])).map(post=>{const renamed=nickname&&post.title.includes(nickname)&&communityScore(communityTitle(anime.subject),communityPostTitle(post.title))<.52?nicknameEpisode(post.title):null;return renamed?{...post,title:renamed}:post}),season=communitySeason(anime.subject)??1;
         // The season's own number, or a continued one on posts without a season ("15화" for 2기 3화).
         const numbered=post=>{const postSeason=communitySeason(communityPostTitle(post.title)),episodes=communityPostEpisodes(post.title);return ((postSeason??1)===season&&episodes.has(episode))||(season>1&&postSeason==null&&offsets.some(offset=>episodes.has(episode+offset)))};
         const base=value=>communityTitle(value).replace(/\s*(?:\d+\s*기|season\s*\d+|시즌\s*\d+)\s*$/i,'');
@@ -1174,11 +1196,20 @@ app.whenReady().then(async () => {
     return saveRemoteSubtitle(String(url), { referer: /^https:\/\//i.test(referer) ? referer : 'https://flixcloud.cc/', userAgent: ANDROID_WEBVIEW_UA }).then(file => subtitleResult(file));
   });
   // The sandboxed preload has no url.pathToFileURL, so file URLs are built here.
-  ipcMain.handle('subtitle:find', async (_, source, title, episode, anime = null) => {
+  ipcMain.handle('subtitle:find', async (_, source, title, episode, anime = null, options = {}) => {
     // Kairan/Csora posts use Korean titles; Re:ANIME titles are resolved to Korean first (TMDB, AniList, Wikidata).
     const titles = anime?.provider === 'reanime' ? await koreanTitleCandidates(title, anime).catch(() => [title]) : [title];
     const offsets = await previousSeasonEpisodes(anime || {}, title).catch(() => []);
-    return findCommunitySubtitleByTitles(source, titles, Number(episode), { originalTitle: anime?.title || '', offsets });
+    return findCommunitySubtitleByTitles(source, titles, Number(episode), { originalTitle: anime?.title || '', offsets, maker: String(options?.maker || '') });
+  });
+  // Anissia makers of the playing anime, for the player menu.
+  ipcMain.handle('anissia:makers', async (_, title, anime = null) => {
+    const titles = anime?.provider === 'reanime' ? await koreanTitleCandidates(title, anime).catch(() => [title]) : [title];
+    for (const name of titles) {
+      const found = await anissiaMakers(name, anime?.title || '').catch(() => null);
+      if (found) return { subject: found.anime.subject, makers: found.captions.map(item => ({ name: item.name, episode: item.episode, support: anissiaMakerSupport(item.website) })).filter((item, index, list) => list.findIndex(other => other.name === item.name) === index) };
+    }
+    return { subject: '', makers: [] };
   });
   ipcMain.handle('mpv:status', () => ({available:Boolean(findExecutable('mpv')),path:findExecutable('mpv')}));
   // Mini player: the app window itself shrinks to a small always-on-top 16:9 window in the corner, so the
