@@ -1247,7 +1247,8 @@ app.whenReady().then(async () => {
   }
   createWindow();
   // Installed builds check GitHub releases shortly after launch; dev runs use the settings button.
-  if(app.isPackaged)setTimeout(()=>updater.check(),5000);
+  // At start and every 3 hours while the app stays open.
+  if(app.isPackaged){setTimeout(()=>updater.check(),5000);setInterval(()=>updater.check(),3*60*60*1000).unref?.()}
   app.on('activate', () => { if (!mainWindow || mainWindow.isDestroyed()) createWindow(); });
 });
 

@@ -28,7 +28,7 @@ class Updater {
   set(patch) { this.state = { ...this.state, ...patch }; this.broadcast('update:state', this.state); return this.state; }
 
   async check() {
-    if (['checking', 'downloading'].includes(this.state.status)) return this.state;
+    if (['checking', 'downloading', 'ready'].includes(this.state.status)) return this.state;
     this.set({ status: 'checking', error: null });
     try {
       const response = await fetch(RELEASE_API, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': `LilacAnime-Desktop/${this.app.getVersion()}` } });
@@ -36,10 +36,15 @@ class Updater {
       const release = await response.json();
       const latest = String(release.tag_name || release.name || '').replace(/^v/i, '');
       const asset = (release.assets || []).find(item => /\.exe$/i.test(item.name || '') && /setup/i.test(item.name || '')) || (release.assets || []).find(item => /\.exe$/i.test(item.name || ''));
-      if (!latest || !isNewer(latest, this.app.getVersion())) return this.set({ status: 'latest', latest: latest || this.app.getVersion() });
+      // Whatever GitHub marks as Latest is installed when it differs from this build, even an older version
+      // (a release can be rolled back by publishing it again).
+      if (!latest || parseVersion(latest).join('.') === parseVersion(this.app.getVersion()).join('.')) return this.set({ status: 'latest', latest: latest || this.app.getVersion() });
       if (!asset) throw new Error('릴리스에 설치 파일(.exe)이 없습니다.');
       this.asset = asset;
-      return this.set({ status: 'available', latest, notes: String(release.body || '').slice(0, 2000), url: release.html_url || '', size: Number(asset.size) || 0 });
+      this.set({ status: 'available', latest, notes: String(release.body || '').slice(0, 2000), url: release.html_url || '', size: Number(asset.size) || 0 });
+      // Downloaded right away; installing still waits for the user (it restarts the app).
+      this.download();
+      return this.state;
     } catch (error) {
       return this.set({ status: 'error', error: error.message || '업데이트 확인 실패' });
     }
