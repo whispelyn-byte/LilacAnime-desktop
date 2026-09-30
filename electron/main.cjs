@@ -567,7 +567,7 @@ async function tmdbSeasonTitle(id,original){
   const series=String(ko.name||'').trim(),firstWord=simpleTitle(series).split(' ')[0]||'';
   return firstWord&&simpleTitle(name).includes(firstWord)?name:`${series.replace(/\s*[~〜～][^~〜～]*[~〜～]\s*/g,' ').trim()} ${name}`;
 }
-async function tmdbKoreanTitles(titles){
+async function tmdbKoreanTitles(titles,{light=false}={}){
   const queries=[];
   for(const title of titles){
     const base=String(title||'').replace(/…/g,'...').replace(/\s*(?:season\s*\d+|\d+(?:st|nd|rd|th)\s*season|part\s*\d+|第\d+期)\s*$/i,'').replace(/[:：]\s*$/,'').trim();
@@ -591,7 +591,7 @@ async function tmdbKoreanTitles(titles){
       if(results[0]&&/[가-힣]/.test(results[0].name||results[0].title||''))add(results[0].name||results[0].title);
       // Fan subtitle blogs often use a different Korean title than the official one
       // ("봇치 더 록!" rather than "외톨이 THE ROCK!"); TMDB lists those as Korean alternative titles.
-      if(results[0]){const alt=await tmdbFetch(`/${kind}/${results[0].id}/alternative_titles`).catch(()=>null);for(const item of [...(alt?.results||[]),...(alt?.titles||[])])if(item.iso_3166_1==='KR')add(item.title)}
+      if(results[0]&&!light){const alt=await tmdbFetch(`/${kind}/${results[0].id}/alternative_titles`).catch(()=>null);for(const item of [...(alt?.results||[]),...(alt?.titles||[])])if(item.iso_3166_1==='KR')add(item.title)}
       if(found.length)return found;
     }
   }
@@ -662,11 +662,18 @@ async function englishTitleFor(anime){
   }
   return anime.title_japanese||'';
 }
+async function displayKoreanTitle(title,anime){
+  if(tmdbKey()){const found=(await tmdbKoreanTitles([title],{light:true}).catch(()=>[])).find(hasHangul);if(found)return found}
+  const clean=value=>String(value||'').replace(/\((?:애니메이션|TV|애니)[^)]*\)/g,'').replace(/\s+/g,' ').trim();
+  const media=await anilistMedia(title,anime).catch(()=>null),synonym=(media?.synonyms||[]).map(clean).find(value=>/[가-힣]{2}/.test(value));if(synonym)return synonym;
+  const malId=Number(anime.malId)||media?.idMal||null,anilistId=Number(anime.anilistId)||media?.id||null;
+  return (await wikidataKoreanTitles(malId,anilistId).catch(()=>[])).map(clean).find(value=>/[가-힣]{2}/.test(value))||'';
+}
 async function resolveDisplayTitle(anime={}){
   const key=`${anime.provider||'jikan'}:${anime.id??anime.mal_id}`,store=displayTitleStore(),cached=store[key];
   if(cached&&Date.now()-cached.time<DISPLAY_TITLE_TTL)return {key,ko:cached.ko||'',en:cached.en||''};
   const title=String(anime.title||'').trim();
-  let ko=hasHangul(title)?title:((await koreanTitleCandidates(title,anime).catch(()=>[])).find(hasHangul)||'');
+  let ko=hasHangul(title)?title:await displayKoreanTitle(title,anime).catch(()=>'');
   const season=communitySeason(title);if(ko&&!hasHangul(title)&&season>1&&communitySeason(ko)==null)ko=`${ko} ${season}기`;
   const en=await englishTitleFor(anime).catch(()=>'');
   store[key]={ko,en,time:Date.now()};saveDisplayTitles();
@@ -682,13 +689,11 @@ async function titleSearchVariants(query){
     if(from&&to&&titleCompareKey(from).includes(key))variants.add(to);
     if(variants.size>=3)break;
   }
-  if(tmdbKey()){
-    for(const kind of ['tv','movie']){
-      const root=await tmdbFetch(`/search/${kind}`,{query:text,language:korean?'en-US':'ko-KR',include_adult:'false'}).catch(()=>null);
-      for(const item of (root?.results||[]).filter(result=>(result.genre_ids||[]).includes(16)).slice(0,2)){const name=item.name||item.title;if(name&&hasHangul(name)!==korean)variants.add(name)}
-    }
-  }
-  if(korean&&variants.size<3){const media=await anilistMedia(text,{}).catch(()=>null);if(media?.title?.english)variants.add(media.title.english)}
+  const [tv,movie,media]=await Promise.all([
+    ...['tv','movie'].map(kind=>tmdbKey()?tmdbFetch(`/search/${kind}`,{query:text,language:korean?'en-US':'ko-KR',include_adult:'false'}).catch(()=>null):null),
+    korean?anilistMedia(text,{}).catch(()=>null):null]);
+  for(const root of [tv,movie])for(const item of (root?.results||[]).filter(result=>(result.genre_ids||[]).includes(16)).slice(0,2)){const name=item.name||item.title;if(name&&hasHangul(name)!==korean)variants.add(name)}
+  if(media?.title?.english)variants.add(media.title.english);
   return [...variants].filter(value=>titleCompareKey(value)!==key).slice(0,3);
 }
 // Tries each Korean title until a Kairan/Csora post matches.
@@ -1157,10 +1162,10 @@ app.whenReady().then(async () => {
   // Default ASS font: the user's choice (설정 > 기본 자막 폰트) or a Korean system font,
   // since libass' bundled fallback font has no Hangul glyphs.
   ipcMain.handle('tmdb:get',()=>({key:tmdbKey()}));
-  // A few lookups at a time: AniList allows about 90 requests a minute.
+  // Several lookups at a time (TMDB answers quickly; AniList allows about 90 requests a minute).
   ipcMain.handle('titles:resolve',async(_,list=[])=>{
     const items=(Array.isArray(list)?list:[]).slice(0,60),results=[];let next=0;
-    await Promise.all(Array.from({length:4},async()=>{while(next<items.length){const item=items[next++];results.push(await resolveDisplayTitle(item).catch(()=>({key:`${item.provider||'jikan'}:${item.id??item.mal_id}`,ko:'',en:''})))}}));
+    await Promise.all(Array.from({length:6},async()=>{while(next<items.length){const item=items[next++];results.push(await resolveDisplayTitle(item).catch(()=>({key:`${item.provider||'jikan'}:${item.id??item.mal_id}`,ko:'',en:''})))}}));
     return results;
   });
   ipcMain.handle('titles:variants',(_,query)=>titleSearchVariants(query).catch(()=>[]));

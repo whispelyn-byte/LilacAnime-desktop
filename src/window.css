@@ -26,3 +26,7 @@
 dialog {
   -webkit-app-region: no-drag;
 }
+
+/* Scrollbars follow the theme (Chromium draws them light unless told otherwise). */
+html, body { color-scheme: dark; }
+body.light { color-scheme: light; }

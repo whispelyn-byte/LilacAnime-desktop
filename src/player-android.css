@@ -103,3 +103,15 @@
 @media (prefers-reduced-motion: reduce) {
   .player-settings, .player-lock, .ps-switch input, .ps-switch input::after { transition: none; }
 }
+
+/* Korean subtitle offer (the stream's own subtitle is another language). */
+.subtitle-offer {
+  position: absolute; z-index: 4; top: 84px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 8px; max-width: calc(100% - 32px);
+  border: 1px solid #ffffff2e; border-radius: 15px; padding: 8px 8px 8px 16px;
+  background: #000000d9; color: #fff; font-size: 13px;
+}
+.subtitle-offer.hidden { display: none; }
+.subtitle-offer button { border: 0; border-radius: 10px; padding: 7px 12px; background: #ffffff1f; color: #fff; font: inherit; cursor: pointer; }
+.subtitle-offer #subtitleOfferApply { background: #c8a2c8; color: #1c1b1f; font-weight: 700; }
+.subtitle-offer button:hover { filter: brightness(1.1); }
