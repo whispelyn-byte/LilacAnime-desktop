@@ -576,13 +576,19 @@ async function tmdbKoreanTitles(titles){
   const found=[];
   for(const query of queries){
     for(const kind of ['tv','movie']){
-      const root=await tmdbFetch(`/search/${kind}`,{query,language:'ko-KR',include_adult:'false'});
-      // Animation (genre 16) from Japan first; the name is Korean when TMDB has a ko-KR translation.
-      const results=(root?.results||[]).filter(item=>(item.genre_ids||[]).includes(16)).sort((a,b)=>Number(b.origin_country?.includes?.('JP')||b.original_language==='ja')-Number(a.origin_country?.includes?.('JP')||a.original_language==='ja'));
+      // The same search in English and Korean: the English names pick the work (TMDB can rank a spin-off such as
+      // "Attack on Titan: Junior High" first), the Korean results give its ko-KR name.
+      const [enRoot,koRoot]=await Promise.all([tmdbFetch(`/search/${kind}`,{query,language:'en-US',include_adult:'false'}),tmdbFetch(`/search/${kind}`,{query,language:'ko-KR',include_adult:'false'})]);
+      const japanese=item=>Number(item.origin_country?.includes?.('JP')||item.original_language==='ja');
+      const animation=(enRoot?.results||[]).filter(item=>(item.genre_ids||[]).includes(16)),wantedKey=titleCompareKey(query),nameKey=item=>titleCompareKey(item.name||item.title||'');
+      // Otherwise TMDB's own ranking (Japanese works first): "Grand Blue" is listed as "Grand Blue Dreaming", and a
+      // prefix match would pick the unrelated "Grand Blues!".
+      const pick=animation.find(item=>nameKey(item)===wantedKey)||animation.slice().sort((a,b)=>japanese(b)-japanese(a))[0];
+      const results=pick?[(koRoot?.results||[]).find(item=>item.id===pick.id)||pick]:[];
       // Everything after the first title must not name another season of the same franchise.
       const add=name=>{name=String(name||'').trim();if(/[가-힣]{2}/.test(name)&&!found.includes(name)&&!siblingTitle(found[0],name))found.push(name)};
       if(kind==='tv'&&results[0])add(await tmdbSeasonTitle(results[0].id,titles[0]).catch(()=>''));
-      if(results[0])add(results[0].name||results[0].title);
+      if(results[0]&&/[가-힣]/.test(results[0].name||results[0].title||''))add(results[0].name||results[0].title);
       // Fan subtitle blogs often use a different Korean title than the official one
       // ("봇치 더 록!" rather than "외톨이 THE ROCK!"); TMDB lists those as Korean alternative titles.
       if(results[0]){const alt=await tmdbFetch(`/${kind}/${results[0].id}/alternative_titles`).catch(()=>null);for(const item of [...(alt?.results||[]),...(alt?.titles||[])])if(item.iso_3166_1==='KR')add(item.title)}
@@ -628,6 +634,62 @@ async function koreanTitleCandidates(title,anime={}){
   const result=found.length?found:[original];koreanTitleCache.set(key,result);
   if(found.length){disk[key]=found;try{fs.writeFileSync(koreanTitleCacheFile(),JSON.stringify(disk),'utf8')}catch{}}
   return result;
+}
+// Display titles (설정 > 작품 제목 표시). Korean names come from the same TMDB → AniList → Wikidata lookup as the
+// subtitle search, English names from the provider, AniList (by ID) or TMDB. Results, misses included, are
+// kept on disk for a week so lists do not repeat the lookups.
+const DISPLAY_TITLE_TTL=7*24*60*60*1000;
+let displayTitleDisk=null;
+function displayTitleFile(){return path.join(app.getPath('userData'),'display-title-cache.json')}
+function displayTitleStore(){if(!displayTitleDisk){try{displayTitleDisk=JSON.parse(fs.readFileSync(displayTitleFile(),'utf8'))||{}}catch{displayTitleDisk={}}}return displayTitleDisk}
+let displayTitleSaveTimer=null;
+function saveDisplayTitles(){clearTimeout(displayTitleSaveTimer);displayTitleSaveTimer=setTimeout(()=>{try{fs.writeFileSync(displayTitleFile(),JSON.stringify(displayTitleStore()),'utf8')}catch{}},1000)}
+const hasHangul=value=>/[가-힣]/.test(String(value||''));
+async function englishTitleFor(anime){
+  if(anime.title_english&&!hasHangul(anime.title_english))return anime.title_english;
+  if(anime.title&&!hasHangul(anime.title))return anime.title;
+  if(Number(anime.anilistId)){
+    const media=await anilistMedia(anime.title||'',{anilistId:anime.anilistId}).catch(()=>null);
+    if(media?.title?.english||media?.title?.romaji)return media.title.english||media.title.romaji;
+  }
+  if(tmdbKey()&&anime.title){
+    // TMDB matches the Korean translation and answers in the requested language.
+    for(const kind of ['tv','movie']){
+      const root=await tmdbFetch(`/search/${kind}`,{query:anime.title,language:'en-US',include_adult:'false'}).catch(()=>null);
+      const item=(root?.results||[]).find(result=>(result.genre_ids||[]).includes(16));
+      if(item&&(item.name||item.title)&&!hasHangul(item.name||item.title))return item.name||item.title;
+    }
+  }
+  return anime.title_japanese||'';
+}
+async function resolveDisplayTitle(anime={}){
+  const key=`${anime.provider||'jikan'}:${anime.id??anime.mal_id}`,store=displayTitleStore(),cached=store[key];
+  if(cached&&Date.now()-cached.time<DISPLAY_TITLE_TTL)return {key,ko:cached.ko||'',en:cached.en||''};
+  const title=String(anime.title||'').trim();
+  let ko=hasHangul(title)?title:((await koreanTitleCandidates(title,anime).catch(()=>[])).find(hasHangul)||'');
+  const season=communitySeason(title);if(ko&&!hasHangul(title)&&season>1&&communitySeason(ko)==null)ko=`${ko} ${season}기`;
+  const en=await englishTitleFor(anime).catch(()=>'');
+  store[key]={ko,en,time:Date.now()};saveDisplayTitles();
+  return {key,ko,en};
+}
+// Other-language spellings of a search query, so Korean and English searches both reach every source.
+async function titleSearchVariants(query){
+  const text=String(query||'').trim();if(!text)return [];
+  const korean=hasHangul(text),variants=new Set(),key=titleCompareKey(text);
+  // Titles already resolved for display.
+  for(const entry of Object.values(displayTitleStore())){
+    const from=korean?entry.ko:entry.en,to=korean?entry.en:entry.ko;
+    if(from&&to&&titleCompareKey(from).includes(key))variants.add(to);
+    if(variants.size>=3)break;
+  }
+  if(tmdbKey()){
+    for(const kind of ['tv','movie']){
+      const root=await tmdbFetch(`/search/${kind}`,{query:text,language:korean?'en-US':'ko-KR',include_adult:'false'}).catch(()=>null);
+      for(const item of (root?.results||[]).filter(result=>(result.genre_ids||[]).includes(16)).slice(0,2)){const name=item.name||item.title;if(name&&hasHangul(name)!==korean)variants.add(name)}
+    }
+  }
+  if(korean&&variants.size<3){const media=await anilistMedia(text,{}).catch(()=>null);if(media?.title?.english)variants.add(media.title.english)}
+  return [...variants].filter(value=>titleCompareKey(value)!==key).slice(0,3);
 }
 // Tries each Korean title until a Kairan/Csora post matches.
 async function findCommunitySubtitleByTitles(source,titles,episode,options){
@@ -1095,10 +1157,17 @@ app.whenReady().then(async () => {
   // Default ASS font: the user's choice (설정 > 기본 자막 폰트) or a Korean system font,
   // since libass' bundled fallback font has no Hangul glyphs.
   ipcMain.handle('tmdb:get',()=>({key:tmdbKey()}));
+  // A few lookups at a time: AniList allows about 90 requests a minute.
+  ipcMain.handle('titles:resolve',async(_,list=[])=>{
+    const items=(Array.isArray(list)?list:[]).slice(0,60),results=[];let next=0;
+    await Promise.all(Array.from({length:4},async()=>{while(next<items.length){const item=items[next++];results.push(await resolveDisplayTitle(item).catch(()=>({key:`${item.provider||'jikan'}:${item.id??item.mal_id}`,ko:'',en:''})))}}));
+    return results;
+  });
+  ipcMain.handle('titles:variants',(_,query)=>titleSearchVariants(query).catch(()=>[]));
   ipcMain.handle('tmdb:set',async(_,value='')=>{
     const key=String(value||'').trim();
     if(key)await tmdbFetch('/configuration',{},key);
-    fs.writeFileSync(tmdbSettingsFile(),JSON.stringify({key}),'utf8');koreanTitleCache.clear();
+    fs.writeFileSync(tmdbSettingsFile(),JSON.stringify({key}),'utf8');koreanTitleCache.clear();for(const [name,entry] of Object.entries(displayTitleStore()))if(!entry.ko||!entry.en)delete displayTitleStore()[name];saveDisplayTitles();
     return {key};
   });
   ipcMain.handle('font:default', (_, choice = '기본체', customPath = '') => {

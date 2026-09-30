@@ -55,6 +55,8 @@ contextBridge.exposeInMainWorld('lilac', {
   installUpdate: () => ipcRenderer.invoke('update:install'),
   onUpdateState: callback => ipcRenderer.on('update:state', (_, value) => callback(value)),
   tmdbKey: () => ipcRenderer.invoke('tmdb:get'),
+  resolveTitles: list => ipcRenderer.invoke('titles:resolve', list),
+  titleVariants: query => ipcRenderer.invoke('titles:variants', query),
   setTmdbKey: key => ipcRenderer.invoke('tmdb:set', key),
   defaultSubtitleFont: (choice, customPath) => ipcRenderer.invoke('font:default', choice, customPath),
   chooseFont: () => ipcRenderer.invoke('file:font'),
