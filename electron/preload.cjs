@@ -65,5 +65,6 @@ contextBridge.exposeInMainWorld('lilac', {
   onTranslateProgress: callback => ipcRenderer.on('translate:progress', (_, value) => callback(value)),
   defaultSubtitleFont: (choice, customPath) => ipcRenderer.invoke('font:default', choice, customPath),
   chooseFont: () => ipcRenderer.invoke('file:font'),
+  updateNotes: () => ipcRenderer.invoke('update:notes'),
   openExternal: url => ipcRenderer.invoke('open:external', url)
 });

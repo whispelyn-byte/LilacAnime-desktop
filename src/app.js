@@ -646,4 +646,32 @@ async function saveGeminiSettings(){
 }
 $('#saveGeminiKey').onclick=saveGeminiSettings;$('#geminiModel').onchange=saveGeminiSettings;$('#geminiDownloads').onchange=saveGeminiSettings;
 $('#saveTmdbKey').onclick=async()=>{const button=$('#saveTmdbKey');button.disabled=true;$('#tmdbKeyState').textContent='키를 확인하는 중...';try{const value=await window.lilac.setTmdbKey($('#tmdbKey').value);renderTmdbState(value,value.key?'키를 확인하고 저장했습니다.':undefined);toast('TMDB 설정을 저장했습니다.')}catch(e){$('#tmdbKeyState').textContent=`저장하지 못했습니다: ${String(e.message||e).replace(/^Error invoking remote method '[^']+': (?:Error: )?/,'')}`}finally{button.disabled=false}};
-window.lilac.onUpdateState(renderUpdate);window.lilac.updateState().then(value=>{$('#appVersion').textContent=`Version ${value.current}`;renderUpdate(value)});
+window.lilac.onUpdateState(renderUpdate);window.lilac.updateState().then(value=>{$('#appVersion').textContent=`Version ${value.current}`;renderUpdate(value);showChangelogIfUpdated(value.current)});
+// Release notes (GitHub Markdown) as plain HTML: headings, lists, paragraphs, bold, code and https links.
+function releaseNotesHtml(text){
+  const inline=value=>escapeHtml(value).replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>').replace(/\[([^\]]+)\]\((https:\/\/[^)\s]+)\)/g,'<a href="$2" data-external>$1</a>');
+  let html='',list=false;const close=()=>{if(list){html+='</ul>';list=false}};
+  for(const raw of String(text||'').replace(/\r/g,'').split('\n')){
+    const line=raw.trimEnd(),heading=line.match(/^#{1,6}\s+(.*)/),item=line.match(/^\s*(?:[-*+]|\d+\.)\s+(.*)/);
+    if(heading){close();html+=`<h4>${inline(heading[1])}</h4>`}
+    else if(item){if(!list){html+='<ul>';list=true}html+=`<li>${inline(item[1])}</li>`}
+    else if(!line.trim())close();
+    else{close();html+=`<p>${inline(line)}</p>`}
+  }
+  close();return html;
+}
+// Shown once on the first start of a new version. A fresh install shows nothing; installs from before this
+// existed are told apart by their history or library.
+async function showChangelogIfUpdated(version){
+  let seen=null;try{seen=localStorage.getItem('lastSeenVersion');localStorage.setItem('lastSeenVersion',version)}catch{return}
+  if(seen===version||(seen===null&&!state.history?.length&&!state.library?.length))return;
+  const data=await window.lilac.updateNotes().catch(()=>null),dialog=$('#changelogDialog');
+  $('#changelogTitle').textContent=`v${version} 변경 사항`;
+  // Release texts start with their own "## v0.3.19" heading, which the dialog title already says.
+  const notes=String(data?.notes||'').replace(/^\s*#{1,6}\s*v?\d+(?:\.\d+)+\s*(?:\n|$)/,'').trim();
+  $('#changelogBody').innerHTML=notes?releaseNotesHtml(notes):'<p>변경 사항을 불러오지 못했어요. GitHub 릴리스에서 확인할 수 있어요.</p>';
+  $('#changelogLink').classList.toggle('hidden',!data?.url);$('#changelogLink').onclick=()=>window.lilac.openExternal(data.url);
+  if(!dialog.open)dialog.showModal();
+}
+$('#changelogClose').onclick=()=>$('#changelogDialog').close();
+$('#changelogBody').addEventListener('click',event=>{const link=event.target.closest('a[data-external]');if(link){event.preventDefault();window.lilac.openExternal(link.href)}});

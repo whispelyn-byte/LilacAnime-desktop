@@ -6,7 +6,8 @@ const { spawn } = require('child_process');
 const { Readable } = require('stream');
 const { pipeline } = require('stream/promises');
 
-const RELEASE_API = 'https://api.github.com/repos/whispelyn-byte/LilacAnime-desktop/releases/latest';
+const RELEASES = 'https://api.github.com/repos/whispelyn-byte/LilacAnime-desktop/releases';
+const RELEASE_API = `${RELEASES}/latest`;
 
 function parseVersion(value = '') {
   return String(value).trim().replace(/^v/i, '').split(/[.-]/).slice(0, 3).map(part => Number.parseInt(part, 10) || 0);
@@ -41,7 +42,7 @@ class Updater {
       if (!latest || parseVersion(latest).join('.') === parseVersion(this.app.getVersion()).join('.')) return this.set({ status: 'latest', latest: latest || this.app.getVersion() });
       if (!asset) throw new Error('릴리스에 설치 파일(.exe)이 없습니다.');
       this.asset = asset;
-      this.set({ status: 'available', latest, notes: String(release.body || '').slice(0, 2000), url: release.html_url || '', size: Number(asset.size) || 0 });
+      this.set({ status: 'available', latest, notes: String(release.body || '').slice(0, 20000), url: release.html_url || '', size: Number(asset.size) || 0 });
       // Downloaded right away; installing still waits for the user (it restarts the app).
       this.download();
       return this.state;
@@ -85,8 +86,12 @@ class Updater {
     return this.downloading;
   }
 
+  get notesFile() { return path.join(this.app.getPath('userData'), 'update-notes.json'); }
+
   install() {
     if (!this.installer || !fs.existsSync(this.installer)) throw new Error('다운로드된 설치 파일이 없습니다.');
+    // The new version shows these notes on its first start, even offline.
+    try { fs.writeFileSync(this.notesFile, JSON.stringify({ version: this.state.latest, notes: this.state.notes || '', url: this.state.url || '' })); } catch { /* fetched by tag instead */ }
     // NSIS assisted installer: /S installs silently into the existing directory, --updated relaunches.
     const child = spawn(this.installer, ['/S', '--updated', '--force-run'], { detached: true, stdio: 'ignore' });
     child.unref();
@@ -94,5 +99,24 @@ class Updater {
     return true;
   }
 }
+
+// Release notes of this build: the ones saved when it was installed, else the GitHub release of its tag.
+Updater.prototype.notes = async function notes() {
+  const version = this.app.getVersion(), same = value => parseVersion(value).join('.') === parseVersion(version).join('.');
+  try {
+    const saved = JSON.parse(fs.readFileSync(this.notesFile, 'utf8'));
+    fs.rmSync(this.notesFile, { force: true });
+    if (same(saved.version) && saved.notes) return { version, notes: String(saved.notes), url: String(saved.url || '') };
+  } catch { /* none saved */ }
+  for (const tag of [`v${version}`, version]) {
+    try {
+      const response = await fetch(`${RELEASES}/tags/${encodeURIComponent(tag)}`, { signal: AbortSignal.timeout(15000), headers: { Accept: 'application/vnd.github+json', 'User-Agent': `LilacAnime-Desktop/${version}` } });
+      if (!response.ok) continue;
+      const release = await response.json();
+      return { version, notes: String(release.body || '').slice(0, 20000), url: release.html_url || '' };
+    } catch { /* next tag spelling */ }
+  }
+  return { version, notes: '', url: 'https://github.com/whispelyn-byte/LilacAnime-desktop/releases' };
+};
 
 module.exports = { Updater, isNewer };

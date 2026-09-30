@@ -1194,6 +1194,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('subtitle-store:remove',(_,key,id)=>subtitleStore.remove(String(key||''),String(id||'')));
   ipcMain.handle('window:theme',(event,light)=>{const win=BrowserWindow.fromWebContents(event.sender);if(win&&!win.isDestroyed())win.setTitleBarOverlay(light?{color:'#ffffff',symbolColor:'#1c1b1f',height:42}:{color:'#121212',symbolColor:'#d0cdd6',height:42});});
   ipcMain.handle('update:state',()=>updater.state);
+  ipcMain.handle('update:notes',()=>updater.notes());
   ipcMain.handle('update:check',()=>updater.check());
   ipcMain.handle('update:download',()=>updater.download());
   ipcMain.handle('update:install',()=>updater.install());
