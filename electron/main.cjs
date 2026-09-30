@@ -1056,7 +1056,7 @@ app.whenReady().then(async () => {
   // Same order as the player's ensureSubtitle: the preferred source's saved file, the stream's own
   // subtitle, any saved file, then Kairan/Csora.
   const findDownloadSubtitle=async(job,stream)=>{
-    const episode=job.episode||{},key=encodeURIComponent(String(episode.url||episode.token||episode.id||episode.number||'')),saved=key?subtitleStore.list(key):[],preferred=job.subtitleSource||'linkkf';
+    const episode=job.episode||{},key=encodeURIComponent(String(episode.url||episode.token||episode.id||episode.number||'')),saved=key?subtitleStore.list(key):[],preferred=job.subtitleSource||'reanime';
     const fromSaved=entry=>({path:entry.path,assPath:entry.assPath,fonts:entry.fonts||[],label:entry.label});
     const savedPreferred=saved.find(entry=>entry.source===preferred);if(savedPreferred)return fromSaved(savedPreferred);
     if(stream?.subtitleUrl)return {stream:true};

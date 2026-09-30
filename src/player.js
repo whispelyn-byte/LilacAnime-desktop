@@ -27,9 +27,9 @@ function openPlayerSettings(open, focusSection = null) {
 function syncPlayerSettingsUI() {
   $('#psAutoPlay').checked = playerFlag('playerAutoPlay');
   $('#psSkipButton').checked = playerFlag('playerSkipButton');
-  $('#psAutoSkip').checked = playerFlag('playerAutoSkip');
+  $('#psAutoSkip').checked = playerFlag('playerAutoSkip', false);
   $('#assEffectsHint').textContent = assEffectsEnabled() ? '원본 위치·색상·효과를 유지합니다' : '효과를 단순화해 성능을 우선합니다';
-  const source = localStorage.getItem('subtitleSource') || 'linkkf';
+  const source = localStorage.getItem('subtitleSource') || 'reanime';
   $$('#psSubtitleSources button').forEach(button => button.classList.toggle('selected', button.dataset.source === source));
   const size = Number(localStorage.getItem('subtitleSize') || 100), position = Number(localStorage.getItem('subtitlePosition') || 10), outline = Number(localStorage.getItem('vttOutline') || 2), sync = Number(localStorage.getItem('subtitleSync') || 0);
   $('#psSubtitleSize').value = String(size); $('#psSizeLabel').textContent = `${size}%`;
@@ -202,7 +202,7 @@ function updateSkipState(video) {
   $('#skipNow').classList.toggle('hidden', !activeSkip || !showButton);
   if (!activeSkip) { autoSkipState.enteredKey = null; autoSkipState.skippedKey = null; return; }
   if (autoSkipState.enteredKey !== activeSkipKey) { autoSkipState.enteredKey = activeSkipKey; autoSkipState.enteredAt = Date.now(); autoSkipState.skippedKey = null; }
-  if (playerFlag('playerAutoSkip') && autoSkipState.skippedKey !== activeSkipKey && Date.now() - autoSkipState.enteredAt >= 2500 && activeSkip.endTime > video.currentTime) {
+  if (playerFlag('playerAutoSkip', false) && autoSkipState.skippedKey !== activeSkipKey && Date.now() - autoSkipState.enteredAt >= 2500 && activeSkip.endTime > video.currentTime) {
     autoSkipState.skippedKey = activeSkipKey; video.currentTime = activeSkip.endTime;
   }
 }
