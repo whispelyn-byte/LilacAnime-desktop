@@ -44,6 +44,7 @@ dialog { max-height: calc(100vh - 48px); }
 .episode-badge { padding: 2px 5px; border-radius: 4px; font-size: 9px; font-style: normal; font-weight: 700; }
 .episode-badge.filler { color: #e07a86; background: #e07a861a; }
 .episode-badge.recap { color: #7fb6d8; background: #7fb6d81a; }
+.episode-badge.dub { color: var(--lilac); background: color-mix(in srgb, var(--lilac) 12%, transparent); }
 .episode-download:disabled { opacity: .35; cursor: not-allowed; }
 
 /* Subtitle sheet: Re:Anime track picker */

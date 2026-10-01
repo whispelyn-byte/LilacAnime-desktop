@@ -232,9 +232,14 @@ function providerEpisodes(html, provider, anime) {
     const parsed=(()=>{try{return new URL(href)}catch{return null}})();
     if(provider==='animenosub')match=parsed?.pathname.match(/-episode-(\d+)([a-z]?)(-dub)?\/?$/i);
     else if(provider==='reanime'&&parsed?.pathname.includes('/watch/'))match=(parsed.searchParams.get('ep')||el.text()).match(/(?:episode|ep|#)?\s*(\d+)/i);
-    if(!match)return;const number=Number(match[1]);episodes.push({name:`${number}${match[2]||''}`,number,url:href,dub:Boolean(match[3]),provider,anilistId:anime.anilistId||null});
+    if(!match)return;const number=Number(match[1]);
+    // Animenosub's episode list dates each episode ("June 19, 2026"), shown like Re:Anime's air dates.
+    const date=provider==='animenosub'?new Date(el.find('.epl-date').text().trim()):null,airedDate=date&&!isNaN(date)?`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`:'';
+    episodes.push({name:`${number}${match[2]||''}`,number,url:href,dub:Boolean(match[3]),provider,anilistId:anime.anilistId||null,...(airedDate?{airedDate}:{})});
   });
-  return [...new Map(episodes.map(x=>[`${x.name}:${x.dub}`,x])).values()].sort((a,b)=>a.number-b.number);
+  // The same episode is linked more than once (first/last episode buttons); the dated link wins.
+  const unique=new Map();for(const x of episodes){const key=`${x.name}:${x.dub}`;if(!unique.has(key)||(!unique.get(key).airedDate&&x.airedDate))unique.set(key,x)}
+  return [...unique.values()].sort((a,b)=>a.number-b.number);
 }
 
 // Re:ANIME detail pages embed an AniList-like media object and the first episode page
@@ -701,10 +706,10 @@ async function displayKoreanTitle(title,anime){
 }
 async function resolveDisplayTitle(anime={}){
   const key=`${anime.provider||'jikan'}:${anime.id??anime.mal_id}`,store=displayTitleStore(),cached=store[key];
-  if(cached&&Date.now()-cached.time<DISPLAY_TITLE_TTL)return {key,ko:cached.ko||'',en:cached.en||''};
   const title=String(anime.title||'').trim();
-  let ko=hasHangul(title)?title:await displayKoreanTitle(title,anime).catch(()=>'');
-  const season=communitySeason(title);if(ko&&!hasHangul(title)&&season>1&&communitySeason(ko)==null)ko=`${ko} ${season}기`;
+  // Entries saved before a season form was recognised get it here.
+  if(cached&&Date.now()-cached.time<DISPLAY_TITLE_TTL)return {key,ko:withSeason(cached.ko||'',title),en:cached.en||''};
+  const ko=withSeason(hasHangul(title)?title:await displayKoreanTitle(title,anime).catch(()=>''),title);
   const en=await englishTitleFor(anime).catch(()=>'');
   const merged={ko:ko||cached?.ko||'',en:en||cached?.en||''};
   store[key]={...merged,time:Date.now()};saveDisplayTitles();
