@@ -46,6 +46,7 @@ function syncPlayerSettingsUI() {
   const seconds = Number(localStorage.getItem('seekSeconds') || 10);
   $('#psSeekNote').textContent = `뒤로/앞으로 버튼 이동: ${seconds}초`;
   renderQualityChoices();
+  renderVideoServers();
   renderDiscoveredFonts();
   loadAnissiaMakers();
 }
@@ -172,6 +173,29 @@ function applyDefaultQuality() {
   const choice = exact || below;
   if (choice) hlsPlayer.currentLevel = choice.index;
 }
+// Animenosub video servers ("SUB - Moon", "RAW - Omega"…). 자동 = RAW under a Korean subtitle, else SUB; a picked
+// server is kept for later episodes. Changing it reloads the episode at the same point.
+function renderVideoServers() {
+  const servers = currentPlaybackContext.videoServers || [], box = $('#psServers');
+  box.classList.toggle('hidden', servers.length < 2); if (servers.length < 2) { $('#psServerList').replaceChildren(); return; }
+  const picked = localStorage.getItem('animenosubServer') || '';
+  $('#psServerNote').textContent = `재생 중: ${currentPlaybackContext.videoServer || '-'} · SUB는 영어 자막이 영상에 박혀 있고 RAW는 자막이 없어요`;
+  $('#psServerList').replaceChildren(...[{ label: '자동', value: '' }, ...servers.map(server => ({ label: server.label, value: server.label }))].map(option => {
+    const button = document.createElement('button'); button.type = 'button'; button.textContent = option.label;
+    button.classList.toggle('selected', option.value === picked);
+    button.onclick = () => selectVideoServer(option.value);
+    return button;
+  }));
+}
+function selectVideoServer(label) {
+  if (label) localStorage.setItem('animenosubServer', label); else localStorage.removeItem('animenosubServer');
+  const context = currentPlaybackContext, video = $('#video'), episode = context.episode;
+  if (!episode || (label && label === context.videoServer)) { renderVideoServers(); return; }
+  const duration = playbackDuration(), resumeProgress = duration ? Math.min(94, video.currentTime / duration * 100) : 0, title = context.subtitleTitle || $('#skipTitle').value.trim();
+  const { videoServers, videoServer, resolving, currentUrl, ...keep } = context;
+  resolveIntoPlayer(() => window.lilac.providerResolve(episode), `${title} · ${episode.name || episode.number}화`, { ...keep, resumeProgress }, title, Number($('#skipEpisode').value) || episode.number || 1);
+}
+
 function renderQualityChoices() {
   const levels = hlsPlayer?.levels || [], box = $('#psQuality'), list = $('#psQualityList');
   box.classList.toggle('hidden', levels.length < 2); if (levels.length < 2) { list.replaceChildren(); return; }

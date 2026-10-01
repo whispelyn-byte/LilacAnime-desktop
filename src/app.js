@@ -258,18 +258,29 @@ function showPendingPlayer(name,context={}){
 }
 
 
+// Animenosub: SUB servers have English burned in, RAW ones none. A server picked in the player is used again;
+// otherwise RAW when this episode has a Korean subtitle (saved, or found online within 8 s), else SUB.
+async function resolveAnimenosub(episode,koreanSearch){
+  const picked=localStorage.getItem('animenosubServer')||'';let prefer='sub';
+  if(!picked){
+    const saved=await window.lilac.savedSubtitles(episodeRef(episode)).catch(()=>[]);
+    if(saved.some(entry=>entry.source!=='provider')||await Promise.race([koreanSearch,new Promise(resolve=>setTimeout(()=>resolve(null),8000))]))prefer='raw';
+  }
+  return window.lilac.providerResolve({...episode,server:picked,prefer});
+}
 async function resolveIntoPlayer(resolver,name,context={},subtitleTitle='',episode=1){
   const requestId=showPendingPlayer(name,context);
   const searchTitle=subtitleTitle||context.subtitleTitle||name.split(' · ')[0];
-  onlineSubtitleFor(searchTitle,episode,context.anime?{provider:context.anime.provider,id:context.anime.id,title:context.anime.title||context.anime.title_english||'',anilistId:context.anime.anilistId||null,malId:context.anime.malId||null}:null).catch(()=>null);
+  const koreanSearch=onlineSubtitleFor(searchTitle,episode,context.anime?{provider:context.anime.provider,id:context.anime.id,title:context.anime.title||context.anime.title_english||'',anilistId:context.anime.anilistId||null,malId:context.anime.malId||null}:null).catch(()=>null);
   try{
     const downloaded=context.episode?jobByRef(episodeRef(context.episode)):null;
-    const stream=downloaded?.status==='completed'?await window.lilac.playDownload(downloaded.id):await resolver();
+    const stream=downloaded?.status==='completed'?await window.lilac.playDownload(downloaded.id):context.episode?.provider==='animenosub'?await resolveAnimenosub(context.episode,koreanSearch):await resolver();
     if(requestId!==playbackRequestId)return;
     const offlineEpisodes=downloaded?.status==='completed'?downloadedSeries(downloaded):[];
     play(stream.url,name,{...context,seriesEpisodes:offlineEpisodes.length?offlineEpisodes:context.seriesEpisodes,streamHeaders:stream.headers||{},offline:Boolean(downloaded?.status==='completed')});
     if(downloaded?.status==='completed')$('#downloadStatus').textContent='다운로드한 영상 재생 중';
     currentPlaybackContext.subtitleTracks=stream.subtitleTracks||[];currentPlaybackContext.subtitleReferer=stream.referer||'';renderSubtitleTracks();loadMissingSubtitleTracks();
+    currentPlaybackContext.videoServers=stream.servers||[];currentPlaybackContext.videoServer=stream.server||'';if(typeof renderVideoServers==='function')renderVideoServers();
     ensureSubtitle(stream,searchTitle,episode);
   }catch(error){
     if(requestId!==playbackRequestId)return;

@@ -368,12 +368,34 @@ async function resolveProviderEpisode(episode) {
     throw lastError||new Error('모든 영상 서버 연결에 실패했습니다.');
   }
   if(episode.provider==='animenosub'){
-    const html=await providerFetch(episode.url,{referer:`${ANIMENOSUB_WEB}/`});
-    const $=cheerio.load(html);
-    const embedded=absoluteUrl($('iframe[src],iframe[data-src]').first().attr('src')||$('iframe[data-src]').first().attr('data-src')||'',episode.url);
-    if(embedded)return resolveStreamPage(embedded,episode.url);
+    const servers=animenosubServers(await providerFetch(episode.url,{referer:`${ANIMENOSUB_WEB}/`}),episode.url);
+    // The server picked in the player first, then the preferred kind (RAW under a Korean subtitle), then SUB; within
+    // a kind the host that worked last ("Omega") first. A host that does not answer is given up after 15 s.
+    const host=server=>server.label.split(/\s*-\s*/).pop();
+    const rank=server=>(server.label===episode.server?0:server.kind===episode.prefer?2:server.kind==='sub'?4:6)-(host(server)===animenosubWorkingHost?1:0);
+    let lastError=null;
+    for(const server of servers.slice().sort((a,b)=>rank(a)-rank(b))){
+      try{const stream=await resolveStreamPage(server.url,episode.url,15000);animenosubWorkingHost=host(server);return {...stream,servers:servers.map(({label,kind})=>({label,kind})),server:server.label}}catch(error){lastError=error}
+    }
+    if(servers.length)throw lastError||new Error('모든 영상 서버 연결에 실패했습니다.');
   }
   return resolveStreamPage(episode.url,episode.referer||new URL(episode.url).origin+'/');
+}
+
+// Animenosub's server menu: base64 <iframe> snippets labelled "SUB - Moon", "RAW - Omega"… SUB videos carry burned-in
+// English subtitles, RAW ones none. Pages without the menu have a single embedded player.
+let animenosubWorkingHost='';
+function animenosubServers(html,pageUrl){
+  const $=cheerio.load(html),servers=[];
+  $('option[value]').each((_,option)=>{
+    const value=$(option).attr('value');if(!value)return;
+    let src='';try{src=cheerio.load(Buffer.from(value,'base64').toString('utf8'))('iframe').attr('src')||''}catch{/* not a server */}
+    const label=$(option).text().trim();
+    if(src&&label&&!servers.some(server=>server.label===label))servers.push({label,kind:/^raw\b/i.test(label)?'raw':/^dub\b/i.test(label)?'dub':'sub',url:absoluteUrl(src,pageUrl)});
+  });
+  const embedded=absoluteUrl($('iframe[src]').first().attr('src')||$('iframe[data-src]').first().attr('data-src')||'',pageUrl);
+  if(!servers.length&&embedded)servers.push({label:'기본',kind:'sub',url:embedded});
+  return servers;
 }
 
 function openProviderPlayer(episode, title = 'LilacAnime Player') {
@@ -633,7 +655,7 @@ async function koreanTitleCandidates(title,anime={}){
   if(tmdb){
     // Re:ANIME also knows the Japanese title, which TMDB matches as the original name.
     let native='';
-    if(anime.id){try{const media=await providerFetch(`${REANIME_WEB}/api/v1/anime/${encodeURIComponent(anime.id)}`,{json:true,referer:`${REANIME_WEB}/`});native=String(media?.title?.native||'')}catch{/* English only */}}
+    if(anime.id&&anime.provider==='reanime'){try{const media=await providerFetch(`${REANIME_WEB}/api/v1/anime/${encodeURIComponent(anime.id)}`,{json:true,referer:`${REANIME_WEB}/`});native=String(media?.title?.native||'')}catch{/* English only */}}
     (await tmdbKoreanTitles([original,native]).catch(()=>[])).forEach(add);
   }
   let media=null;
@@ -1197,7 +1219,7 @@ app.whenReady().then(async () => {
     const savedPreferred=(preferred==='reanime'&&saved.find(entry=>entry.source==='gemini'))||saved.find(entry=>entry.source===preferred);if(savedPreferred)return fromSaved(savedPreferred);
     if(stream?.subtitleUrl)return {stream:true};
     if(saved[0])return fromSaved(saved[0]);
-    const anime=job.anime||{},title=job.title||anime.title||'',titles=anime.provider==='reanime'?await koreanTitleCandidates(title,anime).catch(()=>[title]):[title];
+    const anime=job.anime||{},title=job.title||anime.title||'',titles=['reanime','animenosub'].includes(anime.provider)?await koreanTitleCandidates(title,anime).catch(()=>[title]):[title];
     for(const source of COMMUNITY_SOURCES.includes(preferred)?[preferred,...COMMUNITY_SOURCES.filter(x=>x!==preferred)]:COMMUNITY_SOURCES){
       try{const result=await findCommunitySubtitleByTitles(source,titles,Number(job.episodeNumber)||1,{originalTitle:anime.title||'',offsets:await previousSeasonEpisodes(anime,title).catch(()=>[])});return {path:result.path,assPath:result.assPath,fonts:result.fonts,label:communitySubtitleLabel(source,result)}}catch{/* next source */}
     }
@@ -1367,13 +1389,15 @@ app.whenReady().then(async () => {
   // The sandboxed preload has no url.pathToFileURL, so file URLs are built here.
   ipcMain.handle('subtitle:find', async (_, source, title, episode, anime = null, options = {}) => {
     // Kairan/Csora posts use Korean titles; Re:ANIME titles are resolved to Korean first (TMDB, AniList, Wikidata).
-    const titles = anime?.provider === 'reanime' ? await koreanTitleCandidates(title, anime).catch(() => [title]) : [title];
+    // Korean subtitle blogs need the Korean title of English-titled sources.
+    const titles = ['reanime', 'animenosub'].includes(anime?.provider) ? await koreanTitleCandidates(title, anime).catch(() => [title]) : [title];
     const offsets = await previousSeasonEpisodes(anime || {}, title).catch(() => []);
     return findCommunitySubtitleByTitles(source, titles, Number(episode), { originalTitle: anime?.title || '', offsets, maker: String(options?.maker || '') });
   });
   // Anissia makers of the playing anime, for the player menu.
   ipcMain.handle('anissia:makers', async (_, title, anime = null) => {
-    const titles = anime?.provider === 'reanime' ? await koreanTitleCandidates(title, anime).catch(() => [title]) : [title];
+    // Korean subtitle blogs need the Korean title of English-titled sources.
+    const titles = ['reanime', 'animenosub'].includes(anime?.provider) ? await koreanTitleCandidates(title, anime).catch(() => [title]) : [title];
     for (const name of titles) {
       const found = await anissiaMakers(name, anime?.title || '').catch(() => null);
       if (found) return { subject: found.anime.subject, makers: found.captions.map(item => ({ name: item.name, episode: item.episode, support: anissiaMakerSupport(item.website) })).filter((item, index, list) => list.findIndex(other => other.name === item.name) === index) };
