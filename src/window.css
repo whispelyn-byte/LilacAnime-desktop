@@ -27,6 +27,16 @@ dialog {
   -webkit-app-region: no-drag;
 }
 
+/* While playing in a window the player covers that strip, so its top bar (title and status) moves the window instead;
+   its buttons and the settings sheet stay clickable. */
+.immersive-player.windowed .player-top {
+  -webkit-app-region: drag;
+}
+.immersive-player.windowed .player-top button,
+.immersive-player .player-settings {
+  -webkit-app-region: no-drag;
+}
+
 /* Scrollbars follow the theme (Chromium draws them light unless told otherwise). */
 html, body { color-scheme: dark; }
 body.light { color-scheme: light; }
