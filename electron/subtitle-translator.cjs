@@ -8,7 +8,9 @@ const crypto = require('crypto');
 const { createLocalAi } = require('./local-ai.cjs');
 
 const GEMINI_API = 'https://generativelanguage.googleapis.com/v1beta';
-const BATCH_LINES = 120, BATCH_CHARS = 7000, PARALLEL = 3;
+// A whole episode (a few hundred short lines) fits one request, and the free tier allows only a few requests a minute
+// and a few dozen a day, so episodes go in one batch where possible, two at most at a time.
+const BATCH_LINES = 600, BATCH_CHARS = 30000, PARALLEL = 2, PROMPT_VERSION = 'prompt-2';
 
 function createTranslator(userData) {
   const settingsFile = path.join(userData, 'gemini.json'), cacheDir = path.join(userData, 'subtitles', 'translated');
@@ -16,7 +18,9 @@ function createTranslator(userData) {
   const read = () => {
     let value = {}; try { value = JSON.parse(fs.readFileSync(settingsFile, 'utf8')) || {}; } catch { /* defaults */ }
     return { key: String(value.key || '').trim(), model: String(value.model || '').trim(), models: Array.isArray(value.models) ? value.models : [], translateDownloads: value.translateDownloads !== false,
-      localModel: String(value.localModel || 'hy-mt-1.8b'), autoJimaku: value.autoJimaku !== false };
+      localModel: String(value.localModel || 'hy-mt-1.8b'),
+      // How a picked Jimaku file is translated by itself: 'off', 'gemini' or 'local' (older settings: on = whichever is set up).
+      jimakuTranslate: ['off', 'gemini', 'local'].includes(value.jimakuTranslate) ? value.jimakuTranslate : value.autoJimaku === false ? 'off' : value.key ? 'gemini' : 'local' };
   };
   // With the local AI the installed model list is part of the settings the page shows.
   const settings = () => { const value = read(); return { ...value, localModels: local.models() }; };
@@ -29,7 +33,7 @@ function createTranslator(userData) {
   async function api(pathname, key, init = {}) {
     const response = await fetch(`${GEMINI_API}${pathname}`, { ...init, signal: AbortSignal.timeout(init.body ? 180000 : 20000), headers: { 'x-goog-api-key': key, ...(init.body ? { 'Content-Type': 'application/json' } : {}) } });
     const root = await response.json().catch(() => ({}));
-    if (!response.ok) { const error = new Error(root?.error?.message || `Gemini HTTP ${response.status}`); error.status = response.status; throw error; }
+    if (!response.ok) { const error = new Error(root?.error?.message || `Gemini HTTP ${response.status}`); error.status = response.status; error.details = root?.error?.details || []; throw error; }
     return root;
   }
   // Text models that can generate content, newest first; image, audio, live and embedding models are left out.
@@ -52,7 +56,7 @@ function createTranslator(userData) {
   async function saveSettings(change = {}) {
     const current = read(), next = { ...current };
     if ('translateDownloads' in change) next.translateDownloads = change.translateDownloads !== false;
-    if ('autoJimaku' in change) next.autoJimaku = change.autoJimaku !== false;
+    if ('jimakuTranslate' in change && ['off', 'gemini', 'local'].includes(change.jimakuTranslate)) next.jimakuTranslate = change.jimakuTranslate;
     if ('localModel' in change) next.localModel = String(change.localModel || current.localModel);
     if ('model' in change && next.models.includes(change.model)) next.model = change.model;
     if ('key' in change && String(change.key || '').trim() !== current.key) {
@@ -86,7 +90,15 @@ function createTranslator(userData) {
         } catch (error) {
           last = error;
           if (error.status === 401 || error.status === 403 || /api key/i.test(error.message)) throw error;
-          if (error.status === 429 || error.status >= 500 || error.name === 'TimeoutError') { await new Promise(resolve => setTimeout(resolve, Math.min(30000, 2500 * 2 ** attempt))); continue; }
+          if (error.status === 429) {
+            // The daily allowance is gone: no retry helps until it resets. A per-minute limit says how long to wait.
+            const quotas = (error.details || []).flatMap(detail => detail.violations || []).map(item => String(item.quotaId || ''));
+            if (quotas.some(id => /PerDay/i.test(id))) { const daily = new Error('Gemini 무료 사용량을 오늘 다 썼습니다. 내일 다시 번역하거나 로컬 AI 번역을 쓰세요.'); daily.status = 429; throw daily; }
+            const wait = Number(String((error.details || []).find(detail => detail.retryDelay)?.retryDelay || '').replace(/s$/, '')) || Number(error.message.match(/retry in ([\d.]+)\s*s/i)?.[1]) || 2.5 * 2 ** attempt;
+            if (wait > 120) throw error;
+            await new Promise(resolve => setTimeout(resolve, (wait + 1) * 1000)); continue;
+          }
+          if (error.status >= 500 || error.name === 'TimeoutError') { await new Promise(resolve => setTimeout(resolve, Math.min(30000, 2500 * 2 ** attempt))); continue; }
           break;
         }
       }
@@ -117,24 +129,41 @@ function createTranslator(userData) {
     return list;
   }
 
-  const system = title => [
-    'You translate anime subtitles into natural Korean for Korean viewers.',
-    title ? `Anime: ${title}` : '',
-    'Input is a JSON array of {i, t} subtitle lines in playback order. Return a JSON array with exactly one {i, t} per input line, same i, t translated into Korean.',
-    'Write the way Korean fansubs do: natural spoken Korean that fits each speaker and the scene, not a literal translation. Keep one character\'s speech style consistent.',
-    'Use the Korean names common in Korean fandom for characters, places and terms, and keep them consistent. Keep honorific nuance (senpai 선배, -san 씨 or omitted when natural).',
-    'Keep a line break (\\n) where the original has one if it still reads well. Translate song lyrics too. Leave lines that are only sounds, symbols or names as they are.',
-    'Never merge, split, skip or reorder lines, and add no notes.'
-  ].filter(Boolean).join('\n');
+  // Written like a Korean fansub team's style guide: what the answer must look like, then how to translate. context:
+  // {title (as shown in the app, usually Korean), originalTitle, characters: [{name, native}] from AniList}.
+  const system = (context = {}) => {
+    const characters = (context.characters || []).filter(item => item.name || item.native).slice(0, 30);
+    return [
+      'You are an experienced Korean subtitle translator for anime, working to the standard of a good Korean fansub team.',
+      context.title || context.originalTitle ? `Anime: ${[context.title, context.originalTitle].filter(Boolean).join(' / ')}` : '',
+      characters.length ? `Main characters (romanized / original). Write each name in Korean the same way every time:\n${characters.map(item => `- ${[item.name, item.native].filter(Boolean).join(' / ')}`).join('\n')}` : '',
+      '',
+      'FORMAT',
+      '- Input: a JSON array of {i, t}, one subtitle line each, in playback order. The source is usually Japanese, sometimes English.',
+      '- Output: only a JSON array with exactly one {i, t} for every input item, the same i, t = the Korean subtitle. Never merge, split, skip or reorder lines; no notes or explanations.',
+      '- A sentence can run over several lines: translate it so the lines read naturally one after another, but keep each part on its own line.',
+      '',
+      'TRANSLATION',
+      '- Translate the meaning faithfully. Do not add, explain, soften or censor anything, and do not invent what is not said.',
+      '- Write natural spoken Korean, as short as a subtitle should be. Avoid translationese (needless 그녀/그, 당신, ~하는 것이다, literal idioms).',
+      '- Choose 반말 or 존댓말 from who is talking to whom (friends and family: 반말; strangers, superiors, polite characters: 존댓말) and keep each character\'s speech style the same throughout.',
+      '- Japanese names in Hangul by the usual Korean fan spelling (e.g. 마히루, 아마네, 츠카사, 쇼타; つ is 츠, not 쓰). Keep the original name order.',
+      '- Honorifics: -san → 씨 or nothing, -kun / -chan → nothing (or 군 / 짱 where it matters), senpai → 선배, sensei → 선생님, -sama → 님.',
+      '- Jokes and wordplay: keep the effect in Korean rather than the literal words. Song lyrics: translate as lyrics.',
+      '- Lines that are only sounds, music marks or symbols stay as they are. Keep caption labels in their brackets, translated: (男の子) → (남자아이), [ため息] → [한숨].',
+      '- Keep a line break (\\n) where the original has one if it still reads well.'
+    ].filter(line => line !== null && line !== undefined).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  };
 
   // progress(done, total) is called after each batch (local: each line); status(text) while the local model starts.
-  async function translate({ file, title = '', provider = '', progress = () => {}, status = () => {} }) {
+  async function translate({ file, title = '', provider = '', context = {}, progress = () => {}, status = () => {} }) {
     const settings = read(), isLocal = (provider || autoProvider()) === 'local';
     if (!isLocal && !settings.key) throw new Error('설정 > 자막 자동 번역에서 Gemini API 키를 넣어 주세요.');
     const localModel = isLocal ? local.models().find(item => item.id === settings.localModel) : null;
     if (isLocal && !localModel?.installed) throw new Error('설정 > 자막 자동 번역에서 로컬 AI 모델을 먼저 받아 주세요.');
     const model = isLocal ? `local:${localModel.file || localModel.label}` : settings.model || defaultModel(settings.models) || 'gemini-flash-latest';
-    const source = fs.readFileSync(file, 'utf8'), hash = crypto.createHash('sha1').update(`${model}\n${source}`).digest('hex').slice(0, 20);
+    // The prompt version is part of the cache key, so a better prompt is not hidden behind older Gemini results.
+    const source = fs.readFileSync(file, 'utf8'), hash = crypto.createHash('sha1').update(`${model}\n${isLocal ? '' : PROMPT_VERSION}\n${source}`).digest('hex').slice(0, 20);
     const out = path.join(cacheDir, `${hash}.vtt`);
     if (fs.existsSync(out)) { progress(1, 1); return { path: out, model, failed: 0, cached: true }; }
 
@@ -155,7 +184,7 @@ function createTranslator(userData) {
         const input = JSON.stringify(group.map(line => ({ i: line.i, t: line.text }))), ids = new Set(group.map(line => line.i));
         for (let attempt = 0; attempt < 2; attempt++) {
           try {
-            const answer = JSON.parse((await generate(settings.key, model, system(title), input)).replace(/^```(?:json)?\s*|\s*```$/g, ''));
+            const answer = JSON.parse((await generate(settings.key, model, system({ title, ...context }), input)).replace(/^```(?:json)?\s*|\s*```$/g, ''));
             // Only this batch's lines: a stray id must not overwrite another batch's translation.
             for (const item of Array.isArray(answer) ? answer : []) if (ids.has(item?.i) && typeof item.t === 'string' && item.t.trim()) translated.set(item.i, item.t.trim());
             if (group.every(line => translated.has(line.i)) || attempt) break;

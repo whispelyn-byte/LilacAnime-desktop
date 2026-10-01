@@ -226,7 +226,7 @@ class DownloadManager {
         if (!this.jobs.includes(job)) return;
         job.stage = 'translate'; job.translateProgress = `${index + 1}/${saved.length}`; this.save();
         let result = null;
-        try { result = await this.translateTrack?.(track.path, title); } catch (error) {
+        try { result = await this.translateTrack?.(track.path, title, job.anime); } catch (error) {
           // A bad key or an exhausted quota fails every track the same way.
           if ([400, 401, 403, 404, 429].includes(error?.status)) break; continue;
         }

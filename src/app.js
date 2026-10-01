@@ -75,7 +75,7 @@ function updateLibraryButton(button,isSaved,withLabel=true){if(!button)return;bu
 // Cards shown outside the home lists (related works, schedule, filters) must still open.
 const knownAnime=new Map();
 function rememberAnime(a){if(a?.mal_id!=null&&!knownAnime.has(String(a.mal_id)))knownAnime.set(String(a.mal_id),a);return a}
-function animeById(id) { return [...state.season,...state.top,...state.library].find(x=>String(x.mal_id)===String(id))||knownAnime.get(String(id)); }
+function animeById(id) { return [...(state.current||[]),...state.season,...state.top,...state.library].find(x=>String(x.mal_id)===String(id))||knownAnime.get(String(id)); }
 function toast(message) { const el=$('#toast'); el.textContent=message; el.classList.add('show'); clearTimeout(toast.t); toast.t=setTimeout(()=>el.classList.remove('show'),2200); }
 
 function switchView(name) {
@@ -500,7 +500,7 @@ async function runTranslation({file,name,button,provider}){
   translationButtons.set(run,button);button.dataset.run=String(run);button.disabled=true;button.textContent='번역 준비 중…';$('#subtitleState').textContent=`${name} 자막을 한국어로 번역하는 중...`;
   try{
     const source=await file();if(!current())return;
-    const result=await window.lilac.translateSubtitle({path:source.path,title,id:run,provider});if(!current())return;
+    const result=await window.lilac.translateSubtitle({path:source.path,title,id:run,provider,anime:subtitleSearchAnime()});if(!current())return;
     currentSubtitlePath=result.path;attachSubtitle(result.url,translatedLabel(result,name),{path:result.path,source:'gemini'});
     if(result.failed)toast(`${result.failed}줄은 번역하지 못해 원문으로 남겼습니다.`);
   }catch(error){if(current()){$('#subtitleState').textContent='자동 번역에 실패했습니다.';toast(`자동 번역 실패: ${ipcMessage(error)}`)}}
@@ -527,7 +527,9 @@ async function applyJimaku(file){
     context.jimakuFile=file.url;context.jimakuSubtitle={path:result.path,name:file.name};context.selectedSubtitleTrack=null;currentSubtitlePath=result.path;
     attachSubtitle(result.url,'Jimaku 자막',{path:result.path,assUrl:result.assUrl,assPath:result.assPath,fonts:result.fonts,source:'jimaku'});renderJimaku();renderSubtitleTracks();
     translationSettings=await window.lilac.geminiSettings().catch(()=>translationSettings);
-    if(translationSettings?.autoJimaku!==false&&autoProvider())translateJimaku(autoProvider());
+    // 설정 > 자막 자동 번역 > Jimaku 자막 자동 번역: off, Gemini or the local AI.
+    const provider=translationSettings?.jimakuTranslate;
+    if(provider==='gemini'||provider==='local'){if(translationReady(provider))translateJimaku(provider);else toast(provider==='local'?'로컬 AI 모델이 없어 자동 번역을 건너뛰었습니다. 설정 > 자막 자동 번역에서 받을 수 있어요.':'Gemini API 키가 없어 자동 번역을 건너뛰었습니다.')}
   }catch(error){if(requestId===playbackRequestId){$('#subtitleState').textContent='Jimaku 자막을 받지 못했습니다.';toast(`Jimaku: ${ipcMessage(error)}`)}}
 }
 function translateJimaku(provider='gemini'){const subtitle=currentPlaybackContext.jimakuSubtitle;if(subtitle)runTranslation({file:async()=>subtitle,name:'Jimaku',button:provider==='local'?$('#translateJimakuLocal'):$('#translateJimaku'),provider})}
@@ -630,15 +632,19 @@ async function init(){
       try{const linkkf=await window.lilac.linkkfHome(1,20);season=linkkf;top={data:linkkf.data.slice().reverse()};state.catalogPage=2;$('#filterBar').classList.remove('hidden');}
       catch(error){toast('Linkkf 서버가 응답하지 않아 작품 정보 모드로 표시합니다.');[season,top]=await Promise.all([window.lilac.season(),window.lilac.top()]);}
     }else if(PROVIDER_SOURCES.includes(state.source)){
-      try{season=await window.lilac.providerCatalog(state.source);top={data:season.data.slice().reverse()};}
+      // The catalog's first page (most popular first) fills 인기 애니메이션 and 전체; this season's shows come separately.
+      const current=window.lilac.providerSeason(state.source).catch(()=>null);
+      try{season=await window.lilac.providerCatalog(state.source);top={data:season.data};const result=await current;if(result?.data?.length){state.current=result.data;state.currentLabel=result.label}}
       catch(error){toast(`${state.source} 서버가 응답하지 않아 작품 정보 모드로 표시합니다.`);[season,top]=await Promise.all([window.lilac.season(),window.lilac.top()]);}
     }else [season,top]=await Promise.all([window.lilac.season(),window.lilac.top()]);
-    state.season=season.data;state.top=top.data;if(state.source==='reanime'){state.catalogOffset=season.data.length;state.catalogTotal=season.total||null}else if(state.source==='animenosub'){state.catalogOffset=season.nextOffset||2}else if(state.source==='miruro'){state.catalogOffset=season.nextOffset;state.catalogDone=Boolean(season.done)}renderCards('#seasonRail',state.season.slice(0,10));renderCards('#topRail',state.top.slice(0,10));if(state.source==='linkkf'&&state.season[0]?.provider==='linkkf')loadLinkkfHome();
-    const a=state.season[0]||state.top[0];if(a){const hero=$('#hero'),libraryButton=hero.querySelector('.library-toggle');hero.classList.remove('skeleton');setBackgroundImage(hero,imageOf(a));hero.querySelector('h1').textContent=titleOf(a);titleAnime.set(animeTitleKey(a),a);hero.querySelector('h1').dataset.titleFor=animeTitleKey(a);hero.querySelector('p').textContent=(a.synopsis||'새로운 이야기를 만나보세요.').slice(0,145);hero.querySelector('.primary').onclick=()=>openDetail(a.mal_id);updateLibraryButton(libraryButton,saved(a.mal_id));libraryButton.onclick=e=>toggleLibrary(a,e.currentTarget);}
+    state.season=season.data;state.top=top.data;if(state.source==='reanime'){state.catalogOffset=season.data.length;state.catalogTotal=season.total||null}else if(state.source==='animenosub'){state.catalogOffset=season.nextOffset||2}else if(state.source==='miruro'){state.catalogOffset=season.nextOffset;state.catalogDone=Boolean(season.done)}renderCards('#seasonRail',(state.current||state.season).slice(0,30));renderCards('#topRail',state.top.slice(0,20));$('#seasonTitle').textContent=state.current?`${state.currentLabel} 신작`:'이번 시즌 신작';if(state.source==='linkkf'&&state.season[0]?.provider==='linkkf')loadLinkkfHome();
+    const a=state.current?.[0]||state.season[0]||state.top[0];if(a){const hero=$('#hero'),libraryButton=hero.querySelector('.library-toggle');hero.classList.remove('skeleton');setBackgroundImage(hero,imageOf(a));hero.querySelector('h1').textContent=titleOf(a);titleAnime.set(animeTitleKey(a),a);hero.querySelector('h1').dataset.titleFor=animeTitleKey(a);hero.querySelector('p').textContent=(a.synopsis||'새로운 이야기를 만나보세요.').slice(0,145);hero.querySelector('.primary').onclick=()=>openDetail(a.mal_id);updateLibraryButton(libraryButton,saved(a.mal_id));libraryButton.onclick=e=>toggleLibrary(a,e.currentTarget);}
   } catch(e){$('#seasonRail').classList.remove('loading-cards');$('#topRail').classList.remove('loading-cards');toast('목록을 불러오지 못했습니다. 인터넷 연결을 확인하세요.');}
 }
 
 $$('.nav').forEach(b=>b.onclick=()=>switchView(b.dataset.view));$$('[data-goto]').forEach(b=>b.onclick=()=>switchView(b.dataset.goto));
+// 홈 > "2026 가을 신작" > 전체 보기: the whole season list in the search view.
+$('#seeAllSeason').onclick=()=>{if(!state.current?.length){switchView('search');return}switchView('search');$('#pageSearch').value='';$('#filterMore')?.classList.add('hidden');renderCards('#searchGrid',state.current);$('#searchStatus').textContent=`${state.currentLabel} 신작 ${state.current.length}개 · 인기순`};
 $$('[data-library-tab]').forEach(button=>button.onclick=()=>{$$('[data-library-tab]').forEach(x=>x.classList.toggle('selected',x===button));$('#savedLibraryPanel').classList.toggle('hidden',button.dataset.libraryTab!=='saved');$('#downloadsPanel').classList.toggle('hidden',button.dataset.libraryTab!=='downloads')});
 $('#openDownloadFolder').onclick=()=>window.lilac.openDownloadsFolder();
 window.lilac.onDownloadsChanged(downloads=>{state.downloads=downloads;renderDownloads()});
@@ -717,14 +723,14 @@ function renderCatalogIndex(value){
 window.lilac.onCatalogIndexState(renderCatalogIndex);window.lilac.catalogIndexState().then(renderCatalogIndex).catch(()=>{});
 function renderGeminiState(value,message){
   translationSettings=value||translationSettings;renderLocalAi(value);
-  $('#geminiKey').value=value?.key||'';$('#geminiDownloads').checked=value?.translateDownloads!==false;$('#autoJimaku').checked=value?.autoJimaku!==false;const select=$('#geminiModel'),models=value?.models||[];
+  $('#geminiKey').value=value?.key||'';$('#geminiDownloads').checked=value?.translateDownloads!==false;$$('#jimakuTranslateChoices button').forEach(button=>button.classList.toggle('selected',button.dataset.value===(value?.jimakuTranslate||'off')));const select=$('#geminiModel'),models=value?.models||[];
   select.replaceChildren(...models.map(name=>{const option=document.createElement('option');option.value=name;option.textContent=name;return option}));select.value=value?.model||'';select.disabled=!models.length;
   $('#geminiKeyState').textContent=message||(value?.key?`Gemini API 키를 사용 중입니다 (${value.model}).`:'aistudio.google.com에서 발급한 API 키를 넣어 주세요.');
 }
 window.lilac.geminiSettings().then(value=>renderGeminiState(value)).catch(()=>{});
 async function saveGeminiSettings(){
   const button=$('#saveGeminiKey');button.disabled=true;$('#geminiKeyState').textContent='키를 확인하는 중...';
-  try{const value=await window.lilac.setGeminiSettings({key:$('#geminiKey').value,model:$('#geminiModel').value,translateDownloads:$('#geminiDownloads').checked,autoJimaku:$('#autoJimaku').checked});renderGeminiState(value,value.key?`키를 확인하고 저장했습니다 (${value.model}).`:undefined);toast('Gemini 설정을 저장했습니다.')}
+  try{const value=await window.lilac.setGeminiSettings({key:$('#geminiKey').value,model:$('#geminiModel').value,translateDownloads:$('#geminiDownloads').checked});renderGeminiState(value,value.key?`키를 확인하고 저장했습니다 (${value.model}).`:undefined);toast('Gemini 설정을 저장했습니다.')}
   catch(error){$('#geminiKeyState').textContent=`저장하지 못했습니다: ${ipcMessage(error)}`}
   finally{button.disabled=false}
 }
@@ -750,7 +756,7 @@ async function installLocalModel(id){
   catch(error){delete localModelProgress[id];renderLocalAi(translationSettings);toast(`모델을 받지 못했습니다: ${ipcMessage(error)}`)}
 }
 window.lilac.onLocalModelProgress(({id,done,total,finished,error})=>{if(finished||error)return;const percent=Math.floor(done/Math.max(1,total)*100);if(localModelProgress[id]!==percent){localModelProgress[id]=percent;renderLocalAi(translationSettings)}});
-$('#autoJimaku').onchange=e=>saveTranslation({autoJimaku:e.target.checked});
+$$('#jimakuTranslateChoices button').forEach(button=>button.onclick=()=>saveTranslation({jimakuTranslate:button.dataset.value}));
 $('#addLocalModel').onclick=async()=>{try{const value=await window.lilac.addLocalModelFile();if(value)renderGeminiState(value)}catch(error){toast(ipcMessage(error))}};
 $('#saveTmdbKey').onclick=async()=>{const button=$('#saveTmdbKey');button.disabled=true;$('#tmdbKeyState').textContent='키를 확인하는 중...';try{const value=await window.lilac.setTmdbKey($('#tmdbKey').value);renderTmdbState(value,value.key?'키를 확인하고 저장했습니다.':undefined);toast('TMDB 설정을 저장했습니다.')}catch(e){$('#tmdbKeyState').textContent=`저장하지 못했습니다: ${String(e.message||e).replace(/^Error invoking remote method '[^']+': (?:Error: )?/,'')}`}finally{button.disabled=false}};
 window.lilac.onUpdateState(renderUpdate);window.lilac.updateState().then(value=>{$('#appVersion').textContent=`Version ${value.current}`;renderUpdate(value);showChangelogIfUpdated(value.current)});

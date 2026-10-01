@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('lilac', {
   linkkfExtras: anime => ipcRenderer.invoke('linkkf:extras', anime),
   linkkfRecordView: postId => ipcRenderer.invoke('linkkf:record-view', postId),
   providerCatalog: (provider, query = '', offset = 0) => ipcRenderer.invoke('provider:catalog', provider, query, offset),
+  providerSeason: provider => ipcRenderer.invoke('provider:season', provider),
   providerDetail: anime => ipcRenderer.invoke('provider:detail', anime),
   providerPlay: (episode, title) => ipcRenderer.invoke('provider:play', episode, title),
   providerResolve: episode => ipcRenderer.invoke('provider:resolve', episode),

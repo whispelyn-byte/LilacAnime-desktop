@@ -1334,6 +1334,21 @@ async function jimakuDownload(file,anime,episode){
   const out=path.join(dir,`${communityFileName(file.name).replace(/\.[^.]+$/,'')}${ext}`);fs.writeFileSync(out,text,'utf8');
   return subtitleResult(out,{source:'jimaku',label:'Jimaku 자막',name:file.name});
 }
+// The work a translation is for: its provider title next to the Korean one, and its main characters (AniList), so
+// Gemini spells their names the same way in every line.
+const anilistCharacterCache=new Map();
+async function anilistCharacters(anilistId){
+  const id=Number(anilistId);if(!id)return [];if(anilistCharacterCache.has(id))return anilistCharacterCache.get(id);
+  const query='query($id:Int){Media(id:$id,type:ANIME){characters(perPage:25,sort:[ROLE,RELEVANCE]){nodes{name{full native}}}}}';
+  const response=await fetch('https://graphql.anilist.co',{signal:AbortSignal.timeout(15000),method:'POST',headers:{Accept:'application/json','Content-Type':'application/json','User-Agent':'LilacAnime Android'},body:JSON.stringify({query,variables:{id}})});
+  if(!response.ok)return [];
+  const list=((await response.json())?.data?.Media?.characters?.nodes||[]).map(node=>({name:String(node?.name?.full||''),native:String(node?.name?.native||'')})).filter(item=>item.name||item.native);
+  anilistCharacterCache.set(id,list);return list;
+}
+async function translationContext(anime={},title=''){
+  const anilistId=await jimakuAnilistId(anime||{}).catch(()=>null);
+  return {originalTitle:anime?.title&&anime.title!==title?String(anime.title):'',characters:anilistId?await anilistCharacters(anilistId).catch(()=>[]):[]};
+}
 const ANISSIA_API='https://api.anissia.net';
 // Online subtitle sources in their default search order.
 const COMMUNITY_SOURCES=['kairan','csora','anissia'];
@@ -1537,7 +1552,7 @@ app.whenReady().then(async () => {
   const analyzeDownload=async(job,siblings)=>analyzeOfflineOpEd({title:job.title,episode:job.episodeNumber,currentUrl:pathToFileURL(job.filePath).href,duration:job.duration,candidates:siblings.map(item=>({...item.episode,number:item.episodeNumber,localUrl:pathToFileURL(item.filePath).href}))});
   downloadManager=new DownloadManager({app,resolveTitles:anime=>resolveDisplayTitle(anime),
     saveTrack:(url,referer)=>saveRemoteSubtitle(String(url),remoteTrackOptions(url,referer)).then(file=>subtitleResult(file)),
-    translateTrack:(file,title)=>{const settings=translator().settings();return translator().ready()&&settings.translateDownloads?translator().translate({file,title}):null},findSubtitle:findDownloadSubtitle,findSkips:findDownloadSkips,analyzeOpEd:analyzeDownload,// Animenosub and Miruro downloads follow the player: the RAW video when the episode has a Korean subtitle (saved or found
+    translateTrack:async(file,title,anime)=>{const settings=translator().settings();return translator().ready()&&settings.translateDownloads?translator().translate({file,title,context:await translationContext(anime||{},title)}):null},findSubtitle:findDownloadSubtitle,findSkips:findDownloadSkips,analyzeOpEd:analyzeDownload,// Animenosub and Miruro downloads follow the player: the RAW video when the episode has a Korean subtitle (saved or found
     // by the same search the download attaches afterwards), else SUB with its burned-in English.
     resolveEpisode:async(episode,job)=>{if(!['animenosub','miruro'].includes(episode?.provider))return resolveProviderEpisode(episode);return resolveProviderEpisode({...episode,prefer:await findDownloadSubtitle(job,null).catch(()=>null)?'raw':'sub',download:true})},resolveLinkkf:async episode=>{
     let playerUrl='';try{const root=await linkkfFetch(`https://emdlinkkf.5imgdarr.top/apilink2.php?data=${encodeURIComponent(episode.token)}`);const links=Array.isArray(root.data)?root.data:[];playerUrl=(links.find(x=>String(x.server).toUpperCase()==='NR-HD')||links[0]||{}).link||'';}catch{}
@@ -1636,6 +1651,32 @@ app.whenReady().then(async () => {
     playerStreamHeaders=null;let playerUrl='';try{const root=await linkkfFetch(`https://emdlinkkf.5imgdarr.top/apilink2.php?data=${encodeURIComponent(episode.token)}`);const links=Array.isArray(root.data)?root.data:[];playerUrl=(links.find(x=>String(x.server).toUpperCase()==='NR-HD')||links[0]||{}).link||'';}catch{}
     if(!playerUrl)playerUrl=`${LINKKF_WEB}/up/${encodeURIComponent(episode.postId)}/watch/?slug=${encodeURIComponent(episode.slug)}`;
     return resolveStreamPage(playerUrl,`${LINKKF_WEB}/`,15000);
+  });
+  // This season's shows (홈 > "2026 가을 신작"), most popular first: Re:Anime and Miruro filter their own catalog by
+  // season and year, Animenosub's anime list by its season tag. Seasons follow the anime calendar (January winter,
+  // April spring, July summer, October autumn).
+  ipcMain.handle('provider:season', async (_, provider) => {
+    const now=new Date(),year=now.getFullYear(),index=Math.floor(now.getMonth()/3),season=['WINTER','SPRING','SUMMER','FALL'][index],label=`${year} ${['겨울','봄','여름','가을'][index]}`;
+    let data=[];
+    if (provider === 'reanime') {
+      const root=await providerFetch(`${REANIME_WEB}/api/v1/search?limit=100&offset=0&season=${season}&year=${year}`,{json:true,referer:`${REANIME_WEB}/search`});
+      data=reanimeItems(root);
+    } else if (provider === 'miruro') {
+      let cursor;
+      for(let page=0;page<4;page++){
+        const root=await miruroApi('anime',{season,season_year:year,sort:'-popularity',limit:15,cursor});
+        data.push(...(root.data||[]).map(miruroItem));cursor=root.next_cursor;if(!root.has_more||!cursor)break;
+      }
+    } else if (provider === 'animenosub') {
+      const tag=`${season.toLowerCase()}-${year}`;
+      for(let page=1;page<=3;page++){
+        // Only the result cards: the page also links its own views ("Text Mode") under /anime/.
+        const $=cheerio.load(await providerFetch(`${ANIMENOSUB_WEB}/anime/?${page>1?`page=${page}&`:''}season%5B0%5D=${tag}&order=popular`,{referer:`${ANIMENOSUB_WEB}/`}));
+        const items=animenosubList($('article.bs').map((_,node)=>$.html(node)).get().join(''));
+        const fresh=items.filter(item=>!data.some(known=>known.mal_id===item.mal_id));data.push(...fresh);if(!fresh.length)break;
+      }
+    } else throw new Error('지원하지 않는 콘텐츠 소스입니다.');
+    return {data,label};
   });
   ipcMain.handle('provider:catalog', async (_, provider, query = '', offset = 0) => {
     if (provider === 'reanime') {
@@ -1773,12 +1814,13 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('localai:remove',(_,id)=>{translator().local.removeModel(String(id||''));return translator().settings()});
   ipcMain.handle('gemini:set',(_,value={})=>translator().saveSettings(value||{}));
-  ipcMain.handle('subtitle:translate',async(event,{path:file='',title='',id=0,provider=''}={})=>{
+  ipcMain.handle('subtitle:translate',async(event,{path:file='',title='',id=0,provider='',anime=null}={})=>{
     const resolved=path.resolve(String(file||''));
     // App subtitle files and the tracks saved with downloads.
     if(![path.join(app.getPath('userData'),'subtitles'),downloadManager?.root].some(root=>root&&resolved.startsWith(root+path.sep))||!/\.vtt$/i.test(resolved)||!fs.existsSync(resolved))throw new Error('번역할 자막 파일이 없습니다.');
     const send=value=>{if(!event.sender.isDestroyed())event.sender.send('translate:progress',{id,...value})};
-    const result=await translator().translate({file:resolved,title:String(title||''),provider:['gemini','local'].includes(provider)?provider:'',progress:(done,total)=>send({done,total}),status:text=>send({status:text})});
+    const context=await translationContext(anime||{},String(title||''));
+    const result=await translator().translate({file:resolved,title:String(title||''),provider:['gemini','local'].includes(provider)?provider:'',context,progress:(done,total)=>send({done,total}),status:text=>send({status:text})});
     return subtitleResult(result.path,{model:result.model,failed:result.failed,cached:result.cached});
   });
   // Several lookups at a time (TMDB answers quickly; AniList allows about 90 requests a minute).
