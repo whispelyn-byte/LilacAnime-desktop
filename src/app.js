@@ -358,7 +358,9 @@ function assEffectsEnabled(){return localStorage.getItem('assEffects')!=='false'
 // 기본 자막 폰트 (기본체 / 나눔고딕 / 명조체 or a font file) as {family, data}, shared by VTT and ASS.
 function subtitleFontData(){subtitleFontPromise ||= window.lilac.defaultSubtitleFont(localStorage.getItem('subtitleFont')||'기본체',localStorage.getItem('subtitleFontPath')||'').then(font=>font?.data?{family:font.family,data:new Uint8Array(font.data)}:null).catch(()=>null);return subtitleFontPromise}
 function assRendererReady(){return window.LilacAss?Promise.resolve(window.LilacAss):new Promise(resolve=>window.addEventListener('lilac-ass-ready',()=>resolve(window.LilacAss),{once:true}))}
-function clearSubtitle(){currentSubtitle=null;$('#video').querySelectorAll('track').forEach(x=>x.remove());window.LilacAss?.destroy()}
+// Chromium keeps drawing the cue that was on screen when its <track> is removed (the next episode then shows the last
+// line of the previous one until subtitles are switched off and on), so the tracks are turned off first.
+function clearSubtitle(){currentSubtitle=null;const video=$('#video');for(const track of video.textTracks)track.mode='disabled';video.querySelectorAll('track').forEach(x=>x.remove());window.LilacAss?.destroy()}
 function setVttVisible(){const track=$('#video').textTracks[0];if(track)track.mode=$('#subtitleEnabled').checked&&!currentSubtitle?.assRendering?'showing':'hidden'}
 async function renderAssSubtitle(){
   const subtitle=currentSubtitle;if(!subtitle?.assUrl)return;
