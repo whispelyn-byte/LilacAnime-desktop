@@ -628,18 +628,18 @@ async function resolveDisplayTitle(anime={}){
 async function titleSearchVariants(query){
   const text=String(query||'').trim();if(!text)return [];
   const korean=hasHangul(text),variants=new Set(),key=titleCompareKey(text);
-  // Titles already resolved for display.
+  // Every title already shown in the other language whose shown name contains the query (all of them, so a
+  // series with several seasons or movies is found whole), then TMDB / AniList for titles not seen yet.
   for(const entry of Object.values(displayTitleStore())){
     const from=korean?entry.ko:entry.en,to=korean?entry.en:entry.ko;
     if(from&&to&&titleCompareKey(from).includes(key))variants.add(to);
-    if(variants.size>=3)break;
   }
   const [tv,movie,media]=await Promise.all([
     ...['tv','movie'].map(kind=>tmdbKey()?tmdbFetch(`/search/${kind}`,{query:text,language:korean?'en-US':'ko-KR',include_adult:'false'}).catch(()=>null):null),
     korean?anilistMedia(text,{}).catch(()=>null):null]);
   for(const root of [tv,movie])for(const item of (root?.results||[]).filter(result=>(result.genre_ids||[]).includes(16)).slice(0,2)){const name=item.name||item.title;if(name&&hasHangul(name)!==korean)variants.add(name)}
   if(media?.title?.english)variants.add(media.title.english);
-  return [...variants].filter(value=>titleCompareKey(value)!==key).slice(0,3);
+  return [...variants].filter(value=>titleCompareKey(value)!==key).slice(0,30);
 }
 // Tries each Korean title until a Kairan/Csora post matches.
 async function findCommunitySubtitleByTitles(source,titles,episode,options){
