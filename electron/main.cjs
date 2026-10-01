@@ -139,10 +139,15 @@ async function linkkfFilter({ page = 1, limit = 20, seasonTypeIds = [], genreIds
   const pagination = root.pagination || {};
   return { data: (root.data || []).map(linkkfAnime).filter(a => a.id), page: Number(pagination.current_page) || Number(page) || 1, totalPages: Number(pagination.total_pages) || 1, total: Number(pagination.total_results) || 0 };
 }
-// Android searches the whole Linkkf catalog locally (title/genre). Cache it per session.
-let linkkfCatalogCache = null;
-async function linkkfCatalog() {
-  if (linkkfCatalogCache) return linkkfCatalogCache;
+// Android searches the whole Linkkf catalog locally (title/genre). The list is kept on disk, so search keeps
+// working from the last copy while Linkkf is down; it is reloaded daily, and every 30 minutes until a load works.
+let linkkfCatalogCache = null, linkkfCatalogUpdated = 0, linkkfCatalogLoading = null, linkkfCatalogTimer = null, activeCatalogSource = null;
+const linkkfCatalogFile = () => path.join(app.getPath('userData'), 'linkkf-catalog.json');
+function readLinkkfCatalog() {
+  if (!linkkfCatalogCache) try { const value = JSON.parse(fs.readFileSync(linkkfCatalogFile(), 'utf8')); linkkfCatalogCache = value.items || []; linkkfCatalogUpdated = value.updated || 0; } catch { linkkfCatalogCache = []; }
+  return linkkfCatalogCache;
+}
+async function downloadLinkkfCatalog() {
   const found = new Map(), limit = 100;
   for (let page = 1; page <= 400; page += 4) {
     const batch = await Promise.all([0, 1, 2, 3].map(offset => linkkfFetch(`${LINKKF_API}/filter.php?page=${page + offset}&limit=${limit}`).then(root => (root.data || []).map(linkkfAnime)).catch(() => null)));
@@ -150,9 +155,27 @@ async function linkkfCatalog() {
     batch.flat().filter(Boolean).forEach(item => { if (item.id) found.set(item.id, item); });
     if (batch.some(items => !items || items.length < limit)) break;
   }
-  linkkfCatalogCache = [...found.values()];
-  setTimeout(() => { linkkfCatalogCache = null; }, 30 * 60 * 1000).unref?.();
-  return linkkfCatalogCache;
+  return [...found.values()];
+}
+function refreshLinkkfCatalog() {
+  if (linkkfCatalogLoading) return linkkfCatalogLoading;
+  if (activeCatalogSource !== 'linkkf') return null;
+  clearTimeout(linkkfCatalogTimer);
+  linkkfCatalogLoading = downloadLinkkfCatalog().then(items => {
+    linkkfCatalogCache = items; linkkfCatalogUpdated = Date.now();
+    try { fs.writeFileSync(linkkfCatalogFile(), JSON.stringify({ items, updated: linkkfCatalogUpdated })); } catch { /* memory copy still works */ }
+    linkkfCatalogTimer = setTimeout(refreshLinkkfCatalog, 24 * 60 * 60 * 1000); linkkfCatalogTimer.unref?.();
+    return items;
+  }, error => {
+    linkkfCatalogTimer = setTimeout(refreshLinkkfCatalog, 30 * 60 * 1000); linkkfCatalogTimer.unref?.();
+    throw error;
+  }).finally(() => { linkkfCatalogLoading = null; });
+  return linkkfCatalogLoading;
+}
+async function linkkfCatalog() {
+  const saved = readLinkkfCatalog();
+  if (saved.length && Date.now() - linkkfCatalogUpdated < 24 * 60 * 60 * 1000) return saved;
+  try { return await (refreshLinkkfCatalog() || downloadLinkkfCatalog()); } catch (error) { if (saved.length) return saved; throw error; }
 }
 function linkkfSearchKey(value = '') { return String(value).toLowerCase().normalize('NFKC').replace(/[\s\-_:·.,!?'"()[\]~]+/g, ''); }
 
@@ -194,14 +217,16 @@ function reanimeItems(root) {
 }
 
 function absoluteUrl(value, base) { try { return new URL(value, base).href; } catch { return ''; } }
-function animenosubList(html, base = `${ANIMENOSUB_WEB}/`) {
+// Search pages also carry the sidebar's popular / newest lists, which are not results: onlyResults skips them.
+function animenosubList(html, base = `${ANIMENOSUB_WEB}/`, { onlyResults = false } = {}) {
   const $ = cheerio.load(html); const found = new Map();
   $('a[href]').each((_, node) => {
+    if (onlyResults && $(node).closest('#sidebar, header, footer, nav').length) return;
     const el=$(node), href=absoluteUrl(el.attr('href'),base);
     if(!href.startsWith(`${ANIMENOSUB_WEB}/`)||(!href.includes('/anime/')&&!/-episode-\d+/i.test(href)))return;
     const episodeSlug=new URL(href).pathname.split('/').filter(Boolean).pop()||'';
     const seriesSlug=(href.includes('/anime/')?episodeSlug:episodeSlug.replace(/-episode-\d+[a-z]?(?:-dub)?$/i,'')).toLowerCase();
-    if(!seriesSlug)return; const container=el.closest('article,li,.item,.film-poster,.post,.ani,div');
+    if(!seriesSlug||new URL(href).pathname==='/anime/')return; const container=el.closest('article,li,.item,.film-poster,.post,.ani,div');
     const img=el.find('img').first().length?el.find('img').first():container.find('img').first();
     const poster=absoluteUrl(img.attr('data-src')||img.attr('data-lazy-src')||img.attr('src')||'',base);
     let title=(img.attr('alt')||container.find('h1,h2,h3,h4,.title,.film-name,.post-title').first().text()||el.text()).trim();
@@ -683,31 +708,40 @@ async function resolveDisplayTitle(anime={}){
   store[key]={...merged,time:Date.now()};saveDisplayTitles();
   return {key,...merged};
 }
-// --- Re:Anime title index ---------------------------------------------------------------------
-// The whole Re:Anime catalog (about 20,000 entries, 100 per request), so a Korean search also finds titles never
-// shown in the app. Korean names go into the display-title store: Wikidata in one query (by AniList id), then a
-// TMDB lookup for each remaining entry (needs the key), most popular first, in the background. The list is
-// refreshed daily; every entry is looked up once (misses again after 30 days). Kept on disk.
+// --- Catalog title indexes (Re:Anime, Animenosub) ----------------------------------------------
+// The whole catalog of a source, so a Korean search also finds titles never shown in the app. Korean names go into
+// the display-title store: Wikidata in one query by AniList id (Re:Anime), then a TMDB lookup for each remaining
+// entry (needs the key), in catalog order, in the background. Lists are refreshed daily; every entry is looked up
+// once (misses again after 30 days). Kept on disk per source.
 const DAY=24*60*60*1000;
-const reanimeIndex={items:null,updated:0,wikidata:0,tried:{},running:false,state:{status:'idle',total:0,korean:0}};
-function reanimeIndexFile(){return path.join(app.getPath('userData'),'reanime-index.json')}
-function loadReanimeIndex(){
-  if(reanimeIndex.items)return reanimeIndex.items;
-  try{const value=JSON.parse(fs.readFileSync(reanimeIndexFile(),'utf8'));Object.assign(reanimeIndex,{items:value.items||[],updated:value.updated||0,wikidata:value.wikidata||0,tried:value.tried||{}})}catch{reanimeIndex.items=[]}
-  return reanimeIndex.items;
+const CATALOGS={
+  // Re:Anime: about 20,000 entries, 100 per request, most popular first.
+  reanime:{label:'Re:Anime',fetch:fetchReanimeCatalog,wikidata:true},
+  // Animenosub: the anime sitemaps list every series (about 1,400) with its poster, newest first. The address only
+  // gives a lossy title ("im-looking-for-a-zombie"), so the series page is read once for the real one.
+  animenosub:{label:'Animenosub',fetch:fetchAnimenosubCatalog,title:animenosubRealTitle}
+};
+const catalogIndexes={};
+let catalogIndexRunning=false;
+// activeCatalogSource (declared with the Linkkf catalog): the source in use; only that one loads in the background.
+function catalogIndex(provider){
+  if(catalogIndexes[provider])return catalogIndexes[provider];
+  const index={items:[],updated:0,wikidata:0,tried:{},status:'idle'};
+  try{Object.assign(index,JSON.parse(fs.readFileSync(path.join(app.getPath('userData'),`${provider}-index.json`),'utf8')))}catch{/* first run */}
+  return catalogIndexes[provider]=index;
 }
-let reanimeIndexSaveTimer=null;
-function saveReanimeIndex(){clearTimeout(reanimeIndexSaveTimer);reanimeIndexSaveTimer=setTimeout(()=>{try{fs.writeFileSync(reanimeIndexFile(),JSON.stringify({items:reanimeIndex.items,updated:reanimeIndex.updated,wikidata:reanimeIndex.wikidata,tried:reanimeIndex.tried}))}catch{}},2000)}
-const indexKorean=item=>displayTitleStore()[`reanime:${item.id}`]?.ko||'';
-function reportReanimeIndex(status){
-  const items=reanimeIndex.items||[];
-  reanimeIndex.state={status,total:items.length,korean:items.filter(indexKorean).length,tmdb:Boolean(tmdbKey())};
-  BrowserWindow.getAllWindows().forEach(win=>{if(!win.isDestroyed())win.webContents.send('reanime-index:state',reanimeIndex.state)});
+const indexSaveTimers={};
+function saveCatalogIndex(provider){clearTimeout(indexSaveTimers[provider]);indexSaveTimers[provider]=setTimeout(()=>{const index=catalogIndex(provider);try{fs.writeFileSync(path.join(app.getPath('userData'),`${provider}-index.json`),JSON.stringify({items:index.items,updated:index.updated,wikidata:index.wikidata,tried:index.tried}))}catch{}},2000)}
+const indexKorean=(provider,item)=>displayTitleStore()[`${provider}:${item.id}`]?.ko||'';
+function catalogIndexState(){return {tmdb:Boolean(tmdbKey()),sources:Object.entries(CATALOGS).filter(([provider])=>provider===activeCatalogSource).map(([provider,{label}])=>{const index=catalogIndex(provider);return {provider,label,status:index.status,total:index.items.length,korean:index.items.filter(item=>indexKorean(provider,item)).length}})}}
+function reportCatalogIndex(provider,status){
+  catalogIndex(provider).status=status;const state=catalogIndexState();
+  BrowserWindow.getAllWindows().forEach(win=>{if(!win.isDestroyed())win.webContents.send('catalog-index:state',state)});
 }
 // A later season keeps its number when the Korean name has none ("장송의 프리렌" for Season 2 → "… 2기").
-function storeIndexKorean(item,ko){
+function storeIndexKorean(provider,item,ko){
   const season=communitySeason(item.title);if(season>1&&communitySeason(ko)==null)ko=`${ko} ${season}기`;
-  const key=`reanime:${item.id}`,store=displayTitleStore();store[key]={ko,en:store[key]?.en||item.title,time:Date.now()};
+  const key=`${provider}:${item.id}`,store=displayTitleStore();store[key]={ko,en:store[key]?.en||item.title,time:Date.now()};
 }
 async function fetchReanimeCatalog(){
   const page=offset=>providerFetch(`${REANIME_WEB}/api/v1/search?limit=100&offset=${offset}`,{json:true,referer:`${REANIME_WEB}/search`});
@@ -724,6 +758,26 @@ async function fetchReanimeCatalog(){
   if(!total||items.size<total*.9)throw new Error(`Re:Anime 목록을 다 받지 못했습니다 (${items.size}/${total}).`);
   return [...items.values()].sort((a,b)=>b.popularity-a.popularity);
 }
+async function fetchAnimenosubCatalog(previous=[]){
+  const known=new Map(previous.map(item=>[item.id,item])),index=await providerFetch(`${ANIMENOSUB_WEB}/sitemap_index.xml`,{referer:`${ANIMENOSUB_WEB}/`});
+  const maps=[...index.matchAll(/<loc>([^<]*\/anime-sitemap\d*\.xml)<\/loc>/g)].map(match=>match[1]);
+  if(!maps.length)throw new Error('Animenosub 사이트맵을 찾지 못했습니다.');
+  const items=[],seen=new Set();
+  for(const map of maps){
+    const xml=await providerFetch(map,{referer:`${ANIMENOSUB_WEB}/`});
+    for(const [,block] of xml.matchAll(/<url>([\s\S]*?)<\/url>/g)){
+      const slug=block.match(/<loc>[^<]*\/anime\/([^/<]+)\/?<\/loc>/)?.[1]?.toLowerCase();if(!slug||seen.has(slug))continue;seen.add(slug);
+      const old=known.get(slug),poster=block.match(/<image:loc>([^<]*)<\/image:loc>/)?.[1]||'';
+      items.push(old||{provider:'animenosub',id:slug,mal_id:`animenosub:${slug}`,title:slug.replace(/-+/g,' ').replace(/\b\w/g,c=>c.toUpperCase()),title_english:'',images:{webp:{large_image_url:poster}},score:null,year:'',type:'Anime',episodes:null,genres:[],studios:[],url:`${ANIMENOSUB_WEB}/anime/${slug}/`,slugTitle:true});
+    }
+  }
+  return items;
+}
+async function animenosubRealTitle(item){
+  if(!item.slugTitle)return;
+  const title=animenosubDetail(await providerFetch(item.url,{referer:`${ANIMENOSUB_WEB}/`}),item).title;
+  if(title){item.title=title;delete item.slugTitle}
+}
 async function wikidataKoreanByAnilist(){
   const query='SELECT ?al ?ko WHERE { ?item wdt:P8729 ?al . ?item rdfs:label ?ko FILTER(LANG(?ko)="ko") }';
   const response=await fetch(`https://query.wikidata.org/sparql?query=${encodeURIComponent(query)}`,{signal:AbortSignal.timeout(90000),headers:{Accept:'application/sparql-results+json','User-Agent':`LilacAnime-Desktop/${app.getVersion()} (https://github.com/whispelyn-byte/LilacAnime-desktop)`}});
@@ -731,39 +785,47 @@ async function wikidataKoreanByAnilist(){
   const map=new Map();for(const row of (await response.json())?.results?.bindings||[]){const id=Number(row.al?.value),ko=String(row.ko?.value||'').trim();if(id&&/[가-힣]/.test(ko)&&!map.has(id))map.set(id,ko)}
   return map;
 }
-async function buildReanimeIndex(){
-  if(reanimeIndex.running)return;reanimeIndex.running=true;
-  try{
-    loadReanimeIndex();
-    if(!reanimeIndex.items.length||Date.now()-reanimeIndex.updated>DAY){
-      reportReanimeIndex('catalog');
-      try{reanimeIndex.items=await fetchReanimeCatalog();reanimeIndex.updated=Date.now();saveReanimeIndex()}catch{/* the previous list stays */}
-    }
-    if(!reanimeIndex.items.length)return reportReanimeIndex('error');
-    if(Date.now()-reanimeIndex.wikidata>7*DAY){
-      reportReanimeIndex('wikidata');
-      try{const map=await wikidataKoreanByAnilist();for(const item of reanimeIndex.items)if(item.anilistId&&map.has(item.anilistId)&&!indexKorean(item))storeIndexKorean(item,map.get(item.anilistId));saveDisplayTitles();reanimeIndex.wikidata=Date.now();saveReanimeIndex()}catch{/* next start */}
-    }
-    // TMDB, six entries at a time (well under its request limit).
-    const pending=()=>reanimeIndex.items.filter(item=>!indexKorean(item)&&!(Date.now()-(reanimeIndex.tried[item.id]||0)<30*DAY));
-    let queue=pending(),done=0;
-    while(tmdbKey()&&queue.length){
-      reportReanimeIndex('tmdb');
-      const batch=queue.splice(0,6);
-      await Promise.all(batch.map(async item=>{
-        const ko=(await tmdbKoreanTitles([item.title],{light:true}).catch(()=>[])).find(hasHangul);
-        reanimeIndex.tried[item.id]=Date.now();if(ko)storeIndexKorean(item,ko);
-      }));
-      if(++done%10===0){saveDisplayTitles();saveReanimeIndex()}
-      await new Promise(resolve=>setTimeout(resolve,200));
-    }
-    saveDisplayTitles();saveReanimeIndex();reportReanimeIndex('ready');
-  }finally{reanimeIndex.running=false}
+async function refreshCatalogList(provider){
+  const index=catalogIndex(provider);
+  if(index.items.length&&Date.now()-index.updated<DAY)return;
+  reportCatalogIndex(provider,'catalog');
+  try{index.items=await CATALOGS[provider].fetch(index.items);index.updated=Date.now();saveCatalogIndex(provider)}catch{/* the previous list stays */}
+  if(CATALOGS[provider].wikidata&&index.items.length&&Date.now()-index.wikidata>7*DAY){
+    reportCatalogIndex(provider,'wikidata');
+    try{const map=await wikidataKoreanByAnilist();for(const item of index.items)if(item.anilistId&&map.has(item.anilistId)&&!indexKorean(provider,item))storeIndexKorean(provider,item,map.get(item.anilistId));saveDisplayTitles();index.wikidata=Date.now();saveCatalogIndex(provider)}catch{/* next run */}
+  }
+  reportCatalogIndex(provider,index.items.length?'waiting':'error');
 }
-// Korean search over the whole catalog, most popular first.
-function searchReanimeIndex(query){
-  const key=titleCompareKey(query);if(!key)return [];
-  return loadReanimeIndex().filter(item=>{const ko=indexKorean(item);return ko&&titleCompareKey(ko).includes(key)}).slice(0,60);
+// TMDB, six entries at a time (well under its request limit).
+async function lookupCatalogKorean(provider){
+  const index=catalogIndex(provider),queue=index.items.filter(item=>!indexKorean(provider,item)&&!(Date.now()-(index.tried[item.id]||0)<30*DAY));
+  let done=0;
+  while(tmdbKey()&&queue.length&&activeCatalogSource===provider){
+    reportCatalogIndex(provider,'tmdb');
+    await Promise.all(queue.splice(0,6).map(async item=>{
+      try{await CATALOGS[provider].title?.(item)}catch{/* the slug title still works */}
+      const ko=(await tmdbKoreanTitles([item.title],{light:true}).catch(()=>[])).find(hasHangul);
+      index.tried[item.id]=Date.now();if(ko)storeIndexKorean(provider,item,ko);
+    }));
+    if(++done%10===0){saveDisplayTitles();saveCatalogIndex(provider)}
+    await new Promise(resolve=>setTimeout(resolve,200));
+  }
+  saveDisplayTitles();saveCatalogIndex(provider);
+}
+async function buildCatalogIndexes(){
+  if(catalogIndexRunning)return;catalogIndexRunning=true;
+  try{
+    // Again when the source changed while this ran.
+    for(let provider=activeCatalogSource;CATALOGS[provider];provider=activeCatalogSource!==provider?activeCatalogSource:null){
+      await refreshCatalogList(provider);await lookupCatalogKorean(provider);
+      if(activeCatalogSource===provider)reportCatalogIndex(provider,catalogIndex(provider).items.length?'ready':'error');
+    }
+  }finally{catalogIndexRunning=false}
+}
+// Korean search over a whole catalog, in catalog order.
+function searchCatalogIndex(provider,query){
+  const key=titleCompareKey(query);if(!key||!CATALOGS[provider])return [];
+  return catalogIndex(provider).items.filter(item=>{const ko=indexKorean(provider,item);return ko&&titleCompareKey(ko).includes(key)}).slice(0,60).map(({slugTitle,popularity,...item})=>item);
 }
 // Other-language spellings of a search query, so Korean and English searches both reach every source.
 async function titleSearchVariants(query){
@@ -1256,7 +1318,7 @@ app.whenReady().then(async () => {
       const pageOffset=Math.max(0,Number(offset)||0),url=new URL('/api/v1/search',REANIME_WEB);if(query)url.searchParams.set('q',query);url.searchParams.set('limit','36');url.searchParams.set('offset',String(pageOffset));const root=await providerFetch(url.href,{json:true,referer:`${REANIME_WEB}/search?limit=36&offset=${pageOffset}`});return {data:reanimeItems(root),total:Number(root?.total)||null,offset:pageOffset,limit:36};
     }
     if (provider === 'animenosub') {
-      const page=Math.max(1,Number(offset)||1),base=query?`${ANIMENOSUB_WEB}/?s=${encodeURIComponent(query)}`:(page===1?`${ANIMENOSUB_WEB}/`:`${ANIMENOSUB_WEB}/page/${page}/`),url=query&&page>1?`${ANIMENOSUB_WEB}/page/${page}/?s=${encodeURIComponent(query)}`:base;const data=animenosubList(await providerFetch(url,{referer:`${ANIMENOSUB_WEB}/`}));return {data,offset:page,nextOffset:page+1,done:data.length===0};
+      const page=Math.max(1,Number(offset)||1),base=query?`${ANIMENOSUB_WEB}/?s=${encodeURIComponent(query)}`:(page===1?`${ANIMENOSUB_WEB}/`:`${ANIMENOSUB_WEB}/page/${page}/`),url=query&&page>1?`${ANIMENOSUB_WEB}/page/${page}/?s=${encodeURIComponent(query)}`:base;const data=animenosubList(await providerFetch(url,{referer:`${ANIMENOSUB_WEB}/`}),undefined,{onlyResults:Boolean(query)});return {data,offset:page,nextOffset:page+1,done:data.length===0};
     }
     throw new Error('지원하지 않는 콘텐츠 소스입니다.');
   });
@@ -1372,13 +1434,19 @@ app.whenReady().then(async () => {
     return results;
   });
   ipcMain.handle('titles:variants',(_,query)=>titleSearchVariants(query).catch(()=>[]));
-  ipcMain.handle('reanime:search-korean',(_,query)=>{buildReanimeIndex().catch(()=>{});return searchReanimeIndex(String(query||''))});
-  ipcMain.handle('reanime-index:state',()=>{loadReanimeIndex();reportReanimeIndex(reanimeIndex.running?reanimeIndex.state.status:'ready');return reanimeIndex.state});
+  ipcMain.handle('catalog:search-korean',(_,provider,query)=>searchCatalogIndex(String(provider||''),String(query||'')));
+  ipcMain.handle('catalog:activate',(_,provider)=>{
+    activeCatalogSource=String(provider||'');
+    if(CATALOGS[activeCatalogSource])buildCatalogIndexes().catch(()=>{});
+    if(activeCatalogSource==='linkkf')refreshLinkkfCatalog()?.catch?.(()=>{});
+    return catalogIndexState();
+  });
+  ipcMain.handle('catalog-index:state',()=>catalogIndexState());
   ipcMain.handle('tmdb:set',async(_,value='')=>{
     const key=String(value||'').trim();
     if(key)await tmdbFetch('/configuration',{},key);
     fs.writeFileSync(tmdbSettingsFile(),JSON.stringify({key}),'utf8');koreanTitleCache.clear();for(const [name,entry] of Object.entries(displayTitleStore()))if(!entry.ko||!entry.en)delete displayTitleStore()[name];saveDisplayTitles();
-    if(key)buildReanimeIndex().catch(()=>{});
+    if(key)buildCatalogIndexes().catch(()=>{});
     return {key};
   });
   ipcMain.handle('font:default', (_, choice = '기본체', customPath = '') => {
@@ -1416,8 +1484,8 @@ app.whenReady().then(async () => {
   createWindow();
   // Installed builds check GitHub releases shortly after launch; dev runs use the settings button.
   // At start and every 3 hours while the app stays open.
-  // The Re:Anime title index fills in the background, refreshed daily.
-  setTimeout(()=>buildReanimeIndex().catch(()=>{}),8000);setInterval(()=>buildReanimeIndex().catch(()=>{}),6*60*60*1000).unref?.();
+  // The selected source's catalog index refreshes in the background (started by the page, see catalog:activate).
+  setInterval(()=>buildCatalogIndexes().catch(()=>{}),6*60*60*1000).unref?.();
   if(app.isPackaged){setTimeout(()=>updater.check(),5000);setInterval(()=>updater.check(),3*60*60*1000).unref?.()}
   app.on('activate', () => { if (!mainWindow || mainWindow.isDestroyed()) createWindow(); });
 });
