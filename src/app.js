@@ -676,7 +676,7 @@ $('#saveTmdbKey').onclick=async()=>{const button=$('#saveTmdbKey');button.disabl
 window.lilac.onUpdateState(renderUpdate);window.lilac.updateState().then(value=>{$('#appVersion').textContent=`Version ${value.current}`;renderUpdate(value);showChangelogIfUpdated(value.current)});
 // Release notes (GitHub Markdown) as plain HTML: headings, lists, paragraphs, bold, code and https links.
 function releaseNotesHtml(text){
-  const inline=value=>escapeHtml(value).replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>').replace(/\[([^\]]+)\]\((https:\/\/[^)\s]+)\)/g,'<a href="$2" data-external>$1</a>');
+  const inline=value=>escapeHtml(value).replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>').replace(/\[([^\]]+)\]\((https:\/\/[^)\s"'<>]+)\)/g,'<a href="$2" data-external>$1</a>');
   let html='',list=false;const close=()=>{if(list){html+='</ul>';list=false}};
   for(const raw of String(text||'').replace(/\r/g,'').split('\n')){
     const line=raw.trimEnd(),heading=line.match(/^#{1,6}\s+(.*)/),item=line.match(/^\s*(?:[-*+]|\d+\.)\s+(.*)/);

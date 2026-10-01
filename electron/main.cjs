@@ -731,11 +731,16 @@ let catalogIndexRunning=false,catalogRetryTimer=null;
 function catalogIndex(provider){
   if(catalogIndexes[provider])return catalogIndexes[provider];
   const index={items:[],updated:0,wikidata:0,tried:{},status:'idle'};
-  try{Object.assign(index,JSON.parse(fs.readFileSync(path.join(app.getPath('userData'),`${provider}-index.json`),'utf8')))}catch{/* first run */}
+  const file=name=>path.join(app.getPath('userData'),`${provider}-${name}.json`);
+  try{Object.assign(index,JSON.parse(fs.readFileSync(file('index'),'utf8')))}catch{/* first run */}
+  try{index.tried={...index.tried,...JSON.parse(fs.readFileSync(file('tried'),'utf8'))}}catch{/* none yet */}
   return catalogIndexes[provider]=index;
 }
+// The list (several MB) is written when it changes; the small "looked up" marks separately while TMDB runs.
 const indexSaveTimers={};
-function saveCatalogIndex(provider){clearTimeout(indexSaveTimers[provider]);indexSaveTimers[provider]=setTimeout(()=>{const index=catalogIndex(provider);try{fs.writeFileSync(path.join(app.getPath('userData'),`${provider}-index.json`),JSON.stringify({items:index.items,updated:index.updated,wikidata:index.wikidata,tried:index.tried}))}catch{}},2000)}
+function saveCatalogFile(provider,name,value){const key=`${provider}-${name}`;clearTimeout(indexSaveTimers[key]);indexSaveTimers[key]=setTimeout(()=>{try{fs.writeFileSync(path.join(app.getPath('userData'),`${key}.json`),JSON.stringify(value()))}catch{}},2000)}
+function saveCatalogIndex(provider){const index=catalogIndex(provider);saveCatalogFile(provider,'index',()=>({items:index.items,updated:index.updated,wikidata:index.wikidata}))}
+function saveCatalogTried(provider){const index=catalogIndex(provider);saveCatalogFile(provider,'tried',()=>index.tried)}
 const indexKorean=(provider,item)=>displayTitleStore()[`${provider}:${item.id}`]?.ko||'';
 function catalogIndexState(){return {tmdb:Boolean(tmdbKey()),sources:Object.entries(CATALOGS).filter(([provider])=>provider===activeCatalogSource).map(([provider,{label,korean}])=>{const index=catalogIndex(provider);return {provider,label,status:index.status,total:index.items.length,korean:korean===false?null:index.items.filter(item=>indexKorean(provider,item)).length}})}}
 function reportCatalogIndex(provider,status){
@@ -809,18 +814,19 @@ async function refreshCatalogList(provider){
 async function lookupCatalogKorean(provider){
   if(CATALOGS[provider].korean===false)return;
   const index=catalogIndex(provider),queue=index.items.filter(item=>!indexKorean(provider,item)&&!(Date.now()-(index.tried[item.id]||0)<30*DAY));
-  let done=0;
+  let done=0,titled=false;
   while(tmdbKey()&&queue.length&&activeCatalogSource===provider){
     reportCatalogIndex(provider,'tmdb');
     await Promise.all(queue.splice(0,6).map(async item=>{
-      try{await CATALOGS[provider].title?.(item)}catch{/* the slug title still works */}
+      // A title read from the series page (Animenosub) changes the list itself.
+      try{if(item.slugTitle){await CATALOGS[provider].title?.(item);titled=true}}catch{/* the slug title still works */}
       const ko=(await tmdbKoreanTitles([item.title],{light:true}).catch(()=>[])).find(hasHangul);
       index.tried[item.id]=Date.now();if(ko)storeIndexKorean(provider,item,ko);
     }));
-    if(++done%10===0){saveDisplayTitles();saveCatalogIndex(provider)}
+    if(++done%50===0){saveDisplayTitles();saveCatalogTried(provider);if(titled){saveCatalogIndex(provider);titled=false}}
     await new Promise(resolve=>setTimeout(resolve,200));
   }
-  if(done){saveDisplayTitles();saveCatalogIndex(provider)}
+  if(done){saveDisplayTitles();saveCatalogTried(provider);if(titled)saveCatalogIndex(provider)}
 }
 async function buildCatalogIndexes(){
   if(catalogIndexRunning)return;catalogIndexRunning=true;

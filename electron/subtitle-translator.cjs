@@ -122,11 +122,12 @@ function createTranslator(userData) {
     await Promise.all(Array.from({ length: Math.min(PARALLEL, groups.length) }, async () => {
       while (next < groups.length && !fatal) {
         const group = groups[next++];
-        const input = JSON.stringify(group.map(line => ({ i: line.i, t: line.text })));
+        const input = JSON.stringify(group.map(line => ({ i: line.i, t: line.text }))), ids = new Set(group.map(line => line.i));
         for (let attempt = 0; attempt < 2; attempt++) {
           try {
             const answer = JSON.parse((await generate(settings.key, model, system(title), input)).replace(/^```(?:json)?\s*|\s*```$/g, ''));
-            for (const item of Array.isArray(answer) ? answer : []) if (Number.isInteger(item?.i) && typeof item.t === 'string' && item.t.trim()) translated.set(item.i, item.t.trim());
+            // Only this batch's lines: a stray id must not overwrite another batch's translation.
+            for (const item of Array.isArray(answer) ? answer : []) if (ids.has(item?.i) && typeof item.t === 'string' && item.t.trim()) translated.set(item.i, item.t.trim());
             if (group.every(line => translated.has(line.i)) || attempt) break;
           } catch (error) {
             // A bad key or an exhausted quota fails every batch the same way.
