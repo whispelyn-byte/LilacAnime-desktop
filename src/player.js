@@ -125,8 +125,29 @@ function vttBaseline() {
   const position = Number(localStorage.getItem('subtitlePosition') || 12);
   return Math.min(97, Math.max(55, Math.round(100 - position))) - 22 / 720 * 100;
 }
+// Every cue sits on the same line (below), so cues overlapping in time were drawn on top of each other (an ASS file's
+// lines turned into VTT, a translation of one). They are flattened once, before any sync offset: each stretch of time
+// gets one cue with all lines active then, the earlier line first.
+function flattenVttCues(track) {
+  const list = [...track.cues].sort((a, b) => a.startTime - b.startTime || a.endTime - b.endTime);
+  if (track.lilacFlat || !list.length) return; track.lilacFlat = true;
+  let end = -1, overlapping = false;
+  for (const cue of list) { if (cue.startTime < end - 0.001) { overlapping = true; break; } end = Math.max(end, cue.endTime); }
+  if (!overlapping) return;
+  const times = [...new Set(list.flatMap(cue => [cue.startTime, cue.endTime]))].sort((a, b) => a - b), flat = [];
+  for (let i = 0; i < times.length - 1; i++) {
+    const start = times[i], stop = times[i + 1], lines = [];
+    for (const cue of list) { if (cue.startTime > start + 1e-6) break; if (cue.endTime > start + 1e-6 && !lines.includes(cue.text)) lines.push(cue.text); }
+    if (!lines.length) continue;
+    const text = lines.join('\n'), last = flat[flat.length - 1];
+    if (last && last.text === text && Math.abs(last.end - start) < 1e-6) last.end = stop; else flat.push({ start, end: stop, text });
+  }
+  for (const cue of [...track.cues]) track.removeCue(cue);
+  for (const cue of flat) track.addCue(new VTTCue(cue.start, cue.end, cue.text));
+}
 function applyVttLayout() {
   const track = $('#video').textTracks[0]; if (!track?.cues) return;
+  flattenVttCues(track);
   const line = vttBaseline(), offset = Number(localStorage.getItem('subtitleSync') || 0) / 1000;
   for (const cue of track.cues) {
     if (cue.lilacStart === undefined) { cue.lilacStart = cue.startTime; cue.lilacEnd = cue.endTime; }
