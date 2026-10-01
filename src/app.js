@@ -222,6 +222,13 @@ async function openDetail(id) {
   } catch(e){if(openDetail.token===token)$('#detailContent').innerHTML=`<div class="empty-state"><h3>정보를 불러오지 못했어요</h3><p>${escapeHtml(e.message)}</p></div>`;}
 }
 
+// The series name an English title starts with: before a subtitle (":" / " - ") or season mark, and the first
+// three words of a long one. "Rascal Does Not Dream of Bunny Girl Senpai" → "Rascal Does Not".
+function seriesStem(title){
+  const head=String(title||'').split(/\s*[:：]\s*|\s+[-–—]\s+|\s+(?:season|part)\s*\d|\s+\d+(?:st|nd|rd|th)\s+season/i)[0].trim(),words=head.split(/\s+/).filter(Boolean);
+  return words.length>=4?words.slice(0,3).join(' '):head;
+}
+const seriesKey=value=>String(value||'').toLowerCase().normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu,'');
 async function doSearch(query) {
   query=query.trim(); if(!query)return; switchView('search'); $('#pageSearch').value=query; $('#searchStatus').textContent='검색 중...'; $('#searchGrid').replaceChildren();
   $('#filterMore').classList.add('hidden');if(state.source==='linkkf')$('#searchStatus').textContent='Linkkf 전체 목록에서 검색 중... (처음 검색은 목록을 받느라 조금 걸립니다)';
@@ -232,7 +239,11 @@ async function doSearch(query) {
     const token=doSearch.token=searchToken,variantsPromise=window.lilac.titleVariants(query).catch(()=>[]),result=await search(query);if(token!==doSearch.token)return;let data=result.data||[];renderCards('#searchGrid',data);$('#searchStatus').textContent=`“${query}” 검색 결과 ${data.length}${result.total?` / ${result.total}`:''}개`;
     // Korean and English names both work: the query is also searched under its other-language titles.
     const variants=await variantsPromise;if(token!==doSearch.token||!variants.length)return;
-    const extra=(await Promise.all(variants.map(text=>search(text).then(r=>r.data||[]).catch(()=>[])))).flat(),seen=new Set(data.map(a=>String(a.mal_id)));
+    // Each English name is also searched by its series name, which later seasons and spin-offs share
+    // ("Rascal Does Not" finds every 청춘 돼지 title, not only Bunny Girl Senpai); those results must start with it.
+    const stems=[...new Set(variants.filter(text=>!/[가-힣]/.test(text)).map(seriesStem).filter(stem=>stem.length>=4&&!variants.some(text=>seriesKey(text)===seriesKey(stem))))];
+    const fromStem=stem=>search(stem).then(r=>(r.data||[]).filter(a=>[a.title,a.title_english,a.title_japanese,a.romaji].some(name=>seriesKey(name).startsWith(seriesKey(stem))))).catch(()=>[]);
+    const extra=(await Promise.all([...variants.map(text=>search(text).then(r=>r.data||[]).catch(()=>[])),...stems.map(fromStem)])).flat(),seen=new Set(data.map(a=>String(a.mal_id)));
     const added=extra.filter(a=>!seen.has(String(a.mal_id))&&seen.add(String(a.mal_id)));if(token!==doSearch.token||!added.length)return;
     data=[...data,...added];$('#searchGrid').append(...added.map(card));$('#searchStatus').textContent=`“${query}” 검색 결과 ${data.length}개 (${variants.join(', ')} 포함)`;
   }
