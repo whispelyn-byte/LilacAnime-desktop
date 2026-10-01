@@ -741,15 +741,14 @@ const indexSaveTimers={};
 function saveCatalogFile(provider,name,value){const key=`${provider}-${name}`;clearTimeout(indexSaveTimers[key]);indexSaveTimers[key]=setTimeout(()=>{try{fs.writeFileSync(path.join(app.getPath('userData'),`${key}.json`),JSON.stringify(value()))}catch{}},2000)}
 function saveCatalogIndex(provider){const index=catalogIndex(provider);saveCatalogFile(provider,'index',()=>({items:index.items,updated:index.updated,wikidata:index.wikidata}))}
 function saveCatalogTried(provider){const index=catalogIndex(provider);saveCatalogFile(provider,'tried',()=>index.tried)}
-const indexKorean=(provider,item)=>displayTitleStore()[`${provider}:${item.id}`]?.ko||'';
+const indexKorean=(provider,item)=>withSeason(displayTitleStore()[`${provider}:${item.id}`]?.ko||'',item.title);
 function catalogIndexState(){return {tmdb:Boolean(tmdbKey()),sources:Object.entries(CATALOGS).filter(([provider])=>provider===activeCatalogSource).map(([provider,{label,korean}])=>{const index=catalogIndex(provider);return {provider,label,status:index.status,total:index.items.length,korean:korean===false?null:index.items.filter(item=>indexKorean(provider,item)).length}})}}
 function reportCatalogIndex(provider,status){
   catalogIndex(provider).status=status;const state=catalogIndexState();
   BrowserWindow.getAllWindows().forEach(win=>{if(!win.isDestroyed())win.webContents.send('catalog-index:state',state)});
 }
-// A later season keeps its number when the Korean name has none ("장송의 프리렌" for Season 2 → "… 2기").
 function storeIndexKorean(provider,item,ko){
-  const season=communitySeason(item.title);if(season>1&&communitySeason(ko)==null)ko=`${ko} ${season}기`;
+  ko=withSeason(ko,item.title);
   const key=`${provider}:${item.id}`,store=displayTitleStore();store[key]={ko,en:store[key]?.en||item.title,time:Date.now()};
 }
 async function fetchReanimeCatalog(){
@@ -838,19 +837,32 @@ async function buildCatalogIndexes(){
     }
   }finally{catalogIndexRunning=false}
 }
-// Korean search over a whole catalog, in catalog order.
-function searchCatalogIndex(provider,query){
+// Korean search over a whole catalog, in catalog order: the Korean names found so far, then the entries whose own
+// (English) title contains an English name of the query. Animenosub has no bulk Korean source like Re:Anime's
+// Wikidata, so most of its entries are only reached the second way until TMDB has gone through the list.
+async function searchCatalogIndex(provider,query){
   const key=titleCompareKey(query);if(!key||!CATALOGS[provider])return [];
-  return catalogIndex(provider).items.filter(item=>{const ko=indexKorean(provider,item);return ko&&titleCompareKey(ko).includes(key)}).slice(0,60).map(({slugTitle,popularity,...item})=>item);
+  const items=catalogIndex(provider).items,korean=items.filter(item=>{const ko=indexKorean(provider,item);return ko&&titleCompareKey(ko).includes(key)});
+  const english=(await titleSearchVariants(query).catch(()=>[])).filter(value=>!hasHangul(value)).map(titleCompareKey).filter(value=>value.length>=6);
+  const seen=new Set(korean),byEnglish=english.length?items.filter(item=>!seen.has(item)&&english.some(value=>titleCompareKey(item.title).includes(value))):[];
+  return [...korean,...byEnglish].slice(0,60).map(({slugTitle,popularity,...item})=>item);
 }
-// Other-language spellings of a search query, so Korean and English searches both reach every source.
-async function titleSearchVariants(query){
-  const text=String(query||'').trim();if(!text)return [];
+// Other-language spellings of a search query, so Korean and English searches both reach every source. The
+// renderer and the catalog search ask for the same query at once, so lookups are shared for a few minutes.
+const titleVariantCache=new Map();
+function titleSearchVariants(query){
+  const text=String(query||'').trim();if(!text)return Promise.resolve([]);
+  const cached=titleVariantCache.get(text);if(cached&&Date.now()-cached.time<5*60*1000)return cached.promise;
+  if(titleVariantCache.size>100)titleVariantCache.clear();
+  const promise=lookupTitleVariants(text);titleVariantCache.set(text,{time:Date.now(),promise});promise.catch(()=>titleVariantCache.delete(text));
+  return promise;
+}
+async function lookupTitleVariants(text){
   const korean=hasHangul(text),variants=new Set(),key=titleCompareKey(text);
   // Every title already shown in the other language whose shown name contains the query (all of them, so a
   // series with several seasons or movies is found whole), then TMDB / AniList for titles not seen yet.
   for(const entry of Object.values(displayTitleStore())){
-    const from=korean?entry.ko:entry.en,to=korean?entry.en:entry.ko;
+    const ko=withSeason(entry.ko||'',entry.en||''),from=korean?ko:entry.en,to=korean?entry.en:ko;
     if(from&&to&&titleCompareKey(from).includes(key))variants.add(to);
   }
   const [tv,movie,media]=await Promise.all([
@@ -895,6 +907,18 @@ function communityEpisodes(text=''){
 function communitySeason(text=''){
   const value=String(text).normalize('NFKC'),m=value.match(/(?:season|시즌)\s*(\d+)|(\d+)\s*기(?![가-힣])|(\d+)(?:st|nd|rd|th)(?:\s*season)?\b|[가-힣](\d)(?=\s|$)/i);
   return m?Number(m[1]||m[2]||m[3]||m[4]):null;
+}
+// Provider (English) titles also number a later season with a bare digit or a roman numeral at the end
+// ("The Angel Next Door Spoils Me Rotten 2", Re:Anime's "…Rotten2", "Overlord IV"), but "Kaiju No. 8",
+// "Part 2" and "Mob Psycho 100" are not seasons.
+function titleSeason(text=''){
+  const value=String(text).normalize('NFKC').trim(),season=communitySeason(value);if(season!=null)return season;
+  const digit=value.match(/([a-z]+)[!?'’)]*\s*([2-9])$/i);if(digit&&!/^(?:no|vol|part|cour|lv|level|ep|episode|chapter|act|phase|movie)$/i.test(digit[1]))return Number(digit[2]);
+  const roman=value.match(/\s(II|III|IV)$/);return roman?{II:2,III:3,IV:4}[roman[1]]:null;
+}
+// A later season keeps its number when the Korean name has none ("장송의 프리렌" for Season 2 → "… 2기").
+function withSeason(ko,title){
+  const season=titleSeason(title);return ko&&!hasHangul(title)&&season>1&&communitySeason(ko)==null&&!/\d\s*$/.test(ko)?`${ko} ${season}기`:ko;
 }
 // Posts often drop the "~부제~" part ("무직전생3"), so a distinctive shared prefix of 4+ Hangul counts as a match too.
 // Android HangulSimilarityMatcher: edit distance where two syllables differing only in one jamo cost
@@ -984,7 +1008,7 @@ async function extractCommunityArchive(buffer,dir){
 function communitySubtitleExt(buffer){const bom=buffer[0]===0xff&&buffer[1]===0xfe?'utf-16le':buffer[0]===0xfe&&buffer[1]===0xff?'utf-16be':'utf-8',head=new TextDecoder(bom).decode(buffer.subarray(0,8192)).replace(/^\uFEFF/,'');return /^WEBVTT/.test(head)?'.vtt':/\[Script Info\]/i.test(head)?'.ass':/<sami[\s>]/i.test(head)?'.smi':/\d+:\d{2}:\d{2}[,.]\d{3}\s*-->/.test(head)?'.srt':null}
 // Posts of one blog ranked for a title and episode (best first).
 function rankCommunityPosts(posts,title,episode,originalTitle='',{offsets=[]}={}){
-  const season=communitySeason(title)??communitySeason(originalTitle)??1,wanted=communityTitle(title);
+  const season=communitySeason(title)??titleSeason(originalTitle)??1,wanted=communityTitle(title);
   const rank=(list,name,number)=>list.map(post=>({post,score:communityScore(name,communityPostTitle(post.title))})).filter(x=>x.score>=.52) // Android MIN_SIMILARITY
     .map(x=>({...x,...communityLinks(x.post,number)})).filter(x=>x.links.length)
     // Per-episode links beat bundles of a similarly named post; newer posts come first in the feed.
@@ -1007,7 +1031,7 @@ function rankCommunityPosts(posts,title,episode,originalTitle='',{offsets=[]}={}
 // the whole chain, since makers restart either per franchise or per season.
 const prequelEpisodeCache=new Map();
 async function previousSeasonEpisodes(anime={},title=''){
-  const season=communitySeason(title)??communitySeason(anime.title||'')??1;if(season<2)return [];
+  const season=communitySeason(title)??titleSeason(anime.title||'')??1;if(season<2)return [];
   let id=Number(anime.anilistId)||null;
   if(!id&&anime.title&&!hasHangul(anime.title))id=(await anilistMedia(anime.title,anime).catch(()=>null))?.id||null;
   if(!id)return [];if(prequelEpisodeCache.has(id))return prequelEpisodeCache.get(id);
@@ -1059,7 +1083,7 @@ async function anissiaFetch(pathname){
 }
 // The Anissia entry for a Korean title, with the season required to match ("2기", "Season 3").
 async function anissiaAnime(title,originalTitle=''){
-  const season=communitySeason(title)??communitySeason(originalTitle)??1,wanted=communityTitle(title);
+  const season=communitySeason(title)??titleSeason(originalTitle)??1,wanted=communityTitle(title);
   const bare=wanted.replace(/[~〜～][^~〜～]*[~〜～]/g,' ').replace(/\s*(?:\d+\s*기|season\s*\d+|시즌\s*\d+)\s*$/i,'').replace(/\s+/g,' ').trim();
   // Anissia's search misses titles typed with their punctuation ("명탐정 프리큐어!").
   const plain=bare.replace(/[!?！？.,:;·'"“”‘’♡♥☆★]+/g,' ').replace(/\s+/g,' ').trim();
@@ -1454,7 +1478,7 @@ app.whenReady().then(async () => {
     return results;
   });
   ipcMain.handle('titles:variants',(_,query)=>titleSearchVariants(query).catch(()=>[]));
-  ipcMain.handle('catalog:search-korean',(_,provider,query)=>searchCatalogIndex(String(provider||''),String(query||'')));
+  ipcMain.handle('catalog:search-korean',(_,provider,query)=>searchCatalogIndex(String(provider||''),String(query||'')).catch(()=>[]));
   ipcMain.handle('catalog:activate',(_,provider)=>{
     activeCatalogSource=String(provider||'');
     if(CATALOGS[activeCatalogSource]){const index=catalogIndex(activeCatalogSource);if(!index.items.length||index.status==='idle')index.status='catalog';buildCatalogIndexes().catch(()=>{})}
