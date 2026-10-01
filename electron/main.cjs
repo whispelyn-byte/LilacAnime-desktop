@@ -435,12 +435,23 @@ function miruroEpisode(raw,anime){
   return {name:String(number),number,url:`${MIRURO_WEB}/watch/${anime.id}?ep=${number}`,animeId:anime.id,dub:false,provider:'miruro',anilistId:anime.anilistId||null,malId:anime.malId||null,
     title:String(raw.title||'').trim()||`Episode ${number}`,airedDate:String(raw.aired_on||''),isFiller:raw.canon_type==='filler',isRecap:raw.canon_type==='recap',thumbnail:String(raw.thumbnail_url||'')};
 }
+// The site's own rules: a movie's episode list is kind "film" (as "regular" it is empty), and episodes past the
+// available count or not aired yet are listed but cannot be played.
+function miruroPlayableEpisodes(list,root,now=Date.now()){
+  const counts=root.episode_counts||{},raw=counts.raw??null,limit=[root.episode_count,raw].reduce((min,value)=>value==null?min:min==null?value:Math.min(min,value),null);
+  return list.filter(raw=>{
+    const number=Number(raw.episode_number);if(limit!=null&&number>limit)return false;
+    if(counts.raw!=null||number<=Math.max(counts.sub??0,counts.dub??0))return true;
+    const aired=raw.aired_on?Date.parse(raw.aired_on):NaN;return Number.isFinite(aired)?aired<=now:root.status!=='NOT_YET_RELEASED';
+  });
+}
 async function miruroDetail(anime){
-  const [root,episodes,relations]=await Promise.all([miruroApi(`anime/${anime.id}`),miruroApi(`anime/${anime.id}/episodes`,{kind:'regular',limit:10000}),miruroApi(`anime/${anime.id}/relations`).catch(()=>null)]);
+  const root=await miruroApi(`anime/${anime.id}`);
+  const [episodes,relations]=await Promise.all([miruroApi(`anime/${anime.id}/episodes`,{kind:root.format==='MOVIE'?'film':'regular',limit:10000}),miruroApi(`anime/${anime.id}/relations`).catch(()=>null)]);
   const start=root.started_on||'',end=root.ended_on||'',studios=root.studios||[];
   const data={...anime,...miruroItem(root),studios:(studios.filter(item=>item.is_animation_studio).length?studios.filter(item=>item.is_animation_studio):studios.slice(0,2)).map(item=>({name:item.name})),
     aired:start&&end?`${start} ~ ${end}`:start,related:(relations?.data||[]).filter(item=>item.anime?.id).map(item=>({...miruroItem(item.anime),relationType:item.kind||''}))};
-  return {data,episodes:(episodes?.data||[]).map(raw=>miruroEpisode(raw,data)).filter(Boolean),unavailable:false};
+  return {data,episodes:miruroPlayableEpisodes(episodes?.data||[],root).map(raw=>miruroEpisode(raw,data)).filter(Boolean),unavailable:false};
 }
 // The play route lists every track: "sub" has English burned in, "ssub" (SOFT) is the clean video with separate
 // subtitle files, "raw" the broadcast without any, "dub" comes last. Servers without a direct HLS stream (embed pages
