@@ -12,7 +12,6 @@ const { detectOpEd } = require('./oped-fingerprint.cjs');
 const { DownloadManager } = require('./download-manager.cjs');
 const { Updater } = require('./updater.cjs');
 const { SubtitleStore } = require('./subtitle-store.cjs');
-const { createLinkkf, LINKKF_WEB } = require('./linkkf.cjs');
 const { createTranslator } = require('./subtitle-translator.cjs');
 let subtitleTranslator = null;
 const translator = () => subtitleTranslator ||= createTranslator(app.getPath('userData'));
@@ -35,6 +34,9 @@ if (!singleInstanceLock) {
 }
 
 const API = 'https://api.jikan.moe/v4';
+const LINKKF_API = 'https://linkkf1.5imgdarr.top/api';
+const LINKKF_EPISODE_API = 'https://linkkfep1.5imgdarr.top';
+const LINKKF_WEB = 'https://linkkf.app';
 const LINKKF_UA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome||'131.0.0.0'} Safari/537.36`;
 const REANIME_WEB = 'https://reanime.to';
 const ANIMENOSUB_WEB = 'https://animenosub.to';
@@ -81,21 +83,78 @@ async function api(pathname) {
   return response.json();
 }
 
-const linkkf = createLinkkf({ userAgent: LINKKF_UA });
-// A Linkkf episode's stream: the HLS address and VTT subtitle written in its watch page. The page player is
-// only loaded when the page has no address in it.
-async function linkkfResolve(episode) {
-  let found;
-  try { found = await linkkf.stream(episode); } catch (error) {
-    if (/재생 주소/.test(error.message)) return resolveStreamPage(linkkf.watchUrl(episode), `${LINKKF_WEB}/`, 15000);
-    throw error;
+// Same as Android LinkkfApiClient: call timeout 30 s, 3 attempts, 350/700 ms apart.
+async function linkkfFetch(url, timeout = 30000) {
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    try {
+      const response = await fetch(url, {
+        signal: controller.signal,
+        headers: { 'User-Agent': LINKKF_UA, Accept: 'application/json,text/plain,*/*', Referer: `${LINKKF_WEB}/` }
+      });
+      if (!response.ok) throw new Error(`Linkkf HTTP ${response.status}`);
+      return await response.json();
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 350 * (attempt + 1)));
+    } finally { clearTimeout(timer); }
   }
-  const headers = { 'User-Agent': LINKKF_UA, Referer: found.referer };
-  resolvedStreamHeaders.set(new URL(found.url).host, headers);
-  let subtitleUrl = null, subtitlePath = null, subtitleAss = null;
-  if (found.subtitle) try { const saved = subtitleResult(await saveRemoteSubtitle(found.subtitle, { referer: found.referer })); subtitleUrl = saved.url; subtitlePath = saved.path; subtitleAss = saved.assUrl ? { url: saved.assUrl, path: saved.assPath, fonts: saved.fonts } : null; } catch { /* online subtitles remain */ }
-  return { url: found.url, subtitleUrl, subtitlePath, subtitleAss, subtitleTracks: [], headers, referer: found.referer };
+  throw new Error(lastError?.name === 'AbortError' ? 'Linkkf 서버 응답 시간이 초과되었습니다.' : `Linkkf 연결 실패: ${lastError?.message || '알 수 없는 오류'}`);
 }
+
+function linkkfImage(url = '') {
+  if (!url || url.startsWith('https://rez1.ims1.top/')) return url;
+  if (url.startsWith('//')) url = `https:${url}`;
+  return /^https?:\/\//.test(url) ? `https://rez1.ims1.top/350x/${url}` : url;
+}
+
+function linkkfAnime(item = {}) {
+  const first = (...keys) => keys.map(key => String(item[key] || '').trim()).find(Boolean) || '';
+  const split = value => value.split(/[,|/]/).map(x => x.trim()).filter(Boolean);
+  const id = first('postid');
+  return {
+    provider: 'linkkf', id, mal_id: `linkkf:${id}`,
+    title: first('postname', 'name'), title_english: first('english'), title_japanese: first('native'),
+    images: { webp: { large_image_url: linkkfImage(first('postthum', 'thumb')) } },
+    score: null, year: first('postyear'), type: first('postseasontype') || 'Anime', episodes: null,
+    synopsis: first('postcontent', 'description', 'synopsis'), genres: split(first('postanigenres', 'genres')).map(name => ({ name })),
+    studios: split(first('poststudios')).map(name => ({ name })), url: `${LINKKF_WEB}/up/${id}/`,
+    anilistId: Number(first('anilistid', 'anilist_id', 'postanilistid', 'postanilist', 'anilistId', 'anilist')) || null,
+    seriesTagIds: split(first('postanisstagid')).map(Number).filter(Boolean), aired: first('postdate', 'datepub'),
+    source: first('anisource'), romaji: first('romaji'), synonyms: first('anisynonyms'), note: first('postnote', 'postnoti')
+  };
+}
+
+const LINKKF_SCHEDULE_TAGS = [21189, 21190, 21191, 21192, 21193, 21194, 21195]; // 월~일
+const LINKKF_SEASON_TYPES = { pv: 5086, movie: 5061, adult16: 5085 };
+async function linkkfFilter({ page = 1, limit = 20, seasonTypeIds = [], genreIds = [], yearIds = [] } = {}) {
+  const params = new URLSearchParams({ page: String(Number(page) || 1), limit: String(Number(limit) || 20) });
+  const ids = list => (Array.isArray(list) ? list : []).map(Number).filter(Boolean).join(',');
+  if (ids(seasonTypeIds)) params.set('postseasontypetagid', ids(seasonTypeIds));
+  if (ids(genreIds)) params.set('postanigenrestagid', ids(genreIds));
+  if (ids(yearIds)) params.set('postyeartagid', ids(yearIds));
+  const root = await linkkfFetch(`${LINKKF_API}/singlefilter.php?${params}`);
+  const pagination = root.pagination || {};
+  return { data: (root.data || []).map(linkkfAnime).filter(a => a.id), page: Number(pagination.current_page) || Number(page) || 1, totalPages: Number(pagination.total_pages) || 1, total: Number(pagination.total_results) || 0 };
+}
+// Android searches the whole Linkkf catalog locally (title/genre). Cache it per session.
+let linkkfCatalogCache = null;
+async function linkkfCatalog() {
+  if (linkkfCatalogCache) return linkkfCatalogCache;
+  const found = new Map(), limit = 100;
+  for (let page = 1; page <= 400; page += 4) {
+    const batch = await Promise.all([0, 1, 2, 3].map(offset => linkkfFetch(`${LINKKF_API}/filter.php?page=${page + offset}&limit=${limit}`).then(root => (root.data || []).map(linkkfAnime)).catch(() => null)));
+    if (batch.every(items => items === null)) throw new Error('Linkkf 목록을 불러오지 못했습니다.');
+    batch.flat().filter(Boolean).forEach(item => { if (item.id) found.set(item.id, item); });
+    if (batch.some(items => !items || items.length < limit)) break;
+  }
+  linkkfCatalogCache = [...found.values()];
+  setTimeout(() => { linkkfCatalogCache = null; }, 30 * 60 * 1000).unref?.();
+  return linkkfCatalogCache;
+}
+function linkkfSearchKey(value = '') { return String(value).toLowerCase().normalize('NFKC').replace(/[\s\-_:·.,!?'"()[\]~]+/g, ''); }
 
 async function providerFetch(url, { json = false, referer } = {}) {
   const controller = new AbortController();
@@ -1022,33 +1081,94 @@ app.whenReady().then(async () => {
   const analyzeDownload=async(job,siblings)=>analyzeOfflineOpEd({title:job.title,episode:job.episodeNumber,currentUrl:pathToFileURL(job.filePath).href,duration:job.duration,candidates:siblings.map(item=>({...item.episode,number:item.episodeNumber,localUrl:pathToFileURL(item.filePath).href}))});
   downloadManager=new DownloadManager({app,resolveTitles:anime=>resolveDisplayTitle(anime),
     saveTrack:(url,referer)=>saveRemoteSubtitle(String(url),{referer:/^https:\/\//i.test(referer||'')?referer:'https://flixcloud.cc/',userAgent:ANDROID_WEBVIEW_UA}).then(file=>subtitleResult(file)),
-    translateTrack:(file,title)=>{const settings=translator().settings();return settings.key&&settings.translateDownloads?translator().translate({file,title}):null},findSubtitle:findDownloadSubtitle,findSkips:findDownloadSkips,analyzeOpEd:analyzeDownload,resolveEpisode:resolveProviderEpisode,resolveLinkkf:linkkfResolve,broadcast});
+    translateTrack:(file,title)=>{const settings=translator().settings();return settings.key&&settings.translateDownloads?translator().translate({file,title}):null},findSubtitle:findDownloadSubtitle,findSkips:findDownloadSkips,analyzeOpEd:analyzeDownload,resolveEpisode:resolveProviderEpisode,resolveLinkkf:async episode=>{
+    let playerUrl='';try{const root=await linkkfFetch(`https://emdlinkkf.5imgdarr.top/apilink2.php?data=${encodeURIComponent(episode.token)}`);const links=Array.isArray(root.data)?root.data:[];playerUrl=(links.find(x=>String(x.server).toUpperCase()==='NR-HD')||links[0]||{}).link||'';}catch{}
+    if(!playerUrl)playerUrl=`${LINKKF_WEB}/up/${encodeURIComponent(episode.postId)}/watch/?slug=${encodeURIComponent(episode.slug)}`;return resolveStreamPage(playerUrl,`${LINKKF_WEB}/`,15000);
+  },broadcast});
   session.defaultSession.webRequest.onBeforeSendHeaders({urls:['*://*/*']},(details,callback)=>{let headers=details.requestHeaders||{};const host=new URL(details.url).host,remembered=resolvedStreamHeaders.get(host);if(remembered){for(const [key,value] of Object.entries(remembered)){if(['referer','origin','user-agent','cookie','authorization'].includes(key.toLowerCase())&&value)headers[key]=value;}}callback({requestHeaders:headers});});
   ipcMain.handle('anime:season', () => api('/seasons/now?limit=20&sfw=true'));
   ipcMain.handle('anime:top', () => api('/top/anime?filter=bypopularity&limit=20&sfw=true'));
   ipcMain.handle('anime:search', (_, query) => api(`/anime?q=${encodeURIComponent(query)}&limit=24&sfw=true&order_by=popularity`));
   ipcMain.handle('anime:detail', (_, id) => api(`/anime/${Number(id)}/full`));
-  // Linkkf (linkani.tv): pages are read by electron/linkkf.cjs; view counters and series links no longer exist.
-  ipcMain.handle('linkkf:home', (_, page = 1) => linkkf.home(page));
-  ipcMain.handle('linkkf:detail', async (_, postId) => ({ data: await linkkf.detail(String(postId)) }));
-  ipcMain.handle('linkkf:schedule', () => linkkf.schedule());
-  ipcMain.handle('linkkf:sections', () => linkkf.sections());
-  ipcMain.handle('linkkf:filter-tags', () => linkkf.filterTags());
-  ipcMain.handle('linkkf:filter', (_, request = {}) => linkkf.filter(request || {}));
-  ipcMain.handle('linkkf:search', (_, query = '') => linkkf.search(String(query || '')));
-  ipcMain.handle('linkkf:record-view', () => null);
-  ipcMain.handle('linkkf:extras', () => ({ stats: null, related: [] }));
-  ipcMain.handle('linkkf:episodes', (_, postId) => linkkf.episodes(String(postId)));
+  ipcMain.handle('linkkf:home', async (_, page = 1, limit = 20) => {
+    const root = await linkkfFetch(`${LINKKF_API}/filter.php?page=${Number(page)}&limit=${Number(limit)}`);
+    return { data: (root.data || []).map(linkkfAnime) };
+  });
+  ipcMain.handle('linkkf:detail', async (_, postId) => {
+    const root = await linkkfFetch(`${LINKKF_API}/single.php?postid=${encodeURIComponent(postId)}`);
+    return { data: linkkfAnime(root.data || {}) };
+  });
+  ipcMain.handle('linkkf:schedule', async () => {
+    const days = await Promise.all(LINKKF_SCHEDULE_TAGS.map(tag => linkkfFetch(`${LINKKF_API}/singlefilter.php?categorytagid=${tag}&limit=50`).then(root => (root.data || []).map(linkkfAnime)).catch(() => [])));
+    return days;
+  });
+  ipcMain.handle('linkkf:sections', async () => {
+    const entries = await Promise.all(Object.entries(LINKKF_SEASON_TYPES).map(([key, tag]) => linkkfFilter({ page: 1, limit: 10, seasonTypeIds: [tag] }).then(result => [key, result.data]).catch(() => [key, []])));
+    return Object.fromEntries(entries);
+  });
+  ipcMain.handle('linkkf:filter-tags', async () => {
+    const load = taxonomy => linkkfFetch(`${LINKKF_API}/link/api.php?taxonomy=${encodeURIComponent(taxonomy)}&limit=200&orderby=name&order=ASC`).then(root => (root.terms || []).map(term => ({ id: Number(term.tag_ID) || 0, name: String(term.name || '').trim(), count: Number(term.count) || 0 })).filter(tag => tag.id > 0 && tag.name)).catch(() => []);
+    const [formats, genres, years] = await Promise.all([load('anime-seasontype'), load('anigenres'), load('anime-seasonys')]);
+    return { formats, genres, years: years.reverse() };
+  });
+  ipcMain.handle('linkkf:filter', (_, request) => linkkfFilter(request));
+  ipcMain.handle('linkkf:search', async (_, query = '') => {
+    const key = linkkfSearchKey(query); if (!key) return { data: [] };
+    const catalog = await linkkfCatalog();
+    const data = catalog.filter(a => [a.title, a.title_english, a.title_japanese, a.romaji, a.synonyms, ...(a.genres || []).map(g => g.name)].some(value => linkkfSearchKey(value).includes(key)));
+    return { data, total: data.length };
+  });
+  // Android records a Linkkf view after the detail page has been open for 9 s, then refreshes the counters.
+  ipcMain.handle('linkkf:record-view', async (_, postId = '') => {
+    const id = String(postId || '').trim(); if (!/^\d+$/.test(id)) return null;
+    const form = new FormData(); form.append('action', 'record'); form.append('id', id);
+    try { await fetch(`${LINKKF_API}/view.php`, { method: 'POST', body: form, headers: { 'User-Agent': LINKKF_UA, Referer: `${LINKKF_WEB}/up/${id}/` } }); } catch { /* counters are best effort */ }
+    return linkkfFetch(`${LINKKF_API}/view.php?action=get&id=${encodeURIComponent(id)}`).then(root => root.status === 'success' && root.data ? { day: Number(root.data.day_views) || 0, week: Number(root.data.week_views) || 0, month: Number(root.data.month_views) || 0, total: Number(root.data.total_views) || 0 } : null).catch(() => null);
+  });
+  ipcMain.handle('linkkf:extras', async (_, anime = {}) => {
+    const postId = String(anime.id || '');
+    const stats = await linkkfFetch(`${LINKKF_API}/view.php?action=get&id=${encodeURIComponent(postId)}`).then(root => root.status === 'success' && root.data ? { day: Number(root.data.day_views) || 0, week: Number(root.data.week_views) || 0, month: Number(root.data.month_views) || 0, total: Number(root.data.total_views) || 0 } : null).catch(() => null);
+    const related = (await Promise.all((anime.seriesTagIds || []).map(async tagId => {
+      try {
+        const tax = await linkkfFetch(`${LINKKF_API}/link/tax.php?taxonomy=anime-aniss&tag_ID=${Number(tagId)}`), term = (tax.terms || [])[0] || {};
+        const root = await linkkfFetch(`${LINKKF_API}/singlefilter.php?postanisstagid=${Number(tagId)}&limit=25`);
+        const items = (root.data || []).map(linkkfAnime).filter(item => item.id && item.id !== postId);
+        return items.length ? { id: Number(tagId), name: String(term.name || '').trim() || `Series ${tagId}`, count: Number(term.count) || 0, items } : null;
+      } catch { return null; }
+    }))).filter(Boolean).sort((a, b) => b.count - a.count);
+    return { stats, related };
+  });
+  ipcMain.handle('linkkf:episodes', async (_, postId) => {
+    const root = await linkkfFetch(`${LINKKF_EPISODE_API}/api2.php?epid=${encodeURIComponent(postId)}`);
+    return (Array.isArray(root) ? root : []).map(server => ({
+      id: server.id, name: server.server_name || `Server ${server.id}`,
+      episodes: (server.server_data || []).map(item => ({
+        name: String(item.name || item.slug || ''), slug: String(item.slug || ''),
+        token: String(item.link || `${postId}v${server.id}_${item.slug || ''}`), postId
+      }))
+    })).filter(server => server.episodes.length);
+  });
   ipcMain.handle('linkkf:play', async (_, episode) => {
+    let playerUrl = '';
+    try {
+      const root = await linkkfFetch(`https://emdlinkkf.5imgdarr.top/apilink2.php?data=${encodeURIComponent(episode.token)}`);
+      const links = Array.isArray(root.data) ? root.data : [];
+      playerUrl = (links.find(x => String(x.server).toUpperCase() === 'NR-HD') || links[0] || {}).link || '';
+    } catch { /* Use the watch page while the player-link server is unavailable. */ }
+    if (!playerUrl) playerUrl = `${LINKKF_WEB}/up/${encodeURIComponent(episode.postId)}/watch/?slug=${encodeURIComponent(episode.slug)}`;
     const player = new BrowserWindow({
       width: 1180, height: 760, minWidth: 760, minHeight: 500, backgroundColor: '#050407',
       title: `LilacAnime · ${episode.name}화`, autoHideMenuBar: true,
       webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true }
     });
-    await player.loadURL(linkkf.watchUrl(episode), { httpReferrer: `${LINKKF_WEB}/` });
+    await player.loadURL(playerUrl, { httpReferrer: `${LINKKF_WEB}/` });
     return true;
   });
-  ipcMain.handle('linkkf:resolve', (_, episode) => linkkfResolve(episode));
+  ipcMain.handle('linkkf:resolve', async (_, episode) => {
+    let playerUrl='';try{const root=await linkkfFetch(`https://emdlinkkf.5imgdarr.top/apilink2.php?data=${encodeURIComponent(episode.token)}`);const links=Array.isArray(root.data)?root.data:[];playerUrl=(links.find(x=>String(x.server).toUpperCase()==='NR-HD')||links[0]||{}).link||'';}catch{}
+    if(!playerUrl)playerUrl=`${LINKKF_WEB}/up/${encodeURIComponent(episode.postId)}/watch/?slug=${encodeURIComponent(episode.slug)}`;
+    return resolveStreamPage(playerUrl,`${LINKKF_WEB}/`,15000);
+  });
   ipcMain.handle('provider:catalog', async (_, provider, query = '', offset = 0) => {
     if (provider === 'reanime') {
       const pageOffset=Math.max(0,Number(offset)||0),url=new URL('/api/v1/search',REANIME_WEB);if(query)url.searchParams.set('q',query);url.searchParams.set('limit','36');url.searchParams.set('offset',String(pageOffset));const root=await providerFetch(url.href,{json:true,referer:`${REANIME_WEB}/search?limit=36&offset=${pageOffset}`});return {data:reanimeItems(root),total:Number(root?.total)||null,offset:pageOffset,limit:36};
