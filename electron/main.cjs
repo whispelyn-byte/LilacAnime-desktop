@@ -20,11 +20,6 @@ app.commandLine.appendSwitch('disable-blink-features','AutomationControlled');
 // Android BackgroundAudioService: playback continues while the window is hidden or minimized.
 app.commandLine.appendSwitch('disable-background-media-suspend');
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
-// No UDP sockets on all interfaces, which make Windows ask for a firewall exception: QUIC (HTTP/3) from video hosts
-// and WebRTC (its mDNS responder on port 5353, P2P video sharing on host pages). The app needs neither.
-app.commandLine.appendSwitch('disable-quic');
-app.commandLine.appendSwitch('disable-features','WebRtcHideLocalIpsWithMdns');
-app.on('web-contents-created',(_,contents)=>contents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp'));
 app.setAppUserModelId('com.lilac.anime.desktop');
 let mainWindow = null;
 const singleInstanceLock = app.requestSingleInstanceLock();
