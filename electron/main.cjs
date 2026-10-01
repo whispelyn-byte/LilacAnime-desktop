@@ -470,12 +470,14 @@ const isEnglishTrack=track=>/^en/i.test(track.language||'')&&!/forced|sign/i.tes
 async function resolveMiruroEpisode(episode){
   const root=await miruroApi(`anime/${episode.animeId}/episodes/${episode.number}/play`),servers=[];
   for(const track of root.tracks||[]){
-    const kind=MIRURO_KINDS[track.track];if(!kind)continue;
+    if(!MIRURO_KINDS[track.track])continue;
     for(const provider of track.providers||[])for(const server of provider.servers||[]){
+      const tracks=(provider.subtitles||[]).filter(item=>/^https:\/\//i.test(item.file||'')).map(item=>({url:item.file,language:String(item.language||'und'),label:String(item.label||item.language||'').replace(/\.(?:vtt|srt|ass)$/i,'').trim()||'자막',format:String(item.format||'vtt').toLowerCase()}));
+      // An "ssub" video without any subtitle file has English burned in after all (every one of "Your Name."'s does).
+      const kind=MIRURO_KINDS[track.track]==='soft'&&!tracks.length?'sub':MIRURO_KINDS[track.track];
       const stream=(server.streams||[]).find(item=>item.format==='hls'&&/^https:/i.test(item.url||'')),label=`${kind.toUpperCase()} - ${provider.provider} ${server.server}`;
       // Some segment hosts also want the Origin of the Referer (kickassanime's), which the list leaves out.
       const headers={...server.headers};if(headers.Referer&&!headers.Origin)try{headers.Origin=new URL(headers.Referer).origin}catch{/* no origin */}
-      const tracks=(provider.subtitles||[]).filter(item=>/^https:\/\//i.test(item.file||'')).map(item=>({url:item.file,language:String(item.language||'und'),label:String(item.label||item.language||'').replace(/\.(?:vtt|srt|ass)$/i,'').trim()||'자막',format:String(item.format||'vtt').toLowerCase()}));
       tracks.forEach(item=>miruroTrackHeaders.set(item.url,headers));
       if(stream&&!servers.some(item=>item.label===label))servers.push({label,kind,provider:provider.provider,url:stream.url,headers,tracks});
     }
@@ -483,12 +485,15 @@ async function resolveMiruroEpisode(episode){
   if(!servers.length)throw new Error('이 회차는 Miruro에서 재생할 수 있는 영상이 없습니다.');
   const known=provider=>{const index=MIRURO_PROVIDERS.indexOf(provider);return index<0?MIRURO_PROVIDERS.length:index};
   const clean=server=>['raw','soft'].includes(server.kind),english=server=>server.kind==='soft'&&server.tracks.some(isEnglishTrack);
-  const kindRank=server=>episode.prefer==='raw'?(clean(server)?1:server.kind==='sub'?2:3):(english(server)?1:server.kind==='sub'?2:clean(server)?3:4);
+  // A SOFT server with a Korean file of its own comes first, like a Korean Re:Anime track.
+  const korean=server=>server.kind==='soft'&&server.tracks.some(isKoreanTrack);
+  const kindRank=server=>korean(server)?0.5:episode.prefer==='raw'?(clean(server)?1:server.kind==='sub'?2:3):(english(server)?1:server.kind==='sub'?2:clean(server)?3:4);
   const rank=server=>(server.label===episode.server?0:kindRank(server)*100)+(server.provider===miruroWorkingProvider?0:10)+known(server.provider);
   const result=async(server,extra={})=>{
     const stream={url:server.url,headers:server.headers,referer:server.headers.Referer||'',servers:servers.map(({label,kind})=>({label,kind})),server:server.label,subtitleTracks:server.tracks,...extra};
-    // No Korean subtitle: the SOFT video gets its English file, like the burned-in SUB but switchable and translatable.
-    const track=episode.prefer!=='raw'&&server.kind==='soft'?server.tracks.find(isEnglishTrack):null;
+    // A Korean file is applied by itself. Without a Korean subtitle the SOFT video gets its English file, like the
+    // burned-in SUB but switchable and translatable.
+    const track=server.kind!=='soft'?null:server.tracks.find(isKoreanTrack)||(episode.prefer!=='raw'?server.tracks.find(isEnglishTrack):null);
     if(track)try{const file=subtitleResult(await saveRemoteSubtitle(track.url,remoteTrackOptions(track.url)));Object.assign(stream,{subtitleUrl:file.url,subtitlePath:file.path,subtitleAss:file.assUrl?{url:file.assUrl,path:file.assPath}:null,subtitleLabel:`Miruro ${track.label} 자막`,subtitleTrack:track.url})}catch{/* the track list still offers it */}
     return stream;
   };
@@ -552,7 +557,7 @@ function parseFlixSubtitleTracks(html=''){
   }
   return tracks.filter((track,index,array)=>array.findIndex(x=>x.url===track.url)===index);
 }
-function isKoreanTrack(track){return /kor|korean|한국/i.test(`${track.language} ${track.label}`)||/_kor_/i.test(track.url)}
+function isKoreanTrack(track){return /kor|korean|한국/i.test(`${track.language} ${track.label}`)||/^ko(?:[-_]|$)/i.test(track.language||'')||/_kor_/i.test(track.url)}
 // ASS/SSA keep their original file for libass (JASSUB) rendering; every format also gets a
 // WebVTT copy for the <track> fallback. Fonts extracted next to the subtitle are passed along.
 function subtitleResult(file,extra={}){
@@ -1202,6 +1207,110 @@ async function downloadCommunityMatch(match,source,title,episode){
   const unnumbered=episode===1&&!candidates.some(x=>communityFileMatches(x,2)),largest=()=>candidates.slice().sort((a,b)=>fs.statSync(b).size-fs.statSync(a).size)[0];
   const selected=candidates.find(x=>communityFileMatches(x,match.episode))||(!match.strict?candidates[0]:unnumbered?largest():null);if(!selected)throw new Error('사용 가능한 자막 파일을 추출하지 못했습니다.');return subtitleResult(selected,{source,post:match.post.url,postTitle:match.post.title,all:candidates});
 }
+// Some makers pack their subtitles into the post's image instead of linking a file (WinPNG,
+// https://github.com/harnenim/WinPNG). The blog's own viewer decodes the image and converts Jamaker projects (.jmk) to
+// ASS / SMI, so the post is opened in a hidden window, its image clicked and the converted files read back. Pages
+// without that viewer are left after a few seconds.
+async function winPngEntries(pageUrl){
+  const win=new BrowserWindow({show:false,width:1280,height:900,webPreferences:{partition:'persist:lilac-provider',contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false}});
+  try{
+    await win.loadURL(pageUrl,{userAgent:LINKKF_UA});
+    return await win.webContents.executeJavaScript(`(async()=>{
+      const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+      for(let i=0;i<20&&typeof window.downloadZip!=='function';i++)await wait(250);
+      if(typeof window.downloadZip!=='function')return [];
+      const read=async url=>{try{return url?await (await fetch(url)).text():null}catch{return null}};
+      for(const img of document.querySelectorAll('.contents_style img, .tt_article_useless_p_margin img, article img')){
+        img.click();let entries=[];
+        // Done when every file is listed and none is still being converted.
+        for(let i=0;i<60;i++){await wait(500);entries=[...document.querySelectorAll('a[data-href]')];if(entries.length&&!document.querySelector('a.processing'))break}
+        if(!entries.length)continue;
+        const out=[];
+        for(const a of entries){const name=a.download||'';out.push({name,ass:await read(a.getAttribute('data-ass')),smi:await read(a.getAttribute('data-smi')||a.getAttribute('data-cleared')),raw:/\\.(?:ass|ssa|srt|vtt)$/i.test(name)?await read(a.getAttribute('data-href')):null})}
+        return out;
+      }
+      return [];
+    })()`,true);
+  }finally{if(!win.isDestroyed())win.destroy()}
+}
+// The episode's file among a WinPNG image's files: extras (textless OP/ED, specials) are left out, ASS is preferred
+// over SMI, and a movie (no numbered files) takes the largest script.
+const WINPNG_EXTRA=/non-?telop|\bNC(?:OP|ED)\b|tokuten|\bSP\d|\bPV\b|\bCM\b|menu|preview|trailer/i;
+async function winPngSubtitle(pageUrl,title,episode){
+  const entries=(await winPngEntries(pageUrl)).filter(entry=>entry.ass||entry.raw||entry.smi);if(!entries.length)return null;
+  const dir=path.join(app.getPath('userData'),'subtitles',simpleTitle(title).replace(/\s+/g,'_')||'anime',String(episode));fs.mkdirSync(dir,{recursive:true});
+  const files=entries.map((entry,index)=>{
+    const ext=entry.ass?'.ass':entry.raw?path.extname(entry.name).toLowerCase():'.smi',out=path.join(dir,`winpng_${index}_${communityFileName(entry.name.replace(/\.[^.]+$/,''))}${ext}`);
+    fs.writeFileSync(out,String(entry.ass||entry.raw||entry.smi).replace(/^﻿/,''),'utf8');return {file:out,name:entry.name};
+  });
+  const main=files.filter(item=>!WINPNG_EXTRA.test(item.name)),pool=main.length?main:files,largest=()=>pool.slice().sort((a,b)=>fs.statSync(b.file).size-fs.statSync(a.file).size)[0];
+  const selected=pool.length===1?pool[0]:episode===1&&!pool.some(item=>communityFileMatches(item.name,2))?largest():pool.find(item=>communityFileMatches(item.name,episode));
+  return selected?subtitleResult(selected.file,{source:'anissia',post:pageUrl,postTitle:title,all:files.map(item=>item.file)}):null;
+}
+// --- Jimaku (Japanese subtitles, jimaku.cc) ------------------------------------------------------------------------
+// Android JimakuSubtitleService: the home page lists every entry with its AniList id (no API key needed) and an entry's
+// page its files. The player lists the episode's files and the user picks one (Android JIMAKU_USER_SELECTION_V2).
+const JIMAKU_WEB='https://jimaku.cc',JIMAKU_FORMATS={ass:100,ssa:96,srt:90,vtt:86,smi:84,sami:84};
+let jimakuIndex={time:0,entries:new Map()};
+// The home page is about 2 MB, so it is read again after six hours, or after ten minutes when an id is missing.
+async function jimakuEntryId(anilistId){
+  const age=Date.now()-jimakuIndex.time;
+  if(age>6*60*60*1000||(!jimakuIndex.entries.has(anilistId)&&age>10*60*1000)){
+    const $=cheerio.load(await providerFetch(`${JIMAKU_WEB}/`,{referer:`${JIMAKU_WEB}/`})),entries=new Map();
+    $('div.entry[data-extra]').each((_,node)=>{let extra=null;try{extra=JSON.parse($(node).attr('data-extra'))}catch{return}const id=Number(extra?.anilist_id),entry=$(node).find('a[href*="/entry/"]').attr('href')?.match(/\/entry\/(\d+)/)?.[1];if(id&&entry&&!entries.has(id))entries.set(id,entry)});
+    if(entries.size)jimakuIndex={time:Date.now(),entries};
+  }
+  return jimakuIndex.entries.get(anilistId)||null;
+}
+async function jimakuFiles(entry){
+  const url=`${JIMAKU_WEB}/entry/${entry}`,$=cheerio.load(await providerFetch(url,{referer:`${JIMAKU_WEB}/`})),files=[];
+  $('div.entry[data-extra]').each((_,node)=>{
+    let extra={};try{extra=JSON.parse($(node).attr('data-extra'))||{}}catch{/* the link below */}
+    const name=String(extra.name||$(node).find('a.file-name').text()||'').trim(),href=String(extra.url||$(node).find('a.file-name').attr('href')||'').trim();
+    if(name&&href&&JIMAKU_FORMATS[name.split('.').pop().toLowerCase()]&&!files.some(file=>file.name===name))files.push({name,url:absoluteUrl(href,url),size:Number(extra.size)||0,entry:String(entry)});
+  });
+  return files;
+}
+// Android JimakuSubtitleService.scoreEpisodeFiles: SxxEyy beats Eyy beats a bare number; a range ("01-12") holds the
+// episodes it names.
+function jimakuEpisodeScore(name,episode){
+  const lower=name.toLowerCase(),n=String(Number(episode));
+  const range=lower.match(/(?:s\d{1,2}e)0*(\d{1,3})\s*[-~〜–—]\s*(?:s\d{1,2}e)?0*(\d{1,3})/)||lower.match(/(?:^|[^a-z0-9])(?:e|ep|episode)?0*(\d{1,3})\s*[-~〜–—]\s*(?:e|ep|episode)?0*(\d{1,3})(?:$|[^0-9])/);
+  if(range&&Number(range[1])<Number(range[2]))return episode>=Number(range[1])&&episode<=Number(range[2])?45:0;
+  if(new RegExp(`(?:^|[^a-z0-9])s\\d{1,2}e0*${n}(?:[^0-9]|$)`).test(lower))return 65;
+  if(new RegExp(`(?:^|[^a-z0-9])(?:ep|episode|e)0*${n}(?:[^0-9]|$)`).test(lower))return 58;
+  if(new RegExp(`(?:^|[^a-z0-9])0*${n}\\s*(?:화|회|편|話)`).test(lower))return 55;
+  return new RegExp(`(?:^|[^a-z0-9])0*${n}(?:[^a-z0-9]|$)`).test(lower)?50:0;
+}
+async function jimakuAnilistId(anime={}){
+  const id=Number(anime.anilistId)||null;if(id)return id;
+  return anime.title&&!hasHangul(anime.title)?(await anilistMedia(anime.title,anime).catch(()=>null))?.id||null:null;
+}
+// The episode's files, best first (ASS over SRT, furigana / .ja ASS a little ahead, the season's own files ahead). A
+// movie's entry has no numbered files, so all of them are listed.
+async function jimakuEpisodeFiles(anime,episode){
+  const anilistId=await jimakuAnilistId(anime);if(!anilistId)throw new Error('AniList 작품을 찾지 못해 Jimaku를 검색할 수 없습니다.');
+  const entry=await jimakuEntryId(anilistId);if(!entry)throw new Error('Jimaku에 이 작품의 자막이 없습니다.');
+  const files=await jimakuFiles(entry),season=titleSeason(anime.title||'');
+  const quality=name=>{const lower=name.toLowerCase(),ext=lower.split('.').pop(),ass=/^(?:ass|ssa)$/.test(ext);return JIMAKU_FORMATS[ext]+(ass?(lower.includes('furigana')?8:lower.includes('.ja')?6:3):lower.includes('.ja')?2:0)+(season>1&&new RegExp(`(?:^|[^a-z0-9])s0*${season}(?:e|[-_ ])`).test(lower)?12:0)};
+  const movie=Number(episode)===1&&!files.some(file=>jimakuEpisodeScore(file.name,2)>0);
+  return files.map(file=>({...file,anilistId,score:movie?1:jimakuEpisodeScore(file.name,Number(episode))})).filter(file=>file.score>0)
+    .sort((a,b)=>(b.score+quality(b.name))-(a.score+quality(a.name))||b.size-a.size||a.name.localeCompare(b.name));
+}
+// Subtitles are kept as UTF-8: UTF-16 by its byte order mark, otherwise UTF-8 when it decodes cleanly, else Shift_JIS.
+function japaneseSubtitleText(buffer){
+  if(buffer[0]===0xff&&buffer[1]===0xfe)return new TextDecoder('utf-16le').decode(buffer);
+  if(buffer[0]===0xfe&&buffer[1]===0xff)return new TextDecoder('utf-16be').decode(buffer);
+  try{return new TextDecoder('utf-8',{fatal:true}).decode(buffer)}catch{return new TextDecoder('shift_jis').decode(buffer)}
+}
+async function jimakuDownload(file,anime,episode){
+  if(!/^https:\/\/jimaku\.cc\/entry\/\d+\/download\//.test(String(file?.url||'')))throw new Error('Jimaku 파일 주소가 아닙니다.');
+  const text=japaneseSubtitleText(await downloadBuffer(file.url,`${JIMAKU_WEB}/entry/${file.entry}`)).replace(/^\uFEFF/,'');
+  const ext=communitySubtitleExt(Buffer.from(text.slice(0,8192),'utf8'))||path.extname(file.name).toLowerCase();
+  const dir=path.join(app.getPath('userData'),'subtitles','jimaku',String(file.anilistId||simpleTitle(anime?.title||'')||'anime'),String(episode));fs.mkdirSync(dir,{recursive:true});
+  const out=path.join(dir,`${communityFileName(file.name).replace(/\.[^.]+$/,'')}${ext}`);fs.writeFileSync(out,text,'utf8');
+  return subtitleResult(out,{source:'jimaku',label:'Jimaku 자막',name:file.name});
+}
 const ANISSIA_API='https://api.anissia.net';
 // Online subtitle sources in their default search order.
 const COMMUNITY_SOURCES=['kairan','csora','anissia'];
@@ -1331,6 +1440,14 @@ async function findAnissiaSubtitle(title,episode,{originalTitle='',offsets=[],ma
         for(const post of likely){try{post.html=naver?(await naverPost(naver.blogId,post.logNo)).html:await providerFetch(post.url,{referer:`${origin}/`})}catch{post.html=''}}
         const posts=[...likely.filter(post=>post.html),...(linked&&!likely.some(post=>post.url===linked.url)?[linked]:[])];
         for(const name of [anime.subject,title])if(!match)match=rankCommunityPosts(posts,name,episode,originalTitle,{offsets})[0];
+        // No download link: the files may be packed into the post's image (WinPNG). The episode's own posts first,
+        // then the one Anissia links.
+        if(!match&&/\.tistory\.com$/i.test(host)){
+          for(const url of [...new Set([...likely.map(post=>post.url),linked?.url||caption.website].filter(Boolean))].slice(0,3)){
+            const result=await winPngSubtitle(url,anime.subject,episode).catch(()=>null);
+            if(result)return {...result,maker:caption.name,anissiaTitle:anime.subject};
+          }
+        }
       }
       if(match){const result=await downloadCommunityMatch(match,'anissia',anime.subject,episode);return {...result,maker:caption.name,anissiaTitle:anime.subject}}
     }catch{/* next maker */}
@@ -1396,7 +1513,7 @@ app.whenReady().then(async () => {
   const analyzeDownload=async(job,siblings)=>analyzeOfflineOpEd({title:job.title,episode:job.episodeNumber,currentUrl:pathToFileURL(job.filePath).href,duration:job.duration,candidates:siblings.map(item=>({...item.episode,number:item.episodeNumber,localUrl:pathToFileURL(item.filePath).href}))});
   downloadManager=new DownloadManager({app,resolveTitles:anime=>resolveDisplayTitle(anime),
     saveTrack:(url,referer)=>saveRemoteSubtitle(String(url),remoteTrackOptions(url,referer)).then(file=>subtitleResult(file)),
-    translateTrack:(file,title)=>{const settings=translator().settings();return settings.key&&settings.translateDownloads?translator().translate({file,title}):null},findSubtitle:findDownloadSubtitle,findSkips:findDownloadSkips,analyzeOpEd:analyzeDownload,// Animenosub and Miruro downloads follow the player: the RAW video when the episode has a Korean subtitle (saved or found
+    translateTrack:(file,title)=>{const settings=translator().settings();return translator().ready()&&settings.translateDownloads?translator().translate({file,title}):null},findSubtitle:findDownloadSubtitle,findSkips:findDownloadSkips,analyzeOpEd:analyzeDownload,// Animenosub and Miruro downloads follow the player: the RAW video when the episode has a Korean subtitle (saved or found
     // by the same search the download attaches afterwards), else SUB with its burned-in English.
     resolveEpisode:async(episode,job)=>{if(!['animenosub','miruro'].includes(episode?.provider))return resolveProviderEpisode(episode);return resolveProviderEpisode({...episode,prefer:await findDownloadSubtitle(job,null).catch(()=>null)?'raw':'sub',download:true})},resolveLinkkf:async episode=>{
     let playerUrl='';try{const root=await linkkfFetch(`https://emdlinkkf.5imgdarr.top/apilink2.php?data=${encodeURIComponent(episode.token)}`);const links=Array.isArray(root.data)?root.data:[];playerUrl=(links.find(x=>String(x.server).toUpperCase()==='NR-HD')||links[0]||{}).link||'';}catch{}
@@ -1613,13 +1730,29 @@ app.whenReady().then(async () => {
   // since libass' bundled fallback font has no Hangul glyphs.
   ipcMain.handle('tmdb:get',()=>({key:tmdbKey()}));
   // Gemini translation of subtitle tracks (the user's own key); progress goes to the page that asked.
+  ipcMain.handle('jimaku:list',(_,anime={},episode=1)=>jimakuEpisodeFiles(anime||{},Number(episode)||1));
+  ipcMain.handle('jimaku:download',(_,file={},anime={},episode=1)=>jimakuDownload(file||{},anime||{},Number(episode)||1));
   ipcMain.handle('gemini:get',()=>translator().settings());
+  // Local AI models (설정 > 자막 자동 번역): a preset is downloaded from Hugging Face with progress events, or a GGUF
+  // file on this PC is added.
+  ipcMain.handle('localai:install',async(_,id)=>{
+    const send=value=>broadcast('localai:progress',{id,...value});
+    try{await translator().local.installModel(String(id||''),(done,total)=>send({done,total}));send({finished:true})}catch(error){send({error:error.message});throw error}
+    return translator().settings();
+  });
+  ipcMain.handle('localai:add-file',async()=>{
+    const result=await dialog.showOpenDialog({title:'GGUF 모델 파일 선택',properties:['openFile'],filters:[{name:'GGUF',extensions:['gguf']}]});
+    if(result.canceled||!result.filePaths[0])return null;
+    const id=translator().local.addFile(result.filePaths[0]);return translator().saveSettings({localModel:id});
+  });
+  ipcMain.handle('localai:remove',(_,id)=>{translator().local.removeModel(String(id||''));return translator().settings()});
   ipcMain.handle('gemini:set',(_,value={})=>translator().saveSettings(value||{}));
-  ipcMain.handle('subtitle:translate',async(event,{path:file='',title='',id=0}={})=>{
+  ipcMain.handle('subtitle:translate',async(event,{path:file='',title='',id=0,provider=''}={})=>{
     const resolved=path.resolve(String(file||''));
     // App subtitle files and the tracks saved with downloads.
     if(![path.join(app.getPath('userData'),'subtitles'),downloadManager?.root].some(root=>root&&resolved.startsWith(root+path.sep))||!/\.vtt$/i.test(resolved)||!fs.existsSync(resolved))throw new Error('번역할 자막 파일이 없습니다.');
-    const result=await translator().translate({file:resolved,title:String(title||''),progress:(done,total)=>{if(!event.sender.isDestroyed())event.sender.send('translate:progress',{id,done,total})}});
+    const send=value=>{if(!event.sender.isDestroyed())event.sender.send('translate:progress',{id,...value})};
+    const result=await translator().translate({file:resolved,title:String(title||''),provider:['gemini','local'].includes(provider)?provider:'',progress:(done,total)=>send({done,total}),status:text=>send({status:text})});
     return subtitleResult(result.path,{model:result.model,failed:result.failed,cached:result.cached});
   });
   // Several lookups at a time (TMDB answers quickly; AniList allows about 90 requests a minute).
@@ -1684,5 +1817,5 @@ app.whenReady().then(async () => {
   app.on('activate', () => { if (!mainWindow || mainWindow.isDestroyed()) createWindow(); });
 });
 
-app.on('before-quit', closeFlixProxy);
+app.on('before-quit', () => { closeFlixProxy(); subtitleTranslator?.local?.stop(); });
 app.on('window-all-closed', () => { if (process.env.LILAC_SMOKE_REANIME==='1')return;if (process.platform !== 'darwin') app.quit(); });

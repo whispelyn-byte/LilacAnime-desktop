@@ -128,3 +128,5 @@ body.player-mode .update-banner { display: none; }
 .changelog-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 6px; }
 .changelog-actions button { height: 38px; padding: 0 18px; border-radius: 10px; cursor: pointer; font: inherit; }
 .changelog-secondary { border: 1px solid var(--line); background: var(--panel2); color: var(--text); }
+.sheet-button-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.sheet-button-row .sheet-button { margin: 0; }

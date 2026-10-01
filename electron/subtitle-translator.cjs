@@ -1,16 +1,29 @@
-// Korean machine translation of subtitle tracks with the Gemini API (the user's own key).
-// Cues are read from the VTT the player already uses; only their text is sent, in numbered batches, and the
-// answers are written back with the original timings. Results are cached per source file and model.
+// Korean machine translation of subtitles ("gemini": the Gemini API with the user's own key; "local": a GGUF model run
+// by llama.cpp on this PC, see local-ai.cjs; chosen per request). Cues are read from the VTT the player already uses; only their
+// text is sent (to Gemini in numbered batches, to the local model line by line), and the answers are written back with
+// the original timings. Results are cached per source file and model.
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { createLocalAi } = require('./local-ai.cjs');
 
 const GEMINI_API = 'https://generativelanguage.googleapis.com/v1beta';
 const BATCH_LINES = 120, BATCH_CHARS = 7000, PARALLEL = 3;
 
 function createTranslator(userData) {
   const settingsFile = path.join(userData, 'gemini.json'), cacheDir = path.join(userData, 'subtitles', 'translated');
-  const read = () => { try { const value = JSON.parse(fs.readFileSync(settingsFile, 'utf8')); return { key: String(value.key || '').trim(), model: String(value.model || '').trim(), models: Array.isArray(value.models) ? value.models : [], translateDownloads: value.translateDownloads !== false }; } catch { return { key: '', model: '', models: [], translateDownloads: true }; } };
+  const local = createLocalAi(userData);
+  const read = () => {
+    let value = {}; try { value = JSON.parse(fs.readFileSync(settingsFile, 'utf8')) || {}; } catch { /* defaults */ }
+    return { key: String(value.key || '').trim(), model: String(value.model || '').trim(), models: Array.isArray(value.models) ? value.models : [], translateDownloads: value.translateDownloads !== false,
+      localModel: String(value.localModel || 'hy-mt-1.8b'), autoJimaku: value.autoJimaku !== false };
+  };
+  // With the local AI the installed model list is part of the settings the page shows.
+  const settings = () => { const value = read(); return { ...value, localModels: local.models() }; };
+  // The player has a button for each provider. Translations nobody asks for (a picked Jimaku file, downloads) use
+  // Gemini when a key is set, otherwise the local AI when its model is on disk.
+  const ready = provider => { const value = read(); return provider === 'local' ? local.models().some(model => model.id === value.localModel && model.installed) : provider === 'gemini' ? Boolean(value.key) : Boolean(autoProvider()); };
+  const autoProvider = () => ready('gemini') ? 'gemini' : ready('local') ? 'local' : null;
   const write = value => { fs.mkdirSync(path.dirname(settingsFile), { recursive: true }); fs.writeFileSync(settingsFile, JSON.stringify(value), 'utf8'); return value; };
 
   async function api(pathname, key, init = {}) {
@@ -35,12 +48,23 @@ function createTranslator(userData) {
     return models.find(name => /flash/.test(name) && !/lite|preview/.test(name)) || models.find(name => /flash/.test(name)) || models[0] || '';
   }
 
-  async function saveSettings({ key, model, translateDownloads = true } = {}) {
-    key = String(key || '').trim(); translateDownloads = translateDownloads !== false;
-    if (!key) return write({ key: '', model: '', models: [], translateDownloads });
-    const models = await listModels(key);
-    if (!models.length) throw new Error('이 키로 쓸 수 있는 Gemini 모델이 없습니다.');
-    return write({ key, models, model: models.includes(model) ? model : defaultModel(models), translateDownloads });
+  // Only the fields given change; a new key is checked by listing its models.
+  async function saveSettings(change = {}) {
+    const current = read(), next = { ...current };
+    if ('translateDownloads' in change) next.translateDownloads = change.translateDownloads !== false;
+    if ('autoJimaku' in change) next.autoJimaku = change.autoJimaku !== false;
+    if ('localModel' in change) next.localModel = String(change.localModel || current.localModel);
+    if ('model' in change && next.models.includes(change.model)) next.model = change.model;
+    if ('key' in change && String(change.key || '').trim() !== current.key) {
+      next.key = String(change.key || '').trim();
+      if (!next.key) Object.assign(next, { model: '', models: [] });
+      else {
+        const models = await listModels(next.key);
+        if (!models.length) throw new Error('이 키로 쓸 수 있는 Gemini 모델이 없습니다.');
+        Object.assign(next, { models, model: models.includes(change.model) ? change.model : defaultModel(models) });
+      }
+    }
+    write(next); return settings();
   }
 
   // Gemini 2.5 takes a thinking budget, later models a thinking level; subtitles need little of either.
@@ -103,11 +127,13 @@ function createTranslator(userData) {
     'Never merge, split, skip or reorder lines, and add no notes.'
   ].filter(Boolean).join('\n');
 
-  // progress(done, total) is called after each batch.
-  async function translate({ file, title = '', progress = () => {} }) {
-    const settings = read();
-    if (!settings.key) throw new Error('설정 > 자막 자동 번역에서 Gemini API 키를 넣어 주세요.');
-    const model = settings.model || defaultModel(settings.models) || 'gemini-flash-latest';
+  // progress(done, total) is called after each batch (local: each line); status(text) while the local model starts.
+  async function translate({ file, title = '', provider = '', progress = () => {}, status = () => {} }) {
+    const settings = read(), isLocal = (provider || autoProvider()) === 'local';
+    if (!isLocal && !settings.key) throw new Error('설정 > 자막 자동 번역에서 Gemini API 키를 넣어 주세요.');
+    const localModel = isLocal ? local.models().find(item => item.id === settings.localModel) : null;
+    if (isLocal && !localModel?.installed) throw new Error('설정 > 자막 자동 번역에서 로컬 AI 모델을 먼저 받아 주세요.');
+    const model = isLocal ? `local:${localModel.file || localModel.label}` : settings.model || defaultModel(settings.models) || 'gemini-flash-latest';
     const source = fs.readFileSync(file, 'utf8'), hash = crypto.createHash('sha1').update(`${model}\n${source}`).digest('hex').slice(0, 20);
     const out = path.join(cacheDir, `${hash}.vtt`);
     if (fs.existsSync(out)) { progress(1, 1); return { path: out, model, failed: 0, cached: true }; }
@@ -116,6 +142,10 @@ function createTranslator(userData) {
     if (!cues.length) throw new Error('번역할 자막 줄이 없습니다.');
     // Identical lines (repeated cues, karaoke layers) are translated once.
     const unique = [...new Set(cues.map(cue => plain(cue.text)).filter(text => /\p{L}/u.test(text)))].map((text, i) => ({ i, text }));
+    if (isLocal) {
+      const { translations } = await local.translateLines(unique.map(line => line.text), { modelId: localModel.id, progress, status });
+      return writeResult(cues, unique, translations, hash, model);
+    }
     const translated = new Map(), groups = batches(unique);
     let done = 0, next = 0, fatal = null;
     progress(0, groups.length);
@@ -140,9 +170,17 @@ function createTranslator(userData) {
     }));
     if (fatal && !translated.size) throw fatal;
     if (!translated.size) throw new Error('Gemini 번역 결과를 받지 못했습니다.');
-    const failed = unique.length - translated.size;
+    return writeResult(cues, unique, translated, hash, model);
+  }
+  function writeResult(cues, unique, translated, hash, model) {
+    if (!translated.size) throw new Error('번역 결과를 받지 못했습니다.');
+    const out = path.join(cacheDir, `${hash}.vtt`), failed = unique.length - translated.size;
     const byText = new Map(unique.map(line => [line.text, translated.get(line.i)]));
-    const body = cues.map(cue => `${cue.timing}\n${escapeCue(byText.get(plain(cue.text)) || plain(cue.text))}`).join('\n\n');
+    // Cues with the same timing (an ASS file's separate lines) become one cue, or the player draws them on top of
+    // each other.
+    const merged = new Map();
+    for (const cue of cues) { const text = escapeCue(byText.get(plain(cue.text)) || plain(cue.text)); merged.set(cue.timing, merged.has(cue.timing) ? `${merged.get(cue.timing)}\n${text}` : text); }
+    const body = [...merged].map(([timing, text]) => `${timing}\n${text}`).join('\n\n');
     fs.mkdirSync(cacheDir, { recursive: true });
     // Partial results are not cached, so a later try can fill the gaps.
     const target = failed ? path.join(cacheDir, `${hash}-partial-${Date.now()}.vtt`) : out;
@@ -150,7 +188,7 @@ function createTranslator(userData) {
     return { path: target, model, failed, cached: false };
   }
 
-  return { settings: read, saveSettings, translate };
+  return { settings, saveSettings, translate, ready, local };
 }
 
 module.exports = { createTranslator };

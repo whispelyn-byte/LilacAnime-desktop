@@ -137,6 +137,8 @@ function applyVttLayout() {
 
 // Android subtitle source chips: switch to that source's subtitle for this episode.
 async function selectSubtitleSource(source) {
+  // Jimaku is picked by hand per episode (a list of files), so it is not kept as the default source.
+  if (source === 'jimaku') { openJimaku(); return; }
   localStorage.setItem('subtitleSource', source);
   if ($('#subtitleSource')) { $('#subtitleSource').value = source; syncSettingChoices(); }
   syncPlayerSettingsUI();
