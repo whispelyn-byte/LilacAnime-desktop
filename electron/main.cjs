@@ -139,14 +139,9 @@ async function linkkfFilter({ page = 1, limit = 20, seasonTypeIds = [], genreIds
   const pagination = root.pagination || {};
   return { data: (root.data || []).map(linkkfAnime).filter(a => a.id), page: Number(pagination.current_page) || Number(page) || 1, totalPages: Number(pagination.total_pages) || 1, total: Number(pagination.total_results) || 0 };
 }
-// Android searches the whole Linkkf catalog locally (title/genre). The list is kept on disk, so search keeps
-// working from the last copy while Linkkf is down; it is reloaded daily, and every 30 minutes until a load works.
-let linkkfCatalogCache = null, linkkfCatalogUpdated = 0, linkkfCatalogLoading = null, linkkfCatalogTimer = null, activeCatalogSource = null;
-const linkkfCatalogFile = () => path.join(app.getPath('userData'), 'linkkf-catalog.json');
-function readLinkkfCatalog() {
-  if (!linkkfCatalogCache) try { const value = JSON.parse(fs.readFileSync(linkkfCatalogFile(), 'utf8')); linkkfCatalogCache = value.items || []; linkkfCatalogUpdated = value.updated || 0; } catch { linkkfCatalogCache = []; }
-  return linkkfCatalogCache;
-}
+// Android searches the whole Linkkf catalog locally (title/genre). The full list is the Linkkf catalog index
+// (see CATALOGS), loaded in the background like the other sources; it is downloaded here when not loaded yet.
+let activeCatalogSource = null;
 async function downloadLinkkfCatalog() {
   const found = new Map(), limit = 100;
   for (let page = 1; page <= 400; page += 4) {
@@ -157,25 +152,10 @@ async function downloadLinkkfCatalog() {
   }
   return [...found.values()];
 }
-function refreshLinkkfCatalog() {
-  if (linkkfCatalogLoading) return linkkfCatalogLoading;
-  if (activeCatalogSource !== 'linkkf') return null;
-  clearTimeout(linkkfCatalogTimer);
-  linkkfCatalogLoading = downloadLinkkfCatalog().then(items => {
-    linkkfCatalogCache = items; linkkfCatalogUpdated = Date.now();
-    try { fs.writeFileSync(linkkfCatalogFile(), JSON.stringify({ items, updated: linkkfCatalogUpdated })); } catch { /* memory copy still works */ }
-    linkkfCatalogTimer = setTimeout(refreshLinkkfCatalog, 24 * 60 * 60 * 1000); linkkfCatalogTimer.unref?.();
-    return items;
-  }, error => {
-    linkkfCatalogTimer = setTimeout(refreshLinkkfCatalog, 30 * 60 * 1000); linkkfCatalogTimer.unref?.();
-    throw error;
-  }).finally(() => { linkkfCatalogLoading = null; });
-  return linkkfCatalogLoading;
-}
 async function linkkfCatalog() {
-  const saved = readLinkkfCatalog();
-  if (saved.length && Date.now() - linkkfCatalogUpdated < 24 * 60 * 60 * 1000) return saved;
-  try { return await (refreshLinkkfCatalog() || downloadLinkkfCatalog()); } catch (error) { if (saved.length) return saved; throw error; }
+  const index = catalogIndex('linkkf');
+  if (!index.items.length) { index.items = await downloadLinkkfCatalog(); index.updated = Date.now(); saveCatalogIndex('linkkf'); }
+  return index.items;
 }
 function linkkfSearchKey(value = '') { return String(value).toLowerCase().normalize('NFKC').replace(/[\s\-_:·.,!?'"()[\]~]+/g, ''); }
 
@@ -719,10 +699,12 @@ const CATALOGS={
   reanime:{label:'Re:Anime',fetch:fetchReanimeCatalog,wikidata:true},
   // Animenosub: the anime sitemaps list every series (about 1,400) with its poster, newest first. The address only
   // gives a lossy title ("im-looking-for-a-zombie"), so the series page is read once for the real one.
-  animenosub:{label:'Animenosub',fetch:fetchAnimenosubCatalog,title:animenosubRealTitle}
+  animenosub:{label:'Animenosub',fetch:fetchAnimenosubCatalog,title:animenosubRealTitle},
+  // Linkkf titles are already Korean, so only the list is loaded.
+  linkkf:{label:'Linkkf',fetch:downloadLinkkfCatalog,korean:false}
 };
 const catalogIndexes={};
-let catalogIndexRunning=false;
+let catalogIndexRunning=false,catalogRetryTimer=null;
 // activeCatalogSource (declared with the Linkkf catalog): the source in use; only that one loads in the background.
 function catalogIndex(provider){
   if(catalogIndexes[provider])return catalogIndexes[provider];
@@ -733,7 +715,7 @@ function catalogIndex(provider){
 const indexSaveTimers={};
 function saveCatalogIndex(provider){clearTimeout(indexSaveTimers[provider]);indexSaveTimers[provider]=setTimeout(()=>{const index=catalogIndex(provider);try{fs.writeFileSync(path.join(app.getPath('userData'),`${provider}-index.json`),JSON.stringify({items:index.items,updated:index.updated,wikidata:index.wikidata,tried:index.tried}))}catch{}},2000)}
 const indexKorean=(provider,item)=>displayTitleStore()[`${provider}:${item.id}`]?.ko||'';
-function catalogIndexState(){return {tmdb:Boolean(tmdbKey()),sources:Object.entries(CATALOGS).filter(([provider])=>provider===activeCatalogSource).map(([provider,{label}])=>{const index=catalogIndex(provider);return {provider,label,status:index.status,total:index.items.length,korean:index.items.filter(item=>indexKorean(provider,item)).length}})}}
+function catalogIndexState(){return {tmdb:Boolean(tmdbKey()),sources:Object.entries(CATALOGS).filter(([provider])=>provider===activeCatalogSource).map(([provider,{label,korean}])=>{const index=catalogIndex(provider);return {provider,label,status:index.status,total:index.items.length,korean:korean===false?null:index.items.filter(item=>indexKorean(provider,item)).length}})}}
 function reportCatalogIndex(provider,status){
   catalogIndex(provider).status=status;const state=catalogIndexState();
   BrowserWindow.getAllWindows().forEach(win=>{if(!win.isDestroyed())win.webContents.send('catalog-index:state',state)});
@@ -748,7 +730,8 @@ async function fetchReanimeCatalog(){
   const first=await page(0),total=Number(first?.total)||0,roots=[first],offsets=[];
   for(let offset=100;offset<total;offset+=100)offsets.push(offset);
   let next=0;
-  await Promise.all(Array.from({length:4},async()=>{while(next<offsets.length){const offset=offsets[next++];for(let attempt=0;attempt<2;attempt++){try{roots.push(await page(offset));break}catch{/* once more */}}}}));
+  // Stops when another source is selected (the list is then incomplete and dropped below).
+  await Promise.all(Array.from({length:4},async()=>{while(next<offsets.length&&activeCatalogSource==='reanime'){const offset=offsets[next++];for(let attempt=0;attempt<2;attempt++){try{roots.push(await page(offset));break}catch{/* once more */}}}}));
   const items=new Map();
   for(const root of roots){
     const popularity=new Map((root?.results||[]).map(raw=>[String(raw.anime_id),Number(raw.popularity)||0]));
@@ -764,6 +747,7 @@ async function fetchAnimenosubCatalog(previous=[]){
   if(!maps.length)throw new Error('Animenosub 사이트맵을 찾지 못했습니다.');
   const items=[],seen=new Set();
   for(const map of maps){
+    if(activeCatalogSource!=='animenosub')throw new Error('다른 소스로 바뀌었습니다.');
     const xml=await providerFetch(map,{referer:`${ANIMENOSUB_WEB}/`});
     for(const [,block] of xml.matchAll(/<url>([\s\S]*?)<\/url>/g)){
       const slug=block.match(/<loc>[^<]*\/anime\/([^/<]+)\/?<\/loc>/)?.[1]?.toLowerCase();if(!slug||seen.has(slug))continue;seen.add(slug);
@@ -789,7 +773,10 @@ async function refreshCatalogList(provider){
   const index=catalogIndex(provider);
   if(index.items.length&&Date.now()-index.updated<DAY)return;
   reportCatalogIndex(provider,'catalog');
-  try{index.items=await CATALOGS[provider].fetch(index.items);index.updated=Date.now();saveCatalogIndex(provider)}catch{/* the previous list stays */}
+  try{index.items=await CATALOGS[provider].fetch(index.items);index.updated=Date.now();saveCatalogIndex(provider)}catch{
+    // The previous list stays; the download is tried again in 30 minutes, also while the source is down.
+    clearTimeout(catalogRetryTimer);catalogRetryTimer=setTimeout(()=>buildCatalogIndexes().catch(()=>{}),30*60*1000);catalogRetryTimer.unref?.();
+  }
   if(CATALOGS[provider].wikidata&&index.items.length&&Date.now()-index.wikidata>7*DAY){
     reportCatalogIndex(provider,'wikidata');
     try{const map=await wikidataKoreanByAnilist();for(const item of index.items)if(item.anilistId&&map.has(item.anilistId)&&!indexKorean(provider,item))storeIndexKorean(provider,item,map.get(item.anilistId));saveDisplayTitles();index.wikidata=Date.now();saveCatalogIndex(provider)}catch{/* next run */}
@@ -798,6 +785,7 @@ async function refreshCatalogList(provider){
 }
 // TMDB, six entries at a time (well under its request limit).
 async function lookupCatalogKorean(provider){
+  if(CATALOGS[provider].korean===false)return;
   const index=catalogIndex(provider),queue=index.items.filter(item=>!indexKorean(provider,item)&&!(Date.now()-(index.tried[item.id]||0)<30*DAY));
   let done=0;
   while(tmdbKey()&&queue.length&&activeCatalogSource===provider){
@@ -810,7 +798,7 @@ async function lookupCatalogKorean(provider){
     if(++done%10===0){saveDisplayTitles();saveCatalogIndex(provider)}
     await new Promise(resolve=>setTimeout(resolve,200));
   }
-  saveDisplayTitles();saveCatalogIndex(provider);
+  if(done){saveDisplayTitles();saveCatalogIndex(provider)}
 }
 async function buildCatalogIndexes(){
   if(catalogIndexRunning)return;catalogIndexRunning=true;
@@ -1437,8 +1425,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('catalog:search-korean',(_,provider,query)=>searchCatalogIndex(String(provider||''),String(query||'')));
   ipcMain.handle('catalog:activate',(_,provider)=>{
     activeCatalogSource=String(provider||'');
-    if(CATALOGS[activeCatalogSource])buildCatalogIndexes().catch(()=>{});
-    if(activeCatalogSource==='linkkf')refreshLinkkfCatalog()?.catch?.(()=>{});
+    if(CATALOGS[activeCatalogSource]){const index=catalogIndex(activeCatalogSource);if(!index.items.length||index.status==='idle')index.status='catalog';buildCatalogIndexes().catch(()=>{})}
     return catalogIndexState();
   });
   ipcMain.handle('catalog-index:state',()=>catalogIndexState());
