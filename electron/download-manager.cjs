@@ -166,6 +166,7 @@ class DownloadManager {
       fs.writeFileSync(path.join(dir,`${list.name}.m3u8`),text);
     }
     let done=0,next=0;
+    if(!tasks.length)throw new Error('영상 재생목록이 비어 있습니다.');
     const report=()=>{const progress=Math.min(95,Math.floor(done/tasks.length*95));if(progress!==job.progress){job.progress=progress;job.updated=Date.now();this.save()}};
     await Promise.all(Array.from({length:HLS_PARALLEL},async()=>{
       while(next<tasks.length&&!controller.signal.aborted){

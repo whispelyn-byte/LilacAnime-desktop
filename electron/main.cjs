@@ -975,11 +975,12 @@ async function buildCatalogIndexes(){
 }
 // Korean search over a whole catalog, in catalog order: the Korean names found so far, then the entries whose own
 // (English) title contains an English name of the query. Animenosub has no bulk Korean source like Re:Anime's
-// Wikidata, so most of its entries are only reached the second way until TMDB has gone through the list.
+// Wikidata, so most of its entries are only reached the second way until TMDB has gone through the list; Re:Anime
+// answers from its Korean names alone, without waiting for the TMDB / AniList lookup.
 async function searchCatalogIndex(provider,query){
   const key=titleCompareKey(query);if(!key||!CATALOGS[provider])return [];
   const items=catalogIndex(provider).items,korean=items.filter(item=>{const ko=indexKorean(provider,item);return ko&&titleCompareKey(ko).includes(key)});
-  const english=(await titleSearchVariants(query).catch(()=>[])).filter(value=>!hasHangul(value)).map(titleCompareKey).filter(value=>value.length>=6);
+  const english=CATALOGS[provider].wikidata?[]:(await titleSearchVariants(query).catch(()=>[])).filter(value=>!hasHangul(value)).map(titleCompareKey).filter(value=>value.length>=6);
   const seen=new Set(korean),byEnglish=english.length?items.filter(item=>!seen.has(item)&&english.some(value=>titleCompareKey(item.title).includes(value))):[];
   return [...korean,...byEnglish].slice(0,60).map(({slugTitle,popularity,...item})=>item);
 }
@@ -1055,6 +1056,13 @@ function titleSeason(text=''){
 // A later season keeps its number when the Korean name has none ("장송의 프리렌" for Season 2 → "… 2기").
 function withSeason(ko,title){
   const season=titleSeason(title);return ko&&!hasHangul(title)&&season>1&&communitySeason(ko)==null&&!/\d\s*$/.test(ko)?`${ko} ${season}기`:ko;
+}
+// The season a subtitle search asks for: the searched (usually Korean) title's own, else the provider title's. A Korean
+// title ending with that same number ("마크로스 7" for "Macross 7") names the work, not a season.
+function searchSeason(title,originalTitle){
+  const own=communitySeason(title);if(own!=null)return own;
+  const season=titleSeason(originalTitle);
+  return season!=null&&hasHangul(title)&&new RegExp(`(?:^|\\D)${season}\\s*$`).test(String(title).normalize('NFKC'))?null:season;
 }
 // Posts often drop the "~부제~" part ("무직전생3"), so a distinctive shared prefix of 4+ Hangul counts as a match too.
 // Android HangulSimilarityMatcher: edit distance where two syllables differing only in one jamo cost
@@ -1144,7 +1152,7 @@ async function extractCommunityArchive(buffer,dir){
 function communitySubtitleExt(buffer){const bom=buffer[0]===0xff&&buffer[1]===0xfe?'utf-16le':buffer[0]===0xfe&&buffer[1]===0xff?'utf-16be':'utf-8',head=new TextDecoder(bom).decode(buffer.subarray(0,8192)).replace(/^\uFEFF/,'');return /^WEBVTT/.test(head)?'.vtt':/\[Script Info\]/i.test(head)?'.ass':/<sami[\s>]/i.test(head)?'.smi':/\d+:\d{2}:\d{2}[,.]\d{3}\s*-->/.test(head)?'.srt':null}
 // Posts of one blog ranked for a title and episode (best first).
 function rankCommunityPosts(posts,title,episode,originalTitle='',{offsets=[]}={}){
-  const season=communitySeason(title)??titleSeason(originalTitle)??1,wanted=communityTitle(title);
+  const season=searchSeason(title,originalTitle)??1,wanted=communityTitle(title);
   const rank=(list,name,number)=>list.map(post=>({post,score:communityScore(name,communityPostTitle(post.title))})).filter(x=>x.score>=.52) // Android MIN_SIMILARITY
     .map(x=>({...x,...communityLinks(x.post,number)})).filter(x=>x.links.length)
     // Per-episode links beat bundles of a similarly named post; newer posts come first in the feed.
@@ -1167,7 +1175,7 @@ function rankCommunityPosts(posts,title,episode,originalTitle='',{offsets=[]}={}
 // the whole chain, since makers restart either per franchise or per season.
 const prequelEpisodeCache=new Map();
 async function previousSeasonEpisodes(anime={},title=''){
-  const season=communitySeason(title)??titleSeason(anime.title||'')??1;if(season<2)return [];
+  const season=searchSeason(title,anime.title||'')??1;if(season<2)return [];
   let id=Number(anime.anilistId)||null;
   if(!id&&anime.title&&!hasHangul(anime.title))id=(await anilistMedia(anime.title,anime).catch(()=>null))?.id||null;
   if(!id)return [];if(prequelEpisodeCache.has(id))return prequelEpisodeCache.get(id);
@@ -1210,12 +1218,15 @@ async function downloadCommunityMatch(match,source,title,episode){
 // Some makers pack their subtitles into the post's image instead of linking a file (WinPNG,
 // https://github.com/harnenim/WinPNG). The blog's own viewer decodes the image and converts Jamaker projects (.jmk) to
 // ASS / SMI, so the post is opened in a hidden window, its image clicked and the converted files read back. Pages
-// without that viewer are left after a few seconds.
+// without that viewer are left after a few seconds, and a page that does not finish within a minute is given up.
 async function winPngEntries(pageUrl){
   const win=new BrowserWindow({show:false,width:1280,height:900,webPreferences:{partition:'persist:lilac-provider',contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false}});
-  try{
+  let timer=null;
+  const work=(async()=>{
     await win.loadURL(pageUrl,{userAgent:LINKKF_UA});
-    return await win.webContents.executeJavaScript(`(async()=>{
+    return win.webContents.executeJavaScript(`(async()=>{
+      // The viewer answers an image it cannot read with prompt() and alert(), which would open real dialogs.
+      window.alert=()=>{};window.prompt=()=>null;window.confirm=()=>false;
       const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
       for(let i=0;i<20&&typeof window.downloadZip!=='function';i++)await wait(250);
       if(typeof window.downloadZip!=='function')return [];
@@ -1231,12 +1242,16 @@ async function winPngEntries(pageUrl){
       }
       return [];
     })()`,true);
-  }finally{if(!win.isDestroyed())win.destroy()}
+  })();
+  work.catch(()=>{/* given up below */});
+  try{return await Promise.race([work,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('WinPNG 글을 여는 데 너무 오래 걸립니다.')),60000)})])}
+  finally{clearTimeout(timer);if(!win.isDestroyed())win.destroy()}
 }
 // The episode's file among a WinPNG image's files: extras (textless OP/ED, specials) are left out, ASS is preferred
-// over SMI, and a movie (no numbered files) takes the largest script.
+// over SMI. A file numbered for the episode wins; otherwise the largest script is taken only for a movie (no numbered
+// files) or from the episode's own post (matched), never from a post of another episode.
 const WINPNG_EXTRA=/non-?telop|\bNC(?:OP|ED)\b|tokuten|\bSP\d|\bPV\b|\bCM\b|menu|preview|trailer/i;
-async function winPngSubtitle(pageUrl,title,episode){
+async function winPngSubtitle(pageUrl,title,episode,{matched=false}={}){
   const entries=(await winPngEntries(pageUrl)).filter(entry=>entry.ass||entry.raw||entry.smi);if(!entries.length)return null;
   const dir=path.join(app.getPath('userData'),'subtitles',simpleTitle(title).replace(/\s+/g,'_')||'anime',String(episode));fs.mkdirSync(dir,{recursive:true});
   const files=entries.map((entry,index)=>{
@@ -1244,21 +1259,26 @@ async function winPngSubtitle(pageUrl,title,episode){
     fs.writeFileSync(out,String(entry.ass||entry.raw||entry.smi).replace(/^﻿/,''),'utf8');return {file:out,name:entry.name};
   });
   const main=files.filter(item=>!WINPNG_EXTRA.test(item.name)),pool=main.length?main:files,largest=()=>pool.slice().sort((a,b)=>fs.statSync(b.file).size-fs.statSync(a.file).size)[0];
-  const selected=pool.length===1?pool[0]:episode===1&&!pool.some(item=>communityFileMatches(item.name,2))?largest():pool.find(item=>communityFileMatches(item.name,episode));
+  const unnumbered=!pool.some(item=>Array.from({length:60},(_,index)=>index+1).some(number=>communityFileMatches(item.name,number)));
+  const selected=pool.find(item=>communityFileMatches(item.name,episode))||(unnumbered||(matched&&pool.length===1)?largest():null);
   return selected?subtitleResult(selected.file,{source:'anissia',post:pageUrl,postTitle:title,all:files.map(item=>item.file)}):null;
 }
 // --- Jimaku (Japanese subtitles, jimaku.cc) ------------------------------------------------------------------------
 // Android JimakuSubtitleService: the home page lists every entry with its AniList id (no API key needed) and an entry's
 // page its files. The player lists the episode's files and the user picks one (Android JIMAKU_USER_SELECTION_V2).
 const JIMAKU_WEB='https://jimaku.cc',JIMAKU_FORMATS={ass:100,ssa:96,srt:90,vtt:86,smi:84,sami:84};
-let jimakuIndex={time:0,entries:new Map()};
-// The home page is about 2 MB, so it is read again after six hours, or after ten minutes when an id is missing.
+let jimakuIndex={time:0,entries:new Map()},jimakuIndexLoading=null;
+// The home page is about 2 MB, so it is read again after six hours, or after ten minutes when an id is missing; lookups
+// meanwhile share the one download.
 async function jimakuEntryId(anilistId){
   const age=Date.now()-jimakuIndex.time;
   if(age>6*60*60*1000||(!jimakuIndex.entries.has(anilistId)&&age>10*60*1000)){
-    const $=cheerio.load(await providerFetch(`${JIMAKU_WEB}/`,{referer:`${JIMAKU_WEB}/`})),entries=new Map();
-    $('div.entry[data-extra]').each((_,node)=>{let extra=null;try{extra=JSON.parse($(node).attr('data-extra'))}catch{return}const id=Number(extra?.anilist_id),entry=$(node).find('a[href*="/entry/"]').attr('href')?.match(/\/entry\/(\d+)/)?.[1];if(id&&entry&&!entries.has(id))entries.set(id,entry)});
-    if(entries.size)jimakuIndex={time:Date.now(),entries};
+    jimakuIndexLoading||=(async()=>{
+      const $=cheerio.load(await providerFetch(`${JIMAKU_WEB}/`,{referer:`${JIMAKU_WEB}/`})),entries=new Map();
+      $('div.entry[data-extra]').each((_,node)=>{let extra=null;try{extra=JSON.parse($(node).attr('data-extra'))}catch{return}const id=Number(extra?.anilist_id),entry=$(node).find('a[href*="/entry/"]').attr('href')?.match(/\/entry\/(\d+)/)?.[1];if(id&&entry&&!entries.has(id))entries.set(id,entry)});
+      if(entries.size)jimakuIndex={time:Date.now(),entries};
+    })().finally(()=>{jimakuIndexLoading=null});
+    await jimakuIndexLoading;
   }
   return jimakuIndex.entries.get(anilistId)||null;
 }
@@ -1307,7 +1327,7 @@ async function jimakuDownload(file,anime,episode){
   if(!/^https:\/\/jimaku\.cc\/entry\/\d+\/download\//.test(String(file?.url||'')))throw new Error('Jimaku 파일 주소가 아닙니다.');
   const text=japaneseSubtitleText(await downloadBuffer(file.url,`${JIMAKU_WEB}/entry/${file.entry}`)).replace(/^\uFEFF/,'');
   const ext=communitySubtitleExt(Buffer.from(text.slice(0,8192),'utf8'))||path.extname(file.name).toLowerCase();
-  const dir=path.join(app.getPath('userData'),'subtitles','jimaku',String(file.anilistId||simpleTitle(anime?.title||'')||'anime'),String(episode));fs.mkdirSync(dir,{recursive:true});
+  const dir=path.join(app.getPath('userData'),'subtitles','jimaku',String(Number(file.anilistId)||simpleTitle(anime?.title||'').replace(/\s+/g,'_')||'anime'),String(Number(episode)||1));fs.mkdirSync(dir,{recursive:true});
   const out=path.join(dir,`${communityFileName(file.name).replace(/\.[^.]+$/,'')}${ext}`);fs.writeFileSync(out,text,'utf8');
   return subtitleResult(out,{source:'jimaku',label:'Jimaku 자막',name:file.name});
 }
@@ -1323,7 +1343,7 @@ async function anissiaFetch(pathname){
 }
 // The Anissia entry for a Korean title, with the season required to match ("2기", "Season 3").
 async function anissiaAnime(title,originalTitle=''){
-  const season=communitySeason(title)??titleSeason(originalTitle)??1,wanted=communityTitle(title);
+  const season=searchSeason(title,originalTitle)??1,wanted=communityTitle(title);
   const bare=wanted.replace(/[~〜～][^~〜～]*[~〜～]/g,' ').replace(/\s*(?:\d+\s*기|season\s*\d+|시즌\s*\d+)\s*$/i,'').replace(/\s+/g,' ').trim();
   // Anissia's search misses titles typed with their punctuation ("명탐정 프리큐어!").
   const plain=bare.replace(/[!?！？.,:;·'"“”‘’♡♥☆★]+/g,' ').replace(/\s+/g,' ').trim();
@@ -1443,8 +1463,9 @@ async function findAnissiaSubtitle(title,episode,{originalTitle='',offsets=[],ma
         // No download link: the files may be packed into the post's image (WinPNG). The episode's own posts first,
         // then the one Anissia links.
         if(!match&&/\.tistory\.com$/i.test(host)){
-          for(const url of [...new Set([...likely.map(post=>post.url),linked?.url||caption.website].filter(Boolean))].slice(0,3)){
-            const result=await winPngSubtitle(url,anime.subject,episode).catch(()=>null);
+          const episodePosts=new Set(likely.map(post=>post.url));
+          for(const url of [...new Set([...episodePosts,linked?.url||caption.website].filter(Boolean))].slice(0,3)){
+            const result=await winPngSubtitle(url,anime.subject,episode,{matched:episodePosts.has(url)}).catch(()=>null);
             if(result)return {...result,maker:caption.name,anissiaTitle:anime.subject};
           }
         }

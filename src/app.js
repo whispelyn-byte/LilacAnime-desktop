@@ -484,19 +484,22 @@ async function translateSubtitleTrack(provider='gemini'){
   await runTranslation({file:()=>trackFile(track),name:track.label,button,provider});
 }
 // Translates a subtitle file (file: a function giving {path}) and applies the result; the button shows the progress.
+// Only the newest run applies its result (picking another Jimaku file while one is translated), and a button is put
+// back by the run that last used it.
+const translationButtons=new Map();let translationRun=0;
 async function runTranslation({file,name,button,provider}){
   translationSettings=await window.lilac.geminiSettings().catch(()=>translationSettings);
   if(!translationReady(provider)){toast(provider==='local'?'설정 > 자막 자동 번역에서 로컬 AI 모델을 먼저 받아 주세요.':'설정 > 자막 자동 번역에서 Gemini API 키를 넣어 주세요.');return}
-  const label=button.textContent;
-  const requestId=playbackRequestId,title=currentPlaybackContext.subtitleTitle||$('#skipTitle').value.trim();
-  translateSubtitleTrack.button=button;button.disabled=true;button.textContent='번역 준비 중…';$('#subtitleState').textContent=`${name} 자막을 한국어로 번역하는 중...`;
+  const label=button.dataset.label||(button.dataset.label=button.textContent),run=++translationRun;
+  const requestId=playbackRequestId,title=currentPlaybackContext.subtitleTitle||$('#skipTitle').value.trim(),current=()=>requestId===playbackRequestId&&run===translationRun;
+  translationButtons.set(run,button);button.dataset.run=String(run);button.disabled=true;button.textContent='번역 준비 중…';$('#subtitleState').textContent=`${name} 자막을 한국어로 번역하는 중...`;
   try{
-    const source=await file();if(requestId!==playbackRequestId)return;
-    const result=await window.lilac.translateSubtitle({path:source.path,title,id:requestId,provider});if(requestId!==playbackRequestId)return;
+    const source=await file();if(!current())return;
+    const result=await window.lilac.translateSubtitle({path:source.path,title,id:run,provider});if(!current())return;
     currentSubtitlePath=result.path;attachSubtitle(result.url,translatedLabel(result,name),{path:result.path,source:'gemini'});
     if(result.failed)toast(`${result.failed}줄은 번역하지 못해 원문으로 남겼습니다.`);
-  }catch(error){if(requestId===playbackRequestId){$('#subtitleState').textContent='자동 번역에 실패했습니다.';toast(`자동 번역 실패: ${ipcMessage(error)}`)}}
-  finally{button.disabled=false;button.textContent=label}
+  }catch(error){if(current()){$('#subtitleState').textContent='자동 번역에 실패했습니다.';toast(`자동 번역 실패: ${ipcMessage(error)}`)}}
+  finally{translationButtons.delete(run);if(button.dataset.run===String(run)){button.disabled=false;button.textContent=label}}
 }
 // Jimaku (Android JIMAKU_USER_SELECTION_V2): the episode's Japanese subtitle files are listed for the user to pick; the
 // picked one is applied, saved for the episode and, when set up, translated into Korean right away.
@@ -525,7 +528,7 @@ async function applyJimaku(file){
 function translateJimaku(provider='gemini'){const subtitle=currentPlaybackContext.jimakuSubtitle;if(subtitle)runTranslation({file:async()=>subtitle,name:'Jimaku',button:provider==='local'?$('#translateJimakuLocal'):$('#translateJimaku'),provider})}
 $('#translateJimaku').onclick=()=>translateJimaku('gemini');$('#translateJimakuLocal').onclick=()=>translateJimaku('local');
 $('#translateSubtitle').onclick=()=>translateSubtitleTrack('gemini');$('#translateSubtitleLocal').onclick=()=>translateSubtitleTrack('local');
-window.lilac.onTranslateProgress(({id,done,total,status})=>{const button=translateSubtitleTrack.button;if(id===playbackRequestId&&button?.disabled)button.textContent=status||`번역 중… ${Math.round(done/Math.max(1,total)*100)}%`});
+window.lilac.onTranslateProgress(({id,done,total,status})=>{const button=translationButtons.get(id);if(button&&button.dataset.run===String(id))button.textContent=status||`번역 중… ${Math.round(done/Math.max(1,total)*100)}%`});
 async function selectSubtitleTrack(track){
   const requestId=playbackRequestId;$('#subtitleState').textContent=`${track.label} 자막을 불러오는 중...`;
   try{const file=await trackFile(track);if(requestId!==playbackRequestId)return;currentPlaybackContext.selectedSubtitleTrack=track.url;currentSubtitlePath=file.path;localStorage.setItem('subtitleSource','reanime');$('#subtitleSource').value='reanime';syncSettingChoices();renderSubtitleTracks();attachSubtitle(file.url,`${trackSourceLabel()} ${track.label} 자막`,{path:file.path,assUrl:file.assUrl,assPath:file.assPath,fonts:file.fonts,source:'reanime'})}
