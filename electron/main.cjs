@@ -210,7 +210,9 @@ function animenosubList(html, base = `${ANIMENOSUB_WEB}/`, { onlyResults = false
     const el=$(node), href=absoluteUrl(el.attr('href'),base);
     if(!href.startsWith(`${ANIMENOSUB_WEB}/`)||(!href.includes('/anime/')&&!/-episode-\d+/i.test(href)))return;
     const episodeSlug=new URL(href).pathname.split('/').filter(Boolean).pop()||'';
-    const seriesSlug=(href.includes('/anime/')?episodeSlug:episodeSlug.replace(/-episode-\d+[a-z]?(?:-dub)?$/i,'')).toLowerCase();
+    // An episode link names its series before "-episode-N"; a suffix other than "-dub" belongs to the series too
+    // ("…-episode-1-uncensored" is episode 1 of "…-uncensored").
+    const seriesSlug=(href.includes('/anime/')?episodeSlug:episodeSlug.replace(/-episode-\d+[a-z]?((?:-[a-z]+)*)$/i,(_,suffix)=>suffix.replace(/-dub(?=-|$)/i,''))).toLowerCase();
     if(!seriesSlug||new URL(href).pathname==='/anime/')return; const container=el.closest('article,li,.item,.film-poster,.post,.ani,div');
     const img=el.find('img').first().length?el.find('img').first():container.find('img').first();
     const poster=absoluteUrl(img.attr('data-src')||img.attr('data-lazy-src')||img.attr('src')||'',base);
@@ -235,12 +237,13 @@ function providerEpisodes(html, provider, anime) {
   const $=cheerio.load(html), episodes=[];
   $('a[href]').each((_,node)=>{const el=$(node),href=absoluteUrl(el.attr('href'),anime.url);let match;
     const parsed=(()=>{try{return new URL(href)}catch{return null}})();
-    if(provider==='animenosub')match=parsed?.pathname.match(/-episode-(\d+)([a-z]?)(-dub)?\/?$/i);
+    // "-episode-3", "-episode-3b", "-episode-3-dub" and suffixed versions ("-episode-1-uncensored").
+    if(provider==='animenosub')match=parsed?.pathname.match(/-episode-(\d+)([a-z]?)((?:-[a-z]+)*)\/?$/i);
     else if(provider==='reanime'&&parsed?.pathname.includes('/watch/'))match=(parsed.searchParams.get('ep')||el.text()).match(/(?:episode|ep|#)?\s*(\d+)/i);
     if(!match)return;const number=Number(match[1]);
     // Animenosub's episode list dates each episode ("June 19, 2026"), shown like Re:Anime's air dates.
     const date=provider==='animenosub'?new Date(el.find('.epl-date').text().trim()):null,airedDate=date&&!isNaN(date)?`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`:'';
-    episodes.push({name:`${number}${match[2]||''}`,number,url:href,dub:Boolean(match[3]),provider,anilistId:anime.anilistId||null,...(airedDate?{airedDate}:{})});
+    episodes.push({name:`${number}${match[2]||''}`,number,url:href,dub:/(?:^|-)dub(?:-|$)/i.test(match[3]||''),provider,anilistId:anime.anilistId||null,...(airedDate?{airedDate}:{})});
   });
   // The same episode is linked more than once (first/last episode buttons); the dated link wins.
   const unique=new Map();for(const x of episodes){const key=`${x.name}:${x.dub}`;if(!unique.has(key)||(!unique.get(key).airedDate&&x.airedDate))unique.set(key,x)}
@@ -1652,32 +1655,39 @@ app.whenReady().then(async () => {
     if(!playerUrl)playerUrl=`${LINKKF_WEB}/up/${encodeURIComponent(episode.postId)}/watch/?slug=${encodeURIComponent(episode.slug)}`;
     return resolveStreamPage(playerUrl,`${LINKKF_WEB}/`,15000);
   });
-  // This season's shows (홈 > "2026 가을 신작"), most popular first: Re:Anime and Miruro filter their own catalog by
-  // season and year, Animenosub's anime list by its season tag. Seasons follow the anime calendar (January winter,
-  // April spring, July summer, October autumn).
-  ipcMain.handle('provider:season', async (_, provider) => {
-    const now=new Date(),year=now.getFullYear(),index=Math.floor(now.getMonth()/3),season=['WINTER','SPRING','SUMMER','FALL'][index],label=`${year} ${['겨울','봄','여름','가을'][index]}`;
-    let data=[];
+  // Home rails, most popular first and only shows that already have episodes (early in a season most are still to
+  // air): "2026 가을 신작" (this season; Re:Anime and Miruro filter their catalog by season and year, Animenosub its
+  // list by season tag) and "방영 중" (airing now). Seasons follow the anime calendar (January winter, April spring,
+  // July summer, October autumn).
+  async function homeShows(provider,kind){
+    const now=new Date(),year=now.getFullYear(),index=Math.floor(now.getMonth()/3),season=['WINTER','SPRING','SUMMER','FALL'][index];
+    const current=kind==='season',data=[];
     if (provider === 'reanime') {
-      const root=await providerFetch(`${REANIME_WEB}/api/v1/search?limit=100&offset=0&season=${season}&year=${year}`,{json:true,referer:`${REANIME_WEB}/search`});
-      data=reanimeItems(root);
+      const filter=current?`season=${season}&year=${year}`:'status=RELEASING&sort=popularity';
+      const root=await providerFetch(`${REANIME_WEB}/api/v1/search?limit=100&offset=0&${filter}`,{json:true,referer:`${REANIME_WEB}/search`});
+      // Its status can say "Not Yet Released" for a show with episodes, so the episode counts decide.
+      data.push(...reanimeItems(root).filter(item=>item.subbed>0||item.dubbed>0));
     } else if (provider === 'miruro') {
       let cursor;
-      for(let page=0;page<4;page++){
-        const root=await miruroApi('anime',{season,season_year:year,sort:'-popularity',limit:15,cursor});
-        data.push(...(root.data||[]).map(miruroItem));cursor=root.next_cursor;if(!root.has_more||!cursor)break;
+      for(let page=0;page<6&&data.length<40;page++){
+        const root=await miruroApi('anime',current?{season,season_year:year,sort:'-popularity',limit:15,cursor}:{status:'RELEASING',sort:'-popularity',limit:15,cursor});
+        data.push(...(root.data||[]).filter(raw=>Object.values(raw.episode_counts||{}).some(count=>Number(count)>0)).map(miruroItem));
+        cursor=root.next_cursor;if(!root.has_more||!cursor)break;
       }
     } else if (provider === 'animenosub') {
-      const tag=`${season.toLowerCase()}-${year}`;
+      const filter=current?`season%5B0%5D=${season.toLowerCase()}-${year}`:'status=ongoing';
       for(let page=1;page<=3;page++){
-        // Only the result cards: the page also links its own views ("Text Mode") under /anime/.
-        const $=cheerio.load(await providerFetch(`${ANIMENOSUB_WEB}/anime/?${page>1?`page=${page}&`:''}season%5B0%5D=${tag}&order=popular`,{referer:`${ANIMENOSUB_WEB}/`}));
-        const items=animenosubList($('article.bs').map((_,node)=>$.html(node)).get().join(''));
-        const fresh=items.filter(item=>!data.some(known=>known.mal_id===item.mal_id));data.push(...fresh);if(!fresh.length)break;
+        // Only the result cards (the page also links its own views such as "Text Mode" under /anime/), without the
+        // ones ribboned "Upcoming".
+        const $=cheerio.load(await providerFetch(`${ANIMENOSUB_WEB}/anime/?${page>1?`page=${page}&`:''}${filter}&order=popular`,{referer:`${ANIMENOSUB_WEB}/`})),cards=$('article.bs');
+        const items=animenosubList(cards.filter((_,node)=>!/upcoming/i.test($(node).find('.ans-status-ribbon').text())).map((_,node)=>$.html(node)).get().join(''));
+        const fresh=items.filter(item=>!data.some(known=>known.mal_id===item.mal_id));data.push(...fresh);if(!cards.length)break;
       }
     } else throw new Error('지원하지 않는 콘텐츠 소스입니다.');
-    return {data,label};
-  });
+    return {data,label:current?`${year} ${['겨울','봄','여름','가을'][index]}`:''};
+  }
+  ipcMain.handle('provider:season', (_, provider) => homeShows(provider,'season'));
+  ipcMain.handle('provider:airing', (_, provider) => homeShows(provider,'airing'));
   ipcMain.handle('provider:catalog', async (_, provider, query = '', offset = 0) => {
     if (provider === 'reanime') {
       const pageOffset=Math.max(0,Number(offset)||0),url=new URL('/api/v1/search',REANIME_WEB);if(query)url.searchParams.set('q',query);url.searchParams.set('limit','36');url.searchParams.set('offset',String(pageOffset));const root=await providerFetch(url.href,{json:true,referer:`${REANIME_WEB}/search?limit=36&offset=${pageOffset}`});return {data:reanimeItems(root),total:Number(root?.total)||null,offset:pageOffset,limit:36};

@@ -75,7 +75,7 @@ function updateLibraryButton(button,isSaved,withLabel=true){if(!button)return;bu
 // Cards shown outside the home lists (related works, schedule, filters) must still open.
 const knownAnime=new Map();
 function rememberAnime(a){if(a?.mal_id!=null&&!knownAnime.has(String(a.mal_id)))knownAnime.set(String(a.mal_id),a);return a}
-function animeById(id) { return [...(state.current||[]),...state.season,...state.top,...state.library].find(x=>String(x.mal_id)===String(id))||knownAnime.get(String(id)); }
+function animeById(id) { return [...(state.current||[]),...(state.airing||[]),...state.season,...state.top,...state.library].find(x=>String(x.mal_id)===String(id))||knownAnime.get(String(id)); }
 function toast(message) { const el=$('#toast'); el.textContent=message; el.classList.add('show'); clearTimeout(toast.t); toast.t=setTimeout(()=>el.classList.remove('show'),2200); }
 
 function switchView(name) {
@@ -633,18 +633,20 @@ async function init(){
       catch(error){toast('Linkkf 서버가 응답하지 않아 작품 정보 모드로 표시합니다.');[season,top]=await Promise.all([window.lilac.season(),window.lilac.top()]);}
     }else if(PROVIDER_SOURCES.includes(state.source)){
       // The catalog's first page (most popular first) fills 인기 애니메이션 and 전체; this season's shows come separately.
-      const current=window.lilac.providerSeason(state.source).catch(()=>null);
-      try{season=await window.lilac.providerCatalog(state.source);top={data:season.data};const result=await current;if(result?.data?.length){state.current=result.data;state.currentLabel=result.label}}
+      const current=window.lilac.providerSeason(state.source).catch(()=>null),airing=window.lilac.providerAiring(state.source).catch(()=>null);
+      try{season=await window.lilac.providerCatalog(state.source);top={data:season.data};const [result,onAir]=await Promise.all([current,airing]);if(result){state.current=result.data||[];state.currentLabel=result.label}if(onAir?.data?.length)state.airing=onAir.data}
       catch(error){toast(`${state.source} 서버가 응답하지 않아 작품 정보 모드로 표시합니다.`);[season,top]=await Promise.all([window.lilac.season(),window.lilac.top()]);}
     }else [season,top]=await Promise.all([window.lilac.season(),window.lilac.top()]);
-    state.season=season.data;state.top=top.data;if(state.source==='reanime'){state.catalogOffset=season.data.length;state.catalogTotal=season.total||null}else if(state.source==='animenosub'){state.catalogOffset=season.nextOffset||2}else if(state.source==='miruro'){state.catalogOffset=season.nextOffset;state.catalogDone=Boolean(season.done)}renderCards('#seasonRail',(state.current||state.season).slice(0,30));renderCards('#topRail',state.top.slice(0,20));$('#seasonTitle').textContent=state.current?`${state.currentLabel} 신작`:'이번 시즌 신작';if(state.source==='linkkf'&&state.season[0]?.provider==='linkkf')loadLinkkfHome();
+    state.season=season.data;state.top=top.data;if(state.source==='reanime'){state.catalogOffset=season.data.length;state.catalogTotal=season.total||null}else if(state.source==='animenosub'){state.catalogOffset=season.nextOffset||2}else if(state.source==='miruro'){state.catalogOffset=season.nextOffset;state.catalogDone=Boolean(season.done)}$('#seasonRail').closest('.content-section').classList.toggle('hidden',Boolean(state.current&&!state.current.length));renderCards('#seasonRail',(state.current||state.season).slice(0,30));$('#airingSection').classList.toggle('hidden',!state.airing?.length);if(state.airing?.length)renderCards('#airingRail',state.airing.slice(0,30));renderCards('#topRail',state.top.slice(0,20));$('#seasonTitle').textContent=state.current?`${state.currentLabel} 신작`:'이번 시즌 신작';if(state.source==='linkkf'&&state.season[0]?.provider==='linkkf')loadLinkkfHome();
     const a=state.current?.[0]||state.season[0]||state.top[0];if(a){const hero=$('#hero'),libraryButton=hero.querySelector('.library-toggle');hero.classList.remove('skeleton');setBackgroundImage(hero,imageOf(a));hero.querySelector('h1').textContent=titleOf(a);titleAnime.set(animeTitleKey(a),a);hero.querySelector('h1').dataset.titleFor=animeTitleKey(a);hero.querySelector('p').textContent=(a.synopsis||'새로운 이야기를 만나보세요.').slice(0,145);hero.querySelector('.primary').onclick=()=>openDetail(a.mal_id);updateLibraryButton(libraryButton,saved(a.mal_id));libraryButton.onclick=e=>toggleLibrary(a,e.currentTarget);}
   } catch(e){$('#seasonRail').classList.remove('loading-cards');$('#topRail').classList.remove('loading-cards');toast('목록을 불러오지 못했습니다. 인터넷 연결을 확인하세요.');}
 }
 
 $$('.nav').forEach(b=>b.onclick=()=>switchView(b.dataset.view));$$('[data-goto]').forEach(b=>b.onclick=()=>switchView(b.dataset.goto));
-// 홈 > "2026 가을 신작" > 전체 보기: the whole season list in the search view.
-$('#seeAllSeason').onclick=()=>{if(!state.current?.length){switchView('search');return}switchView('search');$('#pageSearch').value='';$('#filterMore')?.classList.add('hidden');renderCards('#searchGrid',state.current);$('#searchStatus').textContent=`${state.currentLabel} 신작 ${state.current.length}개 · 인기순`};
+// 홈 > "2026 가을 신작" / "방영 중" > 전체 보기: the whole list in the search view.
+function showHomeList(list,label){switchView('search');if(!list?.length)return;$('#pageSearch').value='';$('#filterMore')?.classList.add('hidden');renderCards('#searchGrid',list);$('#searchStatus').textContent=`${label} ${list.length}개 · 인기순`}
+$('#seeAllSeason').onclick=()=>showHomeList(state.current,`${state.currentLabel} 신작`);
+$('#seeAllAiring').onclick=()=>showHomeList(state.airing,'방영 중');
 $$('[data-library-tab]').forEach(button=>button.onclick=()=>{$$('[data-library-tab]').forEach(x=>x.classList.toggle('selected',x===button));$('#savedLibraryPanel').classList.toggle('hidden',button.dataset.libraryTab!=='saved');$('#downloadsPanel').classList.toggle('hidden',button.dataset.libraryTab!=='downloads')});
 $('#openDownloadFolder').onclick=()=>window.lilac.openDownloadsFolder();
 window.lilac.onDownloadsChanged(downloads=>{state.downloads=downloads;renderDownloads()});
