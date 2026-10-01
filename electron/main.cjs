@@ -1235,7 +1235,9 @@ app.whenReady().then(async () => {
   const analyzeDownload=async(job,siblings)=>analyzeOfflineOpEd({title:job.title,episode:job.episodeNumber,currentUrl:pathToFileURL(job.filePath).href,duration:job.duration,candidates:siblings.map(item=>({...item.episode,number:item.episodeNumber,localUrl:pathToFileURL(item.filePath).href}))});
   downloadManager=new DownloadManager({app,resolveTitles:anime=>resolveDisplayTitle(anime),
     saveTrack:(url,referer)=>saveRemoteSubtitle(String(url),{referer:/^https:\/\//i.test(referer||'')?referer:'https://flixcloud.cc/',userAgent:ANDROID_WEBVIEW_UA}).then(file=>subtitleResult(file)),
-    translateTrack:(file,title)=>{const settings=translator().settings();return settings.key&&settings.translateDownloads?translator().translate({file,title}):null},findSubtitle:findDownloadSubtitle,findSkips:findDownloadSkips,analyzeOpEd:analyzeDownload,resolveEpisode:resolveProviderEpisode,resolveLinkkf:async episode=>{
+    translateTrack:(file,title)=>{const settings=translator().settings();return settings.key&&settings.translateDownloads?translator().translate({file,title}):null},findSubtitle:findDownloadSubtitle,findSkips:findDownloadSkips,analyzeOpEd:analyzeDownload,// Animenosub downloads follow the player: the RAW video when the episode has a Korean subtitle (saved or found
+    // by the same search the download attaches afterwards), else SUB with its burned-in English.
+    resolveEpisode:async(episode,job)=>episode?.provider==='animenosub'?resolveProviderEpisode({...episode,prefer:await findDownloadSubtitle(job,null).catch(()=>null)?'raw':'sub'}):resolveProviderEpisode(episode),resolveLinkkf:async episode=>{
     let playerUrl='';try{const root=await linkkfFetch(`https://emdlinkkf.5imgdarr.top/apilink2.php?data=${encodeURIComponent(episode.token)}`);const links=Array.isArray(root.data)?root.data:[];playerUrl=(links.find(x=>String(x.server).toUpperCase()==='NR-HD')||links[0]||{}).link||'';}catch{}
     if(!playerUrl)playerUrl=`${LINKKF_WEB}/up/${encodeURIComponent(episode.postId)}/watch/?slug=${encodeURIComponent(episode.slug)}`;return resolveStreamPage(playerUrl,`${LINKKF_WEB}/`,15000);
   },broadcast});

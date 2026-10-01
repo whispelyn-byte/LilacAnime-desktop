@@ -79,10 +79,11 @@ class DownloadManager {
     try {
       // Stream resolution shares one browser session whose request hooks are swapped per call, so only the
       // ffmpeg transfers run in parallel.
-      const resolving = this.resolving.then(() => job.resolveKind === 'linkkf' ? this.resolveLinkkf(job.episode) : this.resolveEpisode(job.episode));
+      const resolving = this.resolving.then(() => job.resolveKind === 'linkkf' ? this.resolveLinkkf(job.episode) : this.resolveEpisode(job.episode, job));
       this.resolving = resolving.catch(() => {});
       const stream = await resolving;
       if(job.status==='paused'||!this.jobs.some(item=>item.id===job.id))return;
+      if(stream?.server)job.videoServer=stream.server; // Animenosub: which server the video came from
       const animeDir=path.join(this.root,safeName(job.title)), base=`${String(job.episodeNumber).padStart(3,'0')}화`;
       fs.mkdirSync(animeDir,{recursive:true});job.filePath=path.join(animeDir,`${base}.mp4`);job.partialPath=`${job.filePath}.part`;job.status='downloading';job.updated=Date.now();this.save();
       await this.runFfmpeg(job,stream);
