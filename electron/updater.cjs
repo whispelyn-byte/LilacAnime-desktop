@@ -1,5 +1,5 @@
 // GitHub release based auto update (mirrors Android GithubReleaseChecker).
-// Releases only need the NSIS installer asset (LilacAnime-Setup-x.y.z.exe).
+// Releases only need the NSIS installer asset (LilacAnime-Setup.exe; older releases have the version in the name).
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
@@ -59,7 +59,9 @@ class Updater {
     this.downloading = (async () => {
       const dir = path.join(this.app.getPath('temp'), 'LilacAnime-update');
       fs.mkdirSync(dir, { recursive: true });
-      const file = path.join(dir, path.basename(this.asset.name).replace(/[^\w.-]/g, '_'));
+      // The asset is always "LilacAnime-Setup.exe"; the saved copy is named by the release, so an older one is never
+      // overwritten while it may still be open.
+      const file = path.join(dir, `LilacAnime-Setup-${String(this.state.latest || 'update').replace(/[^\w.-]/g, '_')}.exe`);
       const partial = `${file}.part`;
       this.set({ status: 'downloading', percent: 0 });
       try {

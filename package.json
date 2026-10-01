@@ -42,7 +42,7 @@
       "icon": "build/icon.ico",
       "executableName": "LilacAnime",
       "target": "nsis",
-      "artifactName": "LilacAnime-Setup-${version}.${ext}"
+      "artifactName": "LilacAnime-Setup.${ext}"
     },
     "nsis": {
       "oneClick": false,

@@ -9,7 +9,7 @@
 
 ## 설치
 
-1. [최신 릴리즈](https://github.com/whispelyn-byte/LilacAnime-desktop/releases/latest)에서 `LilacAnime-Setup-0.3.26.exe`를 받습니다.
+1. **[LilacAnime-Setup.exe 받기](https://github.com/whispelyn-byte/LilacAnime-desktop/releases/latest/download/LilacAnime-Setup.exe)**: 항상 최신 버전이 받아집니다. ([모든 릴리즈](https://github.com/whispelyn-byte/LilacAnime-desktop/releases))
 2. 실행해서 설치 위치를 고르고 설치합니다. 바탕 화면에 바로가기가 생깁니다.
 
 설치한 뒤에는 새 버전이 나오면 앱이 알려 주고, **설정 > 앱 업데이트**에서 바로 받아 설치할 수 있습니다. 업데이트하면 바뀐 점이 처음 한 번 표시됩니다.
@@ -144,7 +144,7 @@ npm start
 npm run dist
 ```
 
-`dist\LilacAnime-Setup-0.3.26.exe`처럼 `package.json`의 `version`이 붙은 설치 파일이 만들어집니다.
+`dist\LilacAnime-Setup.exe`가 만들어집니다. 앱 버전은 `package.json`의 `version`을 따릅니다.
 
 | 폴더 | 내용 |
 |---|---|
