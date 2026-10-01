@@ -229,7 +229,9 @@ async function doSearch(query) {
   const search=text=>['animenosub','reanime'].includes(state.source)?window.lilac.providerCatalog(state.source,text):state.source==='linkkf'?window.lilac.linkkfSearch(text):window.lilac.search(text);
   try{
     // The other-language lookup runs alongside the first search.
-    const token=doSearch.token=searchToken,variantsPromise=window.lilac.titleVariants(query).catch(()=>[]),result=await search(query);if(token!==doSearch.token)return;let data=result.data||[];renderCards('#searchGrid',data);$('#searchStatus').textContent=`“${query}” 검색 결과 ${data.length}${result.total?` / ${result.total}`:''}개`;
+    // Re:Anime: a Korean query also matches the Korean names of the whole catalog (main process index); those come first.
+    const localPromise=state.source==='reanime'&&/[가-힣]/.test(query)?window.lilac.reanimeKoreanSearch(query).catch(()=>[]):Promise.resolve([]);
+    const token=doSearch.token=searchToken,variantsPromise=window.lilac.titleVariants(query).catch(()=>[]),[result,local]=await Promise.all([search(query),localPromise]);if(token!==doSearch.token)return;const localIds=new Set(local.map(a=>String(a.mal_id)));let data=[...local,...(result.data||[]).filter(a=>!localIds.has(String(a.mal_id)))];renderCards('#searchGrid',data);$('#searchStatus').textContent=`“${query}” 검색 결과 ${data.length}${result.total?` / ${result.total}`:''}개`;
     // Korean and English names both work: the query is also searched under its other-language titles.
     const variants=await variantsPromise;if(token!==doSearch.token||!variants.length)return;
     // Six searches at a time: a short query can match many known titles.
@@ -634,6 +636,9 @@ $('#applyUpdate').onclick=runUpdateAction;$('#updateBannerAction').onclick=runUp
 // TMDB key (설정 > 한국어 제목 검색): the user's own key overrides the bundled one.
 function renderTmdbState(value,message){$('#tmdbKey').value=value?.key||'';$('#tmdbKeyState').textContent=message||(value?.key?'TMDB API 키를 사용 중입니다.':'키가 없으면 AniList·Wikidata로만 찾아서 못 찾는 작품이 많습니다. themoviedb.org 설정 > API에서 발급한 키를 넣어 주세요.')}
 window.lilac.tmdbKey().then(value=>renderTmdbState(value)).catch(()=>{});
+// Progress of the Re:Anime Korean title index (main process).
+function renderReanimeIndex(value){if(!value)return;const step={catalog:'전체 목록을 받는 중',wikidata:'Wikidata에서 한국어 제목을 받는 중',tmdb:'TMDB에서 한국어 제목을 찾는 중',error:'목록을 받지 못했어요'}[value.status];$('#reanimeIndexState').textContent=value.total?`Re:Anime 전체 ${value.total.toLocaleString()}개 중 ${value.korean.toLocaleString()}개의 한국어 제목을 알고 있어요.${step?` (${step}…)`:''}${!value.tmdb&&value.status!=='catalog'?' TMDB 키를 넣으면 나머지도 찾아요.':''}`:step?`${step}…`:''}
+window.lilac.onReanimeIndexState(renderReanimeIndex);window.lilac.reanimeIndexState().then(renderReanimeIndex).catch(()=>{});
 function renderGeminiState(value,message){
   $('#geminiKey').value=value?.key||'';$('#geminiDownloads').checked=value?.translateDownloads!==false;const select=$('#geminiModel'),models=value?.models||[];
   select.replaceChildren(...models.map(name=>{const option=document.createElement('option');option.value=name;option.textContent=name;return option}));select.value=value?.model||'';select.disabled=!models.length;
