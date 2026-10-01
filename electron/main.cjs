@@ -624,7 +624,9 @@ async function resolveStreamPage(targetUrl, referer = '', timeoutMs = 30000) {
       subtitle=subtitleTracks.find(isKoreanTrack)?.url||null;
     }
     if(stream&&!subtitle&&!isFlixCloud){const subtitleDeadline=Date.now()+2500;while(Date.now()<subtitleDeadline&&!subtitle)await new Promise(resolve=>setTimeout(resolve,200));}
-    if(!stream)throw new Error('플레이어 창이 닫혀 스트림 탐색을 중단했습니다.');    if(isFlixCloud){while(!flixPk&&!resolver.isDestroyed()){flixPk=await resolver.webContents.executeJavaScript(`window.__pk||''`,true).catch(()=>'');if(!flixPk)await new Promise(resolve=>setTimeout(resolve,250))}if(!flixPk)throw new Error('플레이어 창이 닫혀 복호화 키 탐색을 중단했습니다.');const headers={...lastHeaders,Referer:targetUrl,'User-Agent':ANDROID_WEBVIEW_UA};stream=flixVideo&&flixAudio?await createFlixAvProxyUrl(flixVideo,flixAudio,flixPk,headers):await createFlixProxyUrl(stream,flixPk,headers);}
+    if(!stream)throw new Error(resolver.isDestroyed()?'플레이어 창이 닫혀 스트림 탐색을 중단했습니다.':'영상 주소를 찾지 못했습니다 (응답 시간 초과).');
+    // The key appears with the player; a page that never sets it is given up instead of waiting forever.
+    if(isFlixCloud){const keyDeadline=Date.now()+15000;while(!flixPk&&!resolver.isDestroyed()&&Date.now()<keyDeadline){flixPk=await resolver.webContents.executeJavaScript(`window.__pk||''`,true).catch(()=>'');if(!flixPk)await new Promise(resolve=>setTimeout(resolve,250))}if(!flixPk)throw new Error(resolver.isDestroyed()?'플레이어 창이 닫혀 복호화 키 탐색을 중단했습니다.':'FlixCloud 복호화 키를 찾지 못했습니다.');const headers={...lastHeaders,Referer:targetUrl,'User-Agent':ANDROID_WEBVIEW_UA};stream=flixVideo&&flixAudio?await createFlixAvProxyUrl(flixVideo,flixAudio,flixPk,headers):await createFlixProxyUrl(stream,flixPk,headers);}
     let subtitleUrl=subtitle,subtitlePath=null,subtitleAss=null;if(subtitle){try{const saved=subtitleResult(await saveRemoteSubtitle(subtitle,{referer:targetUrl,userAgent:browserUa,headers:lastHeaders}));subtitleUrl=saved.url;subtitlePath=saved.path;subtitleAss=saved.assUrl?{url:saved.assUrl,path:saved.assPath}:null}catch{/* Community subtitle fallback remains available. */}}
     resolvedStreamHeaders.set(new URL(stream).host,{...lastHeaders,Referer:targetUrl});return {url:stream,subtitleUrl,subtitlePath,subtitleAss,subtitleTracks,headers:lastHeaders,referer:targetUrl};
   } finally {ses.webRequest.onBeforeSendHeaders(null);if(!resolver.isDestroyed())resolver.destroy();}
@@ -1113,8 +1115,9 @@ function communityLinks(post,episode){
   // A range link ("1 ~ 12화") is a bundle, so its file must be matched by episode number.
   return {links:chosen?withFonts([chosen]):[],episode:number,strict:Boolean(chosen&&!chosen.episodes.list.includes(number))};
 }
+// "S02E05" counts as episode 5 only, and a CRC tag ("[5A2B3C4D]") is not an episode number.
 function communityFileMatches(file,episode){
-  const name=path.basename(file).normalize('NFKC').replace(/\.[^.]+$/,'').replace(/\b(?:s\d+|season\s*\d+|\d{3,4}p|x26[45]|h\.?26[45]|(?:19|20)\d{2})\b|\d+\s*기/gi,' ');
+  const name=path.basename(file).normalize('NFKC').replace(/\.[^.]+$/,'').replace(/\b(?:s\d+|season\s*\d+|\d{3,4}p|x26[45]|h\.?26[45]|(?:19|20)\d{2})\b|\bs\d{1,2}(?=e\d)|\[[0-9a-f]{8}\]|\d+\s*기/gi,' ');
   return new RegExp(`(?:^|[^0-9])(?:e|ep|episode)?\\s*0*${episode}(?:v\\d)?(?:[^0-9]|$)`,'i').test(name);
 }
 const COMMUNITY_FILE=/\.(ass|ssa|srt|vtt|smi|ttf|otf|ttc)$/i;
@@ -1607,6 +1610,8 @@ app.whenReady().then(async () => {
       id: server.id, name: server.server_name || `Server ${server.id}`,
       episodes: (server.server_data || []).map(item => ({
         name: String(item.name || item.slug || ''), slug: String(item.slug || ''),
+        // The player's episode number (next episode, subtitles, OP/ED) from the name ("12", "12화", "12-13").
+        number: Number(String(item.name || item.slug || '').match(/\d+/)?.[0]) || null,
         token: String(item.link || `${postId}v${server.id}_${item.slug || ''}`), postId
       }))
     })).filter(server => server.episodes.length);

@@ -72,7 +72,8 @@ class DownloadManager {
 
   pump() {
     while (this.active.size < MAX_CONCURRENT_DOWNLOADS) {
-      const job = this.jobs.find(item => item.status === 'queued'); if (!job) return;
+      // A job resumed while its previous run is still winding down (or still resolving) is left to that run.
+      const job = this.jobs.find(item => item.status === 'queued' && !this.active.has(item.id)); if (!job) return;
       job.status='resolving';job.updated=Date.now();this.active.set(job.id,{job,process:null});this.save();
       this.run(job);
     }
@@ -85,6 +86,7 @@ class DownloadManager {
       const resolving = this.resolving.then(() => job.resolveKind === 'linkkf' ? this.resolveLinkkf(job.episode) : this.resolveEpisode(job.episode, job));
       this.resolving = resolving.catch(() => {});
       const stream = await resolving;
+      // Paused while resolving; a pause and resume in that time just carries on.
       if(job.status==='paused'||!this.jobs.some(item=>item.id===job.id))return;
       if(stream?.server)job.videoServer=stream.server; // Animenosub: which server the video came from
       const animeDir=path.join(this.root,safeName(job.title)), base=`${String(job.episodeNumber).padStart(3,'0')}화`;
@@ -99,7 +101,8 @@ class DownloadManager {
       await this.attachTitles(job);
       this.queueTracks(job, stream);
     } catch (error) {
-      if(job.status!=='paused'){job.status='failed';job.error=error?.message||String(error);job.updated=Date.now();this.save();}
+      // A job resumed while this run was stopping stays queued and starts again below.
+      if(!['paused','queued'].includes(job.status)){job.status='failed';job.error=error?.message||String(error);job.updated=Date.now();this.save();}
     } finally { this.active.delete(job.id); setImmediate(()=>this.pump()); }
   }
 

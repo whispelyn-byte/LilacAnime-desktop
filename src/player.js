@@ -217,15 +217,27 @@ function renderQualityChoices() {
 }
 
 // Previous / next episode (Android switchEpisode). Autoplay uses the same path.
-function episodeIndex(episodes, current) { return (episodes || []).findIndex(ep => (current?.url && ep.url === current.url) || (current?.id && String(ep.id) === String(current.id)) || (Number.isFinite(Number(current?.number)) && Number(ep.number) === Number(current.number))); }
-function siblingEpisode(step) { const list = currentPlaybackContext.seriesEpisodes || [], index = episodeIndex(list, currentPlaybackContext.episode); return index >= 0 ? list[index + step] || null : null; }
+// The playing episode in the list: by its own address first (url, Linkkf token, id), so a sub and a dub of one number stay
+// apart, then by number (Linkkf episodes saved before they had one are numbered by name).
+function episodeIndex(episodes, current) {
+  const list = episodes || [], ref = current ? episodeRef(current) : '', number = episodeNumberOf(current);
+  const index = ref ? list.findIndex(ep => episodeRef(ep) === ref) : -1;
+  return index >= 0 || number == null ? index : list.findIndex(ep => episodeNumberOf(ep) === number && !ep.dub === !current.dub);
+}
+// Lists with a sub and a dub of each number (Animenosub) step to the next episode of the same kind.
+function siblingEpisode(step) {
+  const list = currentPlaybackContext.seriesEpisodes || [], current = currentPlaybackContext.episode, index = episodeIndex(list, current);
+  if (index < 0) return null;
+  for (let i = index + step; i >= 0 && i < list.length; i += step) if (!list[i].dub === !current.dub) return list[i];
+  return null;
+}
 function updateEpisodeButtons() { $('#previousEpisode').disabled = !siblingEpisode(-1); $('#nextEpisode').disabled = !siblingEpisode(1); }
 async function playSiblingEpisode(episode) {
   if (!episode) return;
   const episodes = currentPlaybackContext.seriesEpisodes || [], title = currentPlaybackContext.subtitleTitle || $('#playerTitle').textContent.split(' · ')[0];
   const context = { episode, subtitleTitle: title, image: currentPlaybackContext.image || '', seriesEpisodes: episodes, comparisonEpisodes: nearbyEpisodes(episodes, episode), resolveKind: currentPlaybackContext.resolveKind, anime: currentPlaybackContext.anime };
   $('#downloadStatus').textContent = `${episode.name || episode.number}화를 준비하는 중...`;
-  await resolveIntoPlayer(() => context.resolveKind === 'linkkf' ? window.lilac.linkkfResolve(episode) : window.lilac.providerResolve(episode), `${title} · ${episode.name || episode.number}화`, context, title, episode.number || 1);
+  await resolveIntoPlayer(() => context.resolveKind === 'linkkf' ? window.lilac.linkkfResolve(episode) : window.lilac.providerResolve(episode), `${title} · ${episode.name || episode.number}화`, context, title, episodeNumberOf(episode) || 1);
 }
 
 // Android auto skip: the skip pill stays visible for 2.5 s before an OP/ED is skipped automatically.

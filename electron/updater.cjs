@@ -55,6 +55,8 @@ class Updater {
     if (this.state.status === 'ready') return this.state;
     if (this.downloading) return this.downloading;
     if (!this.asset) await this.check();
+    // check() starts the download itself once it finds the release.
+    if (this.downloading) return this.downloading;
     if (!this.asset) return this.state;
     this.downloading = (async () => {
       const dir = path.join(this.app.getPath('temp'), 'LilacAnime-update');
