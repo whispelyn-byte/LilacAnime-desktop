@@ -13,6 +13,8 @@ function seconds(value = '') {
 }
 
 const MAX_CONCURRENT_DOWNLOADS = 2;
+const HLS_PARALLEL = 6;
+const HLS_USER_AGENT = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome || '131.0.0.0'} Safari/537.36`;
 
 class DownloadManager {
   constructor({ app, resolveEpisode, resolveLinkkf, findSubtitle, findSkips, analyzeOpEd, resolveTitles, saveTrack, translateTrack, broadcast }) {
@@ -63,6 +65,7 @@ class DownloadManager {
     const job = this.jobs.find(item => item.id === id); if (!job) return false;
     this.active.get(id)?.process?.kill?.();
     for (const file of [job.filePath, job.subtitlePath, job.subtitleAssPath, job.partialPath]) { if (file) try { fs.unlinkSync(file); } catch {} }
+    if (job.partialPath) try { fs.rmSync(`${job.partialPath}.hls`, { recursive: true, force: true }); } catch {} // mirrorHls copy
     if (job.filePath && job.subtitleTracks) try { fs.rmSync(trackDir(job), { recursive: true, force: true }); } catch {}
     this.jobs = this.jobs.filter(item => item.id !== id); this.save(); return true;
   }
@@ -86,9 +89,11 @@ class DownloadManager {
       if(stream?.server)job.videoServer=stream.server; // Animenosub: which server the video came from
       const animeDir=path.join(this.root,safeName(job.title)), base=`${String(job.episodeNumber).padStart(3,'0')}화`;
       fs.mkdirSync(animeDir,{recursive:true});job.filePath=path.join(animeDir,`${base}.mp4`);job.partialPath=`${job.filePath}.part`;job.status='downloading';job.updated=Date.now();this.save();
-      await this.runFfmpeg(job,stream);
+      const local=stream?.mirror?await this.mirrorHls(job,stream):null;
       if(job.status==='paused')return;
-      try{fs.unlinkSync(job.filePath)}catch{}fs.renameSync(job.partialPath,job.filePath);job.partialPath='';job.status='completed';job.progress=100;job.completed=Date.now();job.updated=Date.now();
+      await this.runFfmpeg(job,stream,local);
+      if(job.status==='paused')return;
+      try{fs.unlinkSync(job.filePath)}catch{}fs.renameSync(job.partialPath,job.filePath);if(local)try{fs.rmSync(local.dir,{recursive:true,force:true})}catch{}job.partialPath='';job.status='completed';job.progress=100;job.completed=Date.now();job.updated=Date.now();
       job.stage='subtitle';this.save();await this.attachSubtitle(job,stream);job.stage='';job.updated=Date.now();this.save();
       await this.attachSkips(job);
       await this.attachTitles(job);
@@ -98,17 +103,78 @@ class DownloadManager {
     } finally { this.active.delete(job.id); setImmediate(()=>this.pump()); }
   }
 
-  runFfmpeg(job,stream) {
+  // local: playlists already fetched by mirrorHls, which FFmpeg only remuxes (the last few percent of the progress).
+  runFfmpeg(job,stream,local=null) {
     return new Promise((resolve,reject)=>{
       let ffmpeg=require('ffmpeg-static');if(ffmpeg.includes('app.asar'))ffmpeg=ffmpeg.replace('app.asar','app.asar.unpacked');
-      const args=['-y'];const headers={...(stream?.headers||{})};if(stream?.referer&&!headers.Referer)headers.Referer=stream.referer;
-      if(Object.keys(headers).length)args.push('-headers',Object.entries(headers).map(([k,v])=>`${k}: ${v}`).join('\r\n')+'\r\n');
-      args.push('-rw_timeout','180000000'); // Android MpvHlsDownloader read timeout: 180 s
-      args.push('-i',stream.url,'-map','0:v?','-map','0:a?','-c','copy','-movflags','+faststart','-f','mp4',job.partialPath);
+      const args=['-y'];
+      if(local){
+        for(const input of local.inputs)args.push('-allowed_extensions','ALL','-i',input);
+        args.push('-map','0:v?','-map',local.inputs.length>1?'1:a?':'0:a?');
+      }else{
+        const headers={...(stream?.headers||{})};if(stream?.referer&&!headers.Referer)headers.Referer=stream.referer;
+        if(Object.keys(headers).length)args.push('-headers',Object.entries(headers).map(([k,v])=>`${k}: ${v}`).join('\r\n')+'\r\n');
+        args.push('-rw_timeout','180000000'); // Android MpvHlsDownloader read timeout: 180 s
+        args.push('-i',stream.url,'-map','0:v?','-map','0:a?');
+      }
+      args.push('-c','copy','-movflags','+faststart','-f','mp4',job.partialPath);
+      const [from,span]=local?[95,4]:[0,99];
       const child=spawn(ffmpeg,args,{windowsHide:true});this.active.set(job.id,{job,process:child});let duration=0,stderr='';
-      child.stderr.on('data',chunk=>{const text=chunk.toString();stderr=(stderr+text).slice(-12000);const d=text.match(/Duration:\s*([^,]+)/)?.[1];if(d){duration=seconds(d);job.duration=duration}const t=[...text.matchAll(/time=\s*([^\s]+)/g)].pop()?.[1];if(t&&duration){const progress=Math.max(0,Math.min(99,Math.round(seconds(t)/duration*100)));if(progress!==job.progress){job.progress=progress;job.updated=Date.now();this.save();}}});
+      child.stderr.on('data',chunk=>{const text=chunk.toString();stderr=(stderr+text).slice(-12000);const d=text.match(/Duration:\s*([^,]+)/)?.[1];if(d){duration=seconds(d);job.duration=duration}const t=[...text.matchAll(/time=\s*([^\s]+)/g)].pop()?.[1];if(t&&duration){const progress=from+Math.max(0,Math.min(span,Math.round(seconds(t)/duration*span)));if(progress!==job.progress){job.progress=progress;job.updated=Date.now();this.save();}}});
       child.once('error',reject);child.once('close',code=>{if(job.status==='paused')return resolve();if(code===0&&fs.existsSync(job.partialPath))resolve();else reject(new Error((stderr.match(/([^\r\n]+)$/)?.[1]||`FFmpeg 종료 코드 ${code}`).trim()));});
     });
+  }
+
+  // Hosts that serve each segment from another random subdomain make FFmpeg's one-at-a-time HLS reader crawl (a new
+  // connection per segment, well under real time). For such streams (stream.mirror, Miruro) the chosen variant
+  // (stream.program, else the highest) and its separate audio rendition are fetched here, six files at a time, into a
+  // folder next to the file, with the playlists rewritten to the local copies. Files already there are kept, so a
+  // paused download continues where it stopped.
+  async mirrorHls(job,stream) {
+    const dir=`${job.partialPath}.hls`,controller=new AbortController();fs.mkdirSync(dir,{recursive:true});
+    this.active.set(job.id,{job,process:{kill:()=>controller.abort()}});
+    const headers={'User-Agent':HLS_USER_AGENT,...(stream.headers||{})};if(stream.referer&&!headers.Referer)headers.Referer=stream.referer;
+    const get=async(url,binary=false)=>{
+      for(let attempt=0;;attempt++){
+        try{
+          const response=await fetch(url,{headers,signal:AbortSignal.any([controller.signal,AbortSignal.timeout(60000)])});
+          if(!response.ok)throw new Error(`HTTP ${response.status}`);
+          return binary?Buffer.from(await response.arrayBuffer()):await response.text();
+        }catch(error){if(controller.signal.aborted||attempt>=3)throw error;await new Promise(resolve=>setTimeout(resolve,1500*(attempt+1)))}
+      }
+    };
+    const master=await get(stream.url),lists=[];
+    const variants=[...master.matchAll(/#EXT-X-STREAM-INF:([^\r\n]*)\r?\n\s*([^\r\n#][^\r\n]*)/g)].map(match=>({attrs:match[1],uri:match[2].trim(),height:Number(match[1].match(/RESOLUTION=\d+x(\d+)/)?.[1])||0,bandwidth:Number(match[1].match(/BANDWIDTH=(\d+)/)?.[1])||0}));
+    if(variants.length){
+      const pick=variants[Number.isInteger(stream.program)&&variants[stream.program]?stream.program:variants.reduce((best,item,index)=>(item.height-variants[best].height||item.bandwidth-variants[best].bandwidth)>0?index:best,0)];
+      const videoUrl=new URL(pick.uri,stream.url).href;lists.push({name:'video',url:videoUrl,text:await get(videoUrl)});
+      // A separate audio rendition (AUDIO="group"): the default one of the group, else its first.
+      const group=pick.attrs.match(/AUDIO="([^"]+)"/)?.[1],renditions=group?[...master.matchAll(/#EXT-X-MEDIA:([^\r\n]*)/g)].map(match=>match[1]).filter(attrs=>/TYPE=AUDIO/.test(attrs)&&attrs.includes(`GROUP-ID="${group}"`)&&/URI="/.test(attrs)):[];
+      const audio=renditions.find(attrs=>/DEFAULT=YES/.test(attrs))||renditions[0];
+      if(audio){const audioUrl=new URL(audio.match(/URI="([^"]+)"/)[1],stream.url).href;lists.push({name:'audio',url:audioUrl,text:await get(audioUrl)})}
+    }else lists.push({name:'video',url:stream.url,text:master});
+    // A resumed download can land on another server, whose segments must not be mixed with the kept ones (addresses
+    // are compared without their per-request tokens).
+    const source=JSON.stringify(lists.map(list=>{const url=new URL(list.url);return url.origin+url.pathname})),sourceFile=path.join(dir,'source.json');
+    let kept='';try{kept=fs.readFileSync(sourceFile,'utf8')}catch{/* new folder */}
+    if(kept!==source){fs.rmSync(dir,{recursive:true,force:true});fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(sourceFile,source)}
+    const files=new Map(),tasks=[];
+    for(const list of lists){
+      const fmp4=/#EXT-X-MAP/.test(list.text);
+      const local=(uri,ext)=>{const url=new URL(uri,list.url).href;if(!files.has(url)){const file=`${list.name}_${String(files.size).padStart(5,'0')}${ext}`;files.set(url,file);tasks.push({url,file:path.join(dir,file)})}return files.get(url)};
+      const text=list.text.split(/\r?\n/).map(line=>!line.trim()?line:line.startsWith('#')?line.replace(/URI="([^"]+)"/g,(_,uri)=>`URI="${local(uri,line.startsWith('#EXT-X-MAP')?'.mp4':'.key')}"`):local(line.trim(),fmp4?'.m4s':'.ts')).join('\n');
+      fs.writeFileSync(path.join(dir,`${list.name}.m3u8`),text);
+    }
+    let done=0,next=0;
+    const report=()=>{const progress=Math.min(95,Math.floor(done/tasks.length*95));if(progress!==job.progress){job.progress=progress;job.updated=Date.now();this.save()}};
+    await Promise.all(Array.from({length:HLS_PARALLEL},async()=>{
+      while(next<tasks.length&&!controller.signal.aborted){
+        const task=tasks[next++];
+        if(!(fs.existsSync(task.file)&&fs.statSync(task.file).size>0)){const data=await get(task.url,true);fs.writeFileSync(`${task.file}.tmp`,task.file.endsWith('.ts')?transportStream(data):data);fs.renameSync(`${task.file}.tmp`,task.file)}
+        done++;report();
+      }
+    })).catch(error=>{controller.abort();if(job.status!=='paused')throw error});
+    return {dir,inputs:lists.map(list=>path.join(dir,`${list.name}.m3u8`))};
   }
 
   // Subtitles are fetched right after the video so the episode also plays offline with them.
@@ -128,7 +194,7 @@ class DownloadManager {
     } catch { /* the video is still usable without a subtitle */ }
   }
 
-  // Re:Anime subtitle tracks are all kept with the episode and, when the user set up Gemini, translated into
+  // Re:Anime and Miruro subtitle tracks are all kept with the episode and, when the user set up Gemini, translated into
   // Korean, so the track list and the translations work offline. This runs one episode at a time after the
   // download has finished, so it never holds a download slot.
   queueTracks(job, stream) {
@@ -210,6 +276,13 @@ class DownloadManager {
   }
 
   localPlayback(id) { const job=this.jobs.find(item=>item.id===id);if(!job||job.status!=='completed'||!fs.existsSync(job.filePath))throw new Error('다운로드 파일을 찾지 못했습니다.');return {url:pathToFileURL(job.filePath).href,subtitleUrl:job.subtitlePath&&fs.existsSync(job.subtitlePath)?pathToFileURL(job.subtitlePath).href:null,subtitleAss:job.subtitleAssPath&&fs.existsSync(job.subtitleAssPath)?{url:pathToFileURL(job.subtitleAssPath).href,path:job.subtitleAssPath,fonts:(job.subtitleFonts||[]).filter(file=>fs.existsSync(file)).map(file=>pathToFileURL(file).href)}:null,subtitleLabel:job.subtitleLabel||'',subtitleTracks:offlineTracks(job),job}; }
+}
+
+// Some hosts disguise TS segments as images (a 1x1 PNG and padding in front). Players look for the TS sync bytes, but
+// FFmpeg reading the local copy would take the file for a picture, so the segment is cut at its first TS packet.
+function transportStream(data) {
+  for (let i = 0; i + 376 < data.length && i < 65536; i++) if (data[i] === 0x47 && data[i + 188] === 0x47 && data[i + 376] === 0x47) return i ? data.subarray(i) : data;
+  return data;
 }
 
 // Saved tracks with file URLs for the player; the remote URL stays as the track's identity.

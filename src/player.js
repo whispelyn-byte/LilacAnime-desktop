@@ -152,7 +152,7 @@ async function selectSubtitleSource(source) {
   }
   if (source === 'reanime') {
     const track = (currentPlaybackContext.subtitleTracks || []).find(isKoreanTrack) || (currentPlaybackContext.subtitleTracks || [])[0];
-    if (track) selectSubtitleTrack(track); else $('#subtitleState').textContent = 'Re:Anime 자막 트랙이 없습니다.';
+    if (track) selectSubtitleTrack(track); else $('#subtitleState').textContent = `${trackSourceLabel()} 자막 트랙이 없습니다.`;
     return;
   }
   const own = currentPlaybackContext.streamSubtitle;
@@ -173,13 +173,13 @@ function applyDefaultQuality() {
   const choice = exact || below;
   if (choice) hlsPlayer.currentLevel = choice.index;
 }
-// Animenosub video servers ("SUB - Moon", "RAW - Omega"…). 자동 = RAW under a Korean subtitle, else SUB; a picked
-// server is kept for later episodes. Changing it reloads the episode at the same point.
+// Animenosub / Miruro video servers ("SUB - Moon", "RAW - anikoto HD-2"…). 자동 = RAW under a Korean subtitle, else SUB;
+// a picked server is kept for later episodes of that source. Changing it reloads the episode at the same point.
 function renderVideoServers() {
   const servers = currentPlaybackContext.videoServers || [], box = $('#psServers');
   box.classList.toggle('hidden', servers.length < 2); if (servers.length < 2) { $('#psServerList').replaceChildren(); return; }
-  const picked = localStorage.getItem('animenosubServer') || '';
-  $('#psServerNote').textContent = `재생 중: ${currentPlaybackContext.videoServer || '-'} · SUB는 영어 자막이 영상에 박혀 있고 RAW는 자막이 없어요`;
+  const picked = localStorage.getItem(videoServerKey(currentPlaybackContext.episode?.provider)) || '';
+  $('#psServerNote').textContent = `재생 중: ${currentPlaybackContext.videoServer || '-'} · SUB는 영어 자막이 영상에 박혀 있고 RAW는 자막이 없어요${servers.some(server => server.kind === 'soft') ? ' · SOFT는 자막 파일을 따로 입혀서 트랙을 바꾸거나 번역할 수 있어요' : ''}`;
   $('#psServerList').replaceChildren(...[{ label: '자동', value: '' }, ...servers.map(server => ({ label: server.label, value: server.label }))].map(option => {
     const button = document.createElement('button'); button.type = 'button'; button.textContent = option.label;
     button.classList.toggle('selected', option.value === picked);
@@ -188,8 +188,8 @@ function renderVideoServers() {
   }));
 }
 function selectVideoServer(label) {
-  if (label) localStorage.setItem('animenosubServer', label); else localStorage.removeItem('animenosubServer');
-  const context = currentPlaybackContext, video = $('#video'), episode = context.episode;
+  const context = currentPlaybackContext, video = $('#video'), episode = context.episode, key = videoServerKey(episode?.provider);
+  if (label) localStorage.setItem(key, label); else localStorage.removeItem(key);
   if (!episode || (label && label === context.videoServer)) { renderVideoServers(); return; }
   const duration = playbackDuration(), resumeProgress = duration ? Math.min(94, video.currentTime / duration * 100) : 0, title = context.subtitleTitle || $('#skipTitle').value.trim();
   const { videoServers, videoServer, resolving, currentUrl, ...keep } = context;

@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, session } = require('electron');
 const path = require('path');
+const zlib = require('zlib');
 const cheerio = require('cheerio');
 const fs = require('fs');
 const { Readable } = require('stream');
@@ -40,8 +41,12 @@ const LINKKF_WEB = 'https://linkkf.app';
 const LINKKF_UA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome||'131.0.0.0'} Safari/537.36`;
 const REANIME_WEB = 'https://reanime.to';
 const ANIMENOSUB_WEB = 'https://animenosub.to';
+const MIRURO_WEB = 'https://www.miruro.to';
 const ANDROID_WEBVIEW_UA = 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
 const resolvedStreamHeaders = new Map();
+// Headers of the Miruro stream playing in the main window. Its playlists and segments come from several hosts, so they
+// go on every video request of the player (see the session hooks) until another episode is resolved.
+let playerStreamHeaders = null;
 const malIdCache = new Map();
 let downloadManager;
 let updater;
@@ -363,6 +368,7 @@ async function reanimeSubtitleTracks(episode) {
 }
 
 async function resolveProviderEpisode(episode) {
+  if(episode.provider==='miruro')return resolveMiruroEpisode(episode);
   if(episode.provider==='reanime') {
     const ordered=await reanimeServers(episode);
     if(!ordered.length)throw new Error('이 작품은 현재 RE:Anime에서 재생할 수 없습니다. 다른 콘텐츠 소스를 선택해주세요.');
@@ -401,6 +407,114 @@ function animenosubServers(html,pageUrl){
   const embedded=absoluteUrl($('iframe[src]').first().attr('src')||$('iframe[data-src]').first().attr('data-src')||'',pageUrl);
   if(!servers.length&&embedded)servers.push({label:'기본',kind:'sub',url:embedded});
   return servers;
+}
+
+// --- Miruro --------------------------------------------------------------------------------------------------------
+// The site's own catalog API (AniList data under Miruro ids). Answers are gzip XORed with "miruro/catalog"; lists take
+// 12 or 15 entries a page and are paged with a cursor.
+const MIRURO_KEY=Buffer.from('miruro/catalog');
+async function miruroApi(pathname,params={}){
+  const url=new URL(`/api/v1/${pathname}`,MIRURO_WEB);
+  for(const [key,value] of Object.entries(params))if(value!==undefined&&value!==null&&value!=='')url.searchParams.set(key,String(value));
+  const response=await fetch(url,{signal:AbortSignal.timeout(30000),headers:{'User-Agent':LINKKF_UA,Accept:'*/*',Referer:`${MIRURO_WEB}/`}});
+  const data=Buffer.from(await response.arrayBuffer());
+  if(!response.ok){let detail='';try{detail=JSON.parse(data.toString('utf8')).detail||''}catch{/* not JSON */}throw new Error(`Miruro HTTP ${response.status}${detail?` (${detail})`:''}`)}
+  for(let i=0;i<data.length;i++)data[i]^=MIRURO_KEY[i%MIRURO_KEY.length];
+  return JSON.parse(zlib.gunzipSync(data).toString('utf8'));
+}
+function miruroText(html=''){return String(html||'').replace(/<br\s*\/?>/gi,'\n').replace(/<[^>]+>/g,'').replace(/&mdash;/g,'—').replace(/&ndash;/g,'–').replace(/&quot;/g,'"').replace(/&#0?39;|&apos;/g,"'").replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&').trim()}
+function miruroItem(raw={}){
+  const title=raw.title||{},native=title.native||'',externalId=key=>Number(raw.external_ids?.[key]?.[0])||null;
+  return {provider:'miruro',id:raw.id,mal_id:`miruro:${raw.id}`,title:title.english||title.romaji||native,title_english:'',title_japanese:native,romaji:title.romaji||'',
+    images:{webp:{large_image_url:raw.cover_url||''}},score:Number(raw.average_score)?Number(raw.average_score)/10:null,year:raw.season_year||'',type:raw.format||'Anime',
+    episodes:Number(raw.episode_count)||null,status:String(raw.status||'').toLowerCase().replace(/_/g,' ').replace(/^./,c=>c.toUpperCase()),synopsis:miruroText(raw.description),genres:(raw.genres||[]).map(name=>({name:String(name)})),studios:[],
+    url:`${MIRURO_WEB}/watch/${raw.id}`,anilistId:externalId('anilist'),malId:externalId('mal')};
+}
+function miruroEpisode(raw,anime){
+  const number=Number(raw.episode_number);if(!Number.isFinite(number)||number<=0)return null;
+  return {name:String(number),number,url:`${MIRURO_WEB}/watch/${anime.id}?ep=${number}`,animeId:anime.id,dub:false,provider:'miruro',anilistId:anime.anilistId||null,malId:anime.malId||null,
+    title:String(raw.title||'').trim()||`Episode ${number}`,airedDate:String(raw.aired_on||''),isFiller:raw.canon_type==='filler',isRecap:raw.canon_type==='recap',thumbnail:String(raw.thumbnail_url||'')};
+}
+async function miruroDetail(anime){
+  const [root,episodes,relations]=await Promise.all([miruroApi(`anime/${anime.id}`),miruroApi(`anime/${anime.id}/episodes`,{kind:'regular',limit:10000}),miruroApi(`anime/${anime.id}/relations`).catch(()=>null)]);
+  const start=root.started_on||'',end=root.ended_on||'',studios=root.studios||[];
+  const data={...anime,...miruroItem(root),studios:(studios.filter(item=>item.is_animation_studio).length?studios.filter(item=>item.is_animation_studio):studios.slice(0,2)).map(item=>({name:item.name})),
+    aired:start&&end?`${start} ~ ${end}`:start,related:(relations?.data||[]).filter(item=>item.anime?.id).map(item=>({...miruroItem(item.anime),relationType:item.kind||''}))};
+  return {data,episodes:(episodes?.data||[]).map(raw=>miruroEpisode(raw,data)).filter(Boolean),unavailable:false};
+}
+// The play route lists every track: "sub" has English burned in, "ssub" (SOFT) is the clean video with separate
+// subtitle files, "raw" the broadcast without any, "dub" comes last. Servers without a direct HLS stream (embed pages
+// only) are left out. Order: the server picked in the player; under a Korean subtitle (prefer "raw") a clean video
+// (RAW / SOFT), otherwise SOFT with an English subtitle file (applied, and offered for Gemini translation like Re:Anime's
+// tracks), then SUB; within a kind the provider that worked last, then the steadiest ones.
+const MIRURO_KINDS={sub:'sub',ssub:'soft',raw:'raw',dub:'dub'},MIRURO_PROVIDERS=['anikoto','kickassanime','icarus','aniwaves'];
+let miruroWorkingProvider='';
+// Request headers of Miruro subtitle files by address: their hosts want the video server's Referer and Origin.
+const miruroTrackHeaders=new Map();
+function remoteTrackOptions(url,referer=''){
+  const headers=miruroTrackHeaders.get(String(url));
+  return headers?{referer:headers.Referer||'',userAgent:LINKKF_UA,headers}:{referer:/^https:\/\//i.test(referer||'')?referer:'https://flixcloud.cc/',userAgent:ANDROID_WEBVIEW_UA};
+}
+const isEnglishTrack=track=>/^en/i.test(track.language||'')&&!/forced|sign/i.test(track.label||'');
+async function resolveMiruroEpisode(episode){
+  const root=await miruroApi(`anime/${episode.animeId}/episodes/${episode.number}/play`),servers=[];
+  for(const track of root.tracks||[]){
+    const kind=MIRURO_KINDS[track.track];if(!kind)continue;
+    for(const provider of track.providers||[])for(const server of provider.servers||[]){
+      const stream=(server.streams||[]).find(item=>item.format==='hls'&&/^https:/i.test(item.url||'')),label=`${kind.toUpperCase()} - ${provider.provider} ${server.server}`;
+      // Some segment hosts also want the Origin of the Referer (kickassanime's), which the list leaves out.
+      const headers={...server.headers};if(headers.Referer&&!headers.Origin)try{headers.Origin=new URL(headers.Referer).origin}catch{/* no origin */}
+      const tracks=(provider.subtitles||[]).filter(item=>/^https:\/\//i.test(item.file||'')).map(item=>({url:item.file,language:String(item.language||'und'),label:String(item.label||item.language||'').replace(/\.(?:vtt|srt|ass)$/i,'').trim()||'자막',format:String(item.format||'vtt').toLowerCase()}));
+      tracks.forEach(item=>miruroTrackHeaders.set(item.url,headers));
+      if(stream&&!servers.some(item=>item.label===label))servers.push({label,kind,provider:provider.provider,url:stream.url,headers,tracks});
+    }
+  }
+  if(!servers.length)throw new Error('이 회차는 Miruro에서 재생할 수 있는 영상이 없습니다.');
+  const known=provider=>{const index=MIRURO_PROVIDERS.indexOf(provider);return index<0?MIRURO_PROVIDERS.length:index};
+  const clean=server=>['raw','soft'].includes(server.kind),english=server=>server.kind==='soft'&&server.tracks.some(isEnglishTrack);
+  const kindRank=server=>episode.prefer==='raw'?(clean(server)?1:server.kind==='sub'?2:3):(english(server)?1:server.kind==='sub'?2:clean(server)?3:4);
+  const rank=server=>(server.label===episode.server?0:kindRank(server)*100)+(server.provider===miruroWorkingProvider?0:10)+known(server.provider);
+  const result=async(server,extra={})=>{
+    const stream={url:server.url,headers:server.headers,referer:server.headers.Referer||'',servers:servers.map(({label,kind})=>({label,kind})),server:server.label,subtitleTracks:server.tracks,...extra};
+    // No Korean subtitle: the SOFT video gets its English file, like the burned-in SUB but switchable and translatable.
+    const track=episode.prefer!=='raw'&&server.kind==='soft'?server.tracks.find(isEnglishTrack):null;
+    if(track)try{const file=subtitleResult(await saveRemoteSubtitle(track.url,remoteTrackOptions(track.url)));Object.assign(stream,{subtitleUrl:file.url,subtitlePath:file.path,subtitleAss:file.assUrl?{url:file.assUrl,path:file.assPath}:null,subtitleLabel:`Miruro ${track.label} 자막`,subtitleTrack:track.url})}catch{/* the track list still offers it */}
+    return stream;
+  };
+  // A download keeps one server for the whole episode, and the hosts' speed changes by the hour (one can crawl at a few
+  // KB/s while the others are fast): a segment of each is timed and the first fast one is used, else the fastest of
+  // up to six, and the download manager fetches its segments itself (mirror). The player can switch servers itself, so
+  // it only checks that the playlist answers.
+  let lastError=null;const slow=[];
+  for(const server of servers.slice().sort((a,b)=>rank(a)-rank(b))){
+    try{
+      if(episode.download){
+        const probe=await hlsProbe(server.url,server.headers);
+        if(probe.speed<MIRURO_MIN_SPEED){slow.push({server,probe});if(slow.length<6)continue;break}
+        miruroWorkingProvider=server.provider;return result(server,{program:probe.program,mirror:true});
+      }
+      const response=await fetch(server.url,{signal:AbortSignal.timeout(10000),headers:{'User-Agent':LINKKF_UA,...server.headers}}),text=response.ok?await response.text():'';
+      if(!text.startsWith('#EXTM3U'))throw new Error(`HTTP ${response.status}`);
+      miruroWorkingProvider=server.provider;
+      return result(server);
+    }catch(error){lastError=error}
+  }
+  const fastest=slow.sort((a,b)=>b.probe.speed-a.probe.speed)[0];if(fastest){miruroWorkingProvider=fastest.server.provider;return result(fastest.server,{program:fastest.probe.program,mirror:true})}
+  throw new Error(`모든 영상 서버 연결에 실패했습니다.${lastError?` (${lastError.message})`:''}`);
+}
+// The best variant of an HLS playlist and the speed of one of its segments (KB/s). The variant is FFmpeg's program id
+// (variants in playlist order), so a download fetches one quality instead of all of them (Miruro masters list 1080p,
+// 720p and 360p).
+const MIRURO_MIN_SPEED=300;
+async function hlsProbe(url,headers={}){
+  const get=async(target,timeout)=>{const response=await fetch(target,{signal:AbortSignal.timeout(timeout),headers:{'User-Agent':LINKKF_UA,...headers}});if(!response.ok)throw new Error(`HTTP ${response.status}`);return response};
+  const master=await (await get(url,10000)).text();
+  const variants=[...master.matchAll(/#EXT-X-STREAM-INF:([^\r\n]*)\r?\n\s*([^\r\n#][^\r\n]*)/g)].map(match=>({height:Number(match[1].match(/RESOLUTION=\d+x(\d+)/)?.[1])||0,bandwidth:Number(match[1].match(/BANDWIDTH=(\d+)/)?.[1])||0,uri:match[2].trim()}));
+  const program=variants.length?variants.reduce((best,item,index)=>(item.height-variants[best].height||item.bandwidth-variants[best].bandwidth)>0?index:best,0):null;
+  const base=program==null?url:new URL(variants[program].uri,url).href,media=program==null?master:await (await get(base,10000)).text();
+  const segments=media.split(/\r?\n/).filter(line=>line.trim()&&!line.startsWith('#'));if(!segments.length)throw new Error('빈 재생목록');
+  const started=Date.now(),size=(await (await get(new URL(segments[Math.min(3,segments.length-1)].trim(),base).href,15000)).arrayBuffer()).byteLength;
+  return {program:variants.length>1?program:null,speed:size/1024/Math.max(.05,(Date.now()-started)/1000)};
 }
 
 function openProviderPlayer(episode, title = 'LilacAnime Player') {
@@ -658,9 +772,10 @@ async function koreanTitleCandidates(title,anime={}){
   const disk=readKoreanTitleCache();if(Array.isArray(disk[key])&&disk[key].length){koreanTitleCache.set(key,disk[key]);return disk[key]}
   const found=[],add=value=>{const clean=String(value||'').replace(/\((?:애니메이션|TV|애니)[^)]*\)/g,'').replace(/\s+/g,' ').trim();if(/[가-힣]{2}/.test(clean)&&!found.includes(clean))found.push(clean)};
   if(tmdb){
-    // Re:ANIME also knows the Japanese title, which TMDB matches as the original name.
+    // Re:ANIME and Miruro also know the Japanese title, which TMDB matches as the original name.
     let native='';
     if(anime.id&&anime.provider==='reanime'){try{const media=await providerFetch(`${REANIME_WEB}/api/v1/anime/${encodeURIComponent(anime.id)}`,{json:true,referer:`${REANIME_WEB}/`});native=String(media?.title?.native||'')}catch{/* English only */}}
+    else if(anime.id&&anime.provider==='miruro')native=String(anime.title_japanese||'')||await miruroApi(`anime/${anime.id}`).then(media=>String(media?.title?.native||'')).catch(()=>'');
     (await tmdbKoreanTitles([original,native]).catch(()=>[])).forEach(add);
   }
   let media=null;
@@ -1254,7 +1369,7 @@ app.whenReady().then(async () => {
     const savedPreferred=(preferred==='reanime'&&saved.find(entry=>entry.source==='gemini'))||saved.find(entry=>entry.source===preferred);if(savedPreferred)return fromSaved(savedPreferred);
     if(stream?.subtitleUrl)return {stream:true};
     if(saved[0])return fromSaved(saved[0]);
-    const anime=job.anime||{},title=job.title||anime.title||'',titles=['reanime','animenosub'].includes(anime.provider)?await koreanTitleCandidates(title,anime).catch(()=>[title]):[title];
+    const anime=job.anime||{},title=job.title||anime.title||'',titles=['reanime','animenosub','miruro'].includes(anime.provider)?await koreanTitleCandidates(title,anime).catch(()=>[title]):[title];
     for(const source of COMMUNITY_SOURCES.includes(preferred)?[preferred,...COMMUNITY_SOURCES.filter(x=>x!==preferred)]:COMMUNITY_SOURCES){
       try{const result=await findCommunitySubtitleByTitles(source,titles,Number(job.episodeNumber)||1,{originalTitle:anime.title||'',offsets:await previousSeasonEpisodes(anime,title).catch(()=>[])});return {path:result.path,assPath:result.assPath,fonts:result.fonts,label:communitySubtitleLabel(source,result)}}catch{/* next source */}
     }
@@ -1269,14 +1384,22 @@ app.whenReady().then(async () => {
   };
   const analyzeDownload=async(job,siblings)=>analyzeOfflineOpEd({title:job.title,episode:job.episodeNumber,currentUrl:pathToFileURL(job.filePath).href,duration:job.duration,candidates:siblings.map(item=>({...item.episode,number:item.episodeNumber,localUrl:pathToFileURL(item.filePath).href}))});
   downloadManager=new DownloadManager({app,resolveTitles:anime=>resolveDisplayTitle(anime),
-    saveTrack:(url,referer)=>saveRemoteSubtitle(String(url),{referer:/^https:\/\//i.test(referer||'')?referer:'https://flixcloud.cc/',userAgent:ANDROID_WEBVIEW_UA}).then(file=>subtitleResult(file)),
-    translateTrack:(file,title)=>{const settings=translator().settings();return settings.key&&settings.translateDownloads?translator().translate({file,title}):null},findSubtitle:findDownloadSubtitle,findSkips:findDownloadSkips,analyzeOpEd:analyzeDownload,// Animenosub downloads follow the player: the RAW video when the episode has a Korean subtitle (saved or found
+    saveTrack:(url,referer)=>saveRemoteSubtitle(String(url),remoteTrackOptions(url,referer)).then(file=>subtitleResult(file)),
+    translateTrack:(file,title)=>{const settings=translator().settings();return settings.key&&settings.translateDownloads?translator().translate({file,title}):null},findSubtitle:findDownloadSubtitle,findSkips:findDownloadSkips,analyzeOpEd:analyzeDownload,// Animenosub and Miruro downloads follow the player: the RAW video when the episode has a Korean subtitle (saved or found
     // by the same search the download attaches afterwards), else SUB with its burned-in English.
-    resolveEpisode:async(episode,job)=>episode?.provider==='animenosub'?resolveProviderEpisode({...episode,prefer:await findDownloadSubtitle(job,null).catch(()=>null)?'raw':'sub'}):resolveProviderEpisode(episode),resolveLinkkf:async episode=>{
+    resolveEpisode:async(episode,job)=>{if(!['animenosub','miruro'].includes(episode?.provider))return resolveProviderEpisode(episode);return resolveProviderEpisode({...episode,prefer:await findDownloadSubtitle(job,null).catch(()=>null)?'raw':'sub',download:true})},resolveLinkkf:async episode=>{
     let playerUrl='';try{const root=await linkkfFetch(`https://emdlinkkf.5imgdarr.top/apilink2.php?data=${encodeURIComponent(episode.token)}`);const links=Array.isArray(root.data)?root.data:[];playerUrl=(links.find(x=>String(x.server).toUpperCase()==='NR-HD')||links[0]||{}).link||'';}catch{}
     if(!playerUrl)playerUrl=`${LINKKF_WEB}/up/${encodeURIComponent(episode.postId)}/watch/?slug=${encodeURIComponent(episode.slug)}`;return resolveStreamPage(playerUrl,`${LINKKF_WEB}/`,15000);
   },broadcast});
-  session.defaultSession.webRequest.onBeforeSendHeaders({urls:['*://*/*']},(details,callback)=>{let headers=details.requestHeaders||{};const host=new URL(details.url).host,remembered=resolvedStreamHeaders.get(host);if(remembered){for(const [key,value] of Object.entries(remembered)){if(['referer','origin','user-agent','cookie','authorization'].includes(key.toLowerCase())&&value)headers[key]=value;}}callback({requestHeaders:headers});});
+  // A Miruro stream's playlists and segments (main window video requests) carry its Referer/Origin, and those hosts
+  // only allow their own site's origin, so the answer is opened to the player.
+  const playerMediaRequest=details=>Boolean(playerStreamHeaders)&&['xhr','media'].includes(details.resourceType)&&/^https?:/i.test(details.url)&&!details.url.startsWith(MIRURO_WEB)&&details.webContentsId!==undefined&&details.webContentsId===mainWindow?.webContents?.id;
+  session.defaultSession.webRequest.onBeforeSendHeaders({urls:['*://*/*']},(details,callback)=>{let headers=details.requestHeaders||{};const host=new URL(details.url).host,remembered=resolvedStreamHeaders.get(host)||(playerMediaRequest(details)?playerStreamHeaders:null);if(remembered){for(const [key,value] of Object.entries(remembered)){if(['referer','origin','user-agent','cookie','authorization'].includes(key.toLowerCase())&&value)headers[key]=value;}}callback({requestHeaders:headers});});
+  session.defaultSession.webRequest.onHeadersReceived({urls:['*://*/*']},(details,callback)=>{
+    if(!playerMediaRequest(details))return callback({});
+    const headers={...details.responseHeaders};for(const key of Object.keys(headers))if(/^access-control-allow-(?:origin|credentials)$/i.test(key))delete headers[key];
+    headers['Access-Control-Allow-Origin']=['*'];callback({responseHeaders:headers});
+  });
   ipcMain.handle('anime:season', () => api('/seasons/now?limit=20&sfw=true'));
   ipcMain.handle('anime:top', () => api('/top/anime?filter=bypopularity&limit=20&sfw=true'));
   ipcMain.handle('anime:search', (_, query) => api(`/anime?q=${encodeURIComponent(query)}&limit=24&sfw=true&order_by=popularity`));
@@ -1356,7 +1479,7 @@ app.whenReady().then(async () => {
     return true;
   });
   ipcMain.handle('linkkf:resolve', async (_, episode) => {
-    let playerUrl='';try{const root=await linkkfFetch(`https://emdlinkkf.5imgdarr.top/apilink2.php?data=${encodeURIComponent(episode.token)}`);const links=Array.isArray(root.data)?root.data:[];playerUrl=(links.find(x=>String(x.server).toUpperCase()==='NR-HD')||links[0]||{}).link||'';}catch{}
+    playerStreamHeaders=null;let playerUrl='';try{const root=await linkkfFetch(`https://emdlinkkf.5imgdarr.top/apilink2.php?data=${encodeURIComponent(episode.token)}`);const links=Array.isArray(root.data)?root.data:[];playerUrl=(links.find(x=>String(x.server).toUpperCase()==='NR-HD')||links[0]||{}).link||'';}catch{}
     if(!playerUrl)playerUrl=`${LINKKF_WEB}/up/${encodeURIComponent(episode.postId)}/watch/?slug=${encodeURIComponent(episode.slug)}`;
     return resolveStreamPage(playerUrl,`${LINKKF_WEB}/`,15000);
   });
@@ -1367,16 +1490,28 @@ app.whenReady().then(async () => {
     if (provider === 'animenosub') {
       const page=Math.max(1,Number(offset)||1),base=query?`${ANIMENOSUB_WEB}/?s=${encodeURIComponent(query)}`:(page===1?`${ANIMENOSUB_WEB}/`:`${ANIMENOSUB_WEB}/page/${page}/`),url=query&&page>1?`${ANIMENOSUB_WEB}/page/${page}/?s=${encodeURIComponent(query)}`:base;const data=animenosubList(await providerFetch(url,{referer:`${ANIMENOSUB_WEB}/`}),undefined,{onlyResults:Boolean(query)});return {data,offset:page,nextOffset:page+1,done:data.length===0};
     }
+    if (provider === 'miruro') {
+      // offset is the cursor of the next page (none for the first).
+      const root=await miruroApi('anime',query?{q:query,limit:15,sort:'-popularity',cursor:offset||undefined}:{sort:'-popularity',limit:15,cursor:offset||undefined});
+      return {data:(root.data||[]).map(miruroItem),offset,nextOffset:root.next_cursor||null,done:!root.has_more||!root.next_cursor};
+    }
     throw new Error('지원하지 않는 콘텐츠 소스입니다.');
   });
   ipcMain.handle('provider:detail', async (_, anime) => {
+    if (anime.provider === 'miruro') return miruroDetail(anime);
     const html=await providerFetch(anime.url,{referer:new URL(anime.url).origin+'/'});
     const detail=anime.provider==='animenosub'?animenosubDetail(html,anime):anime.provider==='reanime'?await reanimeDetail(anime,html):{...anime,synopsis:cheerio.load(html)('meta[name=description]').attr('content')||anime.synopsis};
     const episodes=anime.provider==='reanime'?await reanimeEpisodes(detail,html):providerEpisodes(html,anime.provider,detail);
     return {data:detail,episodes,unavailable:false};
   });
   ipcMain.handle('provider:play', (_, episode, title) => openProviderPlayer(episode,title).then(()=>true));
-  ipcMain.handle('provider:resolve', (_, episode) => resolveProviderEpisode(episode));
+  // The player's own resolves (downloads resolve in the background through resolveProviderEpisode directly).
+  ipcMain.handle('provider:resolve', async (_, episode) => {
+    playerStreamHeaders = null;
+    const stream = await resolveProviderEpisode(episode);
+    if (episode?.provider === 'miruro') playerStreamHeaders = stream.headers || null;
+    return stream;
+  });
   ipcMain.handle('provider:subtitle-tracks', (_, episode) => reanimeSubtitleTracks(episode));
   ipcMain.handle('cover:data', (_, url) => coverDataUrl(url));
   updater=new Updater({app,broadcast});
@@ -1421,20 +1556,20 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('subtitle:remote', (_, url, referer = '') => {
     if (!/^https:\/\//i.test(String(url || ''))) throw new Error('올바른 자막 주소가 아닙니다.');
-    return saveRemoteSubtitle(String(url), { referer: /^https:\/\//i.test(referer) ? referer : 'https://flixcloud.cc/', userAgent: ANDROID_WEBVIEW_UA }).then(file => subtitleResult(file));
+    return saveRemoteSubtitle(String(url), remoteTrackOptions(url, referer)).then(file => subtitleResult(file));
   });
   // The sandboxed preload has no url.pathToFileURL, so file URLs are built here.
   ipcMain.handle('subtitle:find', async (_, source, title, episode, anime = null, options = {}) => {
     // Kairan/Csora posts use Korean titles; Re:ANIME titles are resolved to Korean first (TMDB, AniList, Wikidata).
     // Korean subtitle blogs need the Korean title of English-titled sources.
-    const titles = ['reanime', 'animenosub'].includes(anime?.provider) ? await koreanTitleCandidates(title, anime).catch(() => [title]) : [title];
+    const titles = ['reanime', 'animenosub', 'miruro'].includes(anime?.provider) ? await koreanTitleCandidates(title, anime).catch(() => [title]) : [title];
     const offsets = await previousSeasonEpisodes(anime || {}, title).catch(() => []);
     return findCommunitySubtitleByTitles(source, titles, Number(episode), { originalTitle: anime?.title || '', offsets, maker: String(options?.maker || '') });
   });
   // Anissia makers of the playing anime, for the player menu.
   ipcMain.handle('anissia:makers', async (_, title, anime = null) => {
     // Korean subtitle blogs need the Korean title of English-titled sources.
-    const titles = ['reanime', 'animenosub'].includes(anime?.provider) ? await koreanTitleCandidates(title, anime).catch(() => [title]) : [title];
+    const titles = ['reanime', 'animenosub', 'miruro'].includes(anime?.provider) ? await koreanTitleCandidates(title, anime).catch(() => [title]) : [title];
     for (const name of titles) {
       const found = await anissiaMakers(name, anime?.title || '').catch(() => null);
       if (found) return { subject: found.anime.subject, makers: found.captions.map(item => ({ name: item.name, episode: item.episode, support: anissiaMakerSupport(item.website) })).filter((item, index, list) => list.findIndex(other => other.name === item.name) === index) };
