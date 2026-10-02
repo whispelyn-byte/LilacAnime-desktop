@@ -78,6 +78,9 @@ function rememberAnime(a){if(a?.mal_id!=null&&!knownAnime.has(String(a.mal_id)))
 function animeById(id) { return [...(state.current||[]),...(state.airing||[]),...state.season,...state.top,...state.library].find(x=>String(x.mal_id)===String(id))||knownAnime.get(String(id)); }
 function toast(message) { const el=$('#toast'); el.textContent=message; el.classList.add('show'); clearTimeout(toast.t); toast.t=setTimeout(()=>el.classList.remove('show'),2200); }
 
+// 설정 > 재생 시작 화면 (GitHub issue #1): full screen, or the app window as it is. Going on to another episode inside
+// the player keeps the size it has now.
+function enterPlayer(){const already=$('.view.active')?.id==='playerView';switchView('player');if(!already)playerWindowFullscreen=(localStorage.getItem('playerStart')||'fullscreen')!=='window';setPlayerWindowed();window.lilac.setPlayerFullscreen(playerWindowFullscreen)}
 function switchView(name) {
   const current=$('.view.active')?.id?.replace(/View$/,'');
   if(name==='player'&&current&&current!=='player')viewBeforePlayer=current;
@@ -254,7 +257,7 @@ function showPendingPlayer(name,context={}){
   if(hlsPlayer){hlsPlayer.destroy();hlsPlayer=null;}
   video.pause();video.removeAttribute('src');video.load();
   currentPlaybackContext={...context,resolving:true};clearSubtitle();renderSavedSubtitles();skipSegments=[];activeSkip=null;currentHistoryKey=null;
-  switchView('player');playerWindowFullscreen=true;setPlayerWindowed();window.lilac.setPlayerFullscreen(true);showPlayerControls();
+  enterPlayer();showPlayerControls();
   $('#immersivePlayer').classList.remove('is-playing');$('#playerEmpty').classList.remove('hidden');
   $('#playerEmpty p').textContent='영상 서버에 연결하고 있어요';$('#playerTitle').textContent=name;updatePlayerTitle();$('#playerMeta').textContent='재생 준비 중';
   $('#downloadStatus').textContent='영상 주소를 확인하는 중...';$('#subtitleState').textContent='영상 연결 후 자막을 확인합니다.';renderSubtitleTracks();
@@ -304,7 +307,7 @@ async function resolveIntoPlayer(resolver,name,context={},subtitleTitle='',episo
 
 function play(src,name='직접 재생',context={}) {
   ++playbackRequestId;const video=$('#video');currentPlaybackContext={...context,currentUrl:src};clearSubtitle();renderSavedSubtitles();skipSegments=[];activeSkip=null;activeSkipKey=null;opEdAnalysisKey=null;if(hlsPlayer){hlsPlayer.destroy();hlsPlayer=null;} video.removeAttribute('src');
-  switchView('player');playerWindowFullscreen=true;setPlayerWindowed();window.lilac.setPlayerFullscreen(true);setPlayerLocked(false);showPlayerControls();updateEpisodeButtons();$('#playerEmpty').classList.remove('hidden');$('#subtitleState').textContent='온라인 자막을 확인하는 중...';
+  enterPlayer();setPlayerLocked(false);showPlayerControls();updateEpisodeButtons();$('#playerEmpty').classList.remove('hidden');$('#subtitleState').textContent='온라인 자막을 확인하는 중...';
   const isHls=/\.m3u8(?:$|\?)/i.test(src)||/\/__flix\//i.test(src);
   if(isHls&&window.Hls?.isSupported()){
     hlsPlayer=new Hls({
@@ -477,11 +480,12 @@ async function loadMissingSubtitleTracks(){
 }
 // Korean translation (Gemini or the local AI, 설정 > 자막 자동 번역) of the selected Re:Anime / Miruro track or the picked
 // Jimaku file. Tracks saved with a download carry their translation, which is applied as is (also offline).
-// Each place has a Gemini and a local AI button; a picked Jimaku file is translated by itself with Gemini when a key is
-// set, otherwise with the local AI (as downloads are).
+// Each place has a Gemini and a local AI button; a picked Jimaku file is translated by itself as set in 설정. When the
+// one asked for is not set up or stops (no key, the day's free Gemini allowance used up, no model), the other one
+// takes over if it is set up.
 let translationSettings=null;
 const translationReady=provider=>provider==='local'?(translationSettings?.localModels||[]).some(model=>model.id===translationSettings.localModel&&model.installed):provider==='gemini'?Boolean(translationSettings?.key):Boolean(autoProvider());
-const autoProvider=()=>translationReady('local')?'local':translationReady('gemini')?'gemini':null;
+const autoProvider=()=>translationReady('gemini')?'gemini':translationReady('local')?'local':null;
 const translatedLabel=(result,name)=>`${String(result.model||'').startsWith('local:')?'로컬 AI':'Gemini'} 번역 (${name})`;
 // A track's file: the copy saved with the download, else fetched.
 const trackFile=track=>track.localUrl?Promise.resolve({path:track.path,url:track.localUrl,assPath:track.assUrl?track.assPath:null,assUrl:track.assUrl||null,fonts:[]}):window.lilac.remoteSubtitle(track.url,currentPlaybackContext.subtitleReferer);
@@ -499,7 +503,7 @@ async function translateSubtitleTrack(provider='gemini'){
 const translationButtons=new Map();let translationRun=0;
 async function runTranslation({file,name,button,provider}){
   translationSettings=await window.lilac.geminiSettings().catch(()=>translationSettings);
-  if(!translationReady(provider)){toast(provider==='local'?'설정 > 자막 자동 번역에서 로컬 AI 모델을 먼저 받아 주세요.':'설정 > 자막 자동 번역에서 Gemini API 키를 넣어 주세요.');return}
+  if(!translationReady('gemini')&&!translationReady('local')){toast(provider==='local'?'설정 > 자막 자동 번역에서 로컬 AI 모델을 먼저 받아 주세요.':'설정 > 자막 자동 번역에서 Gemini API 키를 넣어 주세요.');return}
   const label=button.dataset.label||(button.dataset.label=button.textContent),run=++translationRun;
   const requestId=playbackRequestId,title=currentPlaybackContext.subtitleTitle||$('#skipTitle').value.trim(),current=()=>requestId===playbackRequestId&&run===translationRun;
   translationButtons.set(run,button);button.dataset.run=String(run);button.disabled=true;button.textContent='번역 준비 중…';$('#subtitleState').textContent=`${name} 자막을 한국어로 번역하는 중...`;
@@ -507,6 +511,7 @@ async function runTranslation({file,name,button,provider}){
     const source=await file();if(!current())return;
     const result=await window.lilac.translateSubtitle({path:source.path,title,id:run,provider,anime:subtitleSearchAnime()});if(!current())return;
     currentSubtitlePath=result.path;attachSubtitle(result.url,translatedLabel(result,name),{path:result.path,source:'gemini'});
+    if(result.fallbackFrom){const from=result.fallbackFrom==='local'?'로컬 AI':'Gemini',to=result.fallbackFrom==='local'?'Gemini':'로컬 AI';toast(`${from}를 쓸 수 없어 ${to}로 번역했습니다${result.fallbackReason?`: ${result.fallbackReason}`:'.'}`)}
     if(result.failed)toast(`${result.failed}줄은 번역하지 못해 원문으로 남겼습니다.`);
   }catch(error){if(current()){$('#subtitleState').textContent='자동 번역에 실패했습니다.';toast(`자동 번역 실패: ${ipcMessage(error)}`)}}
   finally{translationButtons.delete(run);if(button.dataset.run===String(run)){button.disabled=false;button.textContent=label}}
@@ -534,7 +539,7 @@ async function applyJimaku(file){
     translationSettings=await window.lilac.geminiSettings().catch(()=>translationSettings);
     // 설정 > 자막 자동 번역 > Jimaku 자막 자동 번역: off, Gemini or the local AI.
     const provider=translationSettings?.jimakuTranslate;
-    if(provider==='gemini'||provider==='local'){if(translationReady(provider))translateJimaku(provider);else toast(provider==='local'?'로컬 AI 모델이 없어 자동 번역을 건너뛰었습니다. 설정 > 자막 자동 번역에서 받을 수 있어요.':'Gemini API 키가 없어 자동 번역을 건너뛰었습니다.')}
+    if(provider==='gemini'||provider==='local'){if(translationReady('gemini')||translationReady('local'))translateJimaku(provider);else toast('Gemini API 키도 로컬 AI 모델도 없어 자동 번역을 건너뛰었습니다. 설정 > 자막 자동 번역에서 준비할 수 있어요.')}
   }catch(error){if(requestId===playbackRequestId){$('#subtitleState').textContent='Jimaku 자막을 받지 못했습니다.';toast(`Jimaku: ${ipcMessage(error)}`)}}
 }
 function translateJimaku(provider='gemini'){const subtitle=currentPlaybackContext.jimakuSubtitle;if(subtitle)runTranslation({file:async()=>subtitle,name:'Jimaku',button:provider==='local'?$('#translateJimakuLocal'):$('#translateJimaku'),provider})}
@@ -567,7 +572,7 @@ function renderCueStyle(){
 }
 async function applyCueStyle(){let family="'Malgun Gothic',sans-serif";const font=await subtitleFontData();if(font){try{const face=new FontFace('LilacSubtitle',font.data);await face.load();[...document.fonts].filter(font=>font.family==='LilacSubtitle').forEach(font=>document.fonts.delete(font));document.fonts.add(face);family="LilacSubtitle,'Malgun Gothic',sans-serif"}catch{}}cueFamily=family;renderCueStyle()}
 new ResizeObserver(()=>renderCueStyle()).observe($('#video'));$('#video').addEventListener('loadedmetadata',()=>renderCueStyle());
-function syncSettingChoices(){[['titleLanguageChoices','titleLanguage'],['themeChoices','themeSelect'],['sourceChoices','contentSource'],['qualityChoices','defaultQuality'],['subtitleChoices','subtitleSource']].forEach(([group,select])=>$$(`#${group} button`).forEach(button=>button.classList.toggle('selected',button.dataset.value===$(`#${select}`).value)))}
+function syncSettingChoices(){[['titleLanguageChoices','titleLanguage'],['themeChoices','themeSelect'],['sourceChoices','contentSource'],['qualityChoices','defaultQuality'],['playerStartChoices','playerStart'],['subtitleChoices','subtitleSource']].forEach(([group,select])=>$$(`#${group} button`).forEach(button=>button.classList.toggle('selected',button.dataset.value===$(`#${select}`).value)))}
 function applyTheme(value){const systemLight=matchMedia('(prefers-color-scheme: light)').matches,wantsLight=value==='light'||(value==='system'&&systemLight);document.body.classList.toggle('light',wantsLight);window.lilac?.setWindowTheme?.(wantsLight)}
 
 // Android HomeScreen (Linkkf): 방영 일정(UP/월~일) + PV·트레일러 / 극장판 / 16+ rails.
@@ -630,7 +635,7 @@ async function init(){
   state.downloads=await window.lilac.downloads();renderDownloads();
   state.history=state.history.filter(item=>!/^http:\/\/127\.0\.0\.1:\d+\/__flix\//i.test(item.src||''));store.set('history',state.history);
   renderContinue(); renderLibrary();
-  $('#contentSource').value=state.source;$('#themeSelect').value=localStorage.getItem('theme')||'dark';$('#titleLanguage').value=titleLanguage();const savedSpeed=Number(localStorage.getItem('defaultSpeed')||1),speedIndex=Math.max(0,SPEED_OPTIONS.indexOf(savedSpeed));$('#defaultSpeed').value=String(speedIndex);$('#speed').value=String(savedSpeed);$('#speedLabel').textContent=`${savedSpeed.toFixed(2)}x`;$('#defaultQuality').value=localStorage.getItem('defaultQuality')||'1080p';$('#subtitleSource').value=localStorage.getItem('subtitleSource')||'reanime';$('#subtitleSize').value=localStorage.getItem('subtitleSize')||'100';$('#subtitleSync').value=localStorage.getItem('subtitleSync')||'0';$('#vttBold').checked=localStorage.getItem('vttBold')!=='false';$('#vttOutline').value=localStorage.getItem('vttOutline')||'2';$('#subtitlePosition').value=localStorage.getItem('subtitlePosition')||'12';$('#seekSeconds').value=localStorage.getItem('seekSeconds')||'10';$('#opedAudioAnalysis').checked=localStorage.getItem('opedAudioAnalysis')!=='false';$('#subtitleSizeLabel').textContent=`${$('#subtitleSize').value}%`;$('#subtitleSyncLabel').textContent=`${$('#subtitleSync').value} ms`;$('#outlineLabel').textContent=Number($('#vttOutline').value).toFixed(1);$('#positionLabel').textContent=`${$('#subtitlePosition').value}%`;syncSettingChoices();
+  $('#contentSource').value=state.source;$('#themeSelect').value=localStorage.getItem('theme')||'dark';$('#titleLanguage').value=titleLanguage();const savedSpeed=Number(localStorage.getItem('defaultSpeed')||1),speedIndex=Math.max(0,SPEED_OPTIONS.indexOf(savedSpeed));$('#defaultSpeed').value=String(speedIndex);$('#speed').value=String(savedSpeed);$('#speedLabel').textContent=`${savedSpeed.toFixed(2)}x`;$('#defaultQuality').value=localStorage.getItem('defaultQuality')||'1080p';$('#playerStart').value=localStorage.getItem('playerStart')==='window'?'window':'fullscreen';$('#subtitleSource').value=localStorage.getItem('subtitleSource')||'reanime';$('#subtitleSize').value=localStorage.getItem('subtitleSize')||'100';$('#subtitleSync').value=localStorage.getItem('subtitleSync')||'0';$('#vttBold').checked=localStorage.getItem('vttBold')!=='false';$('#vttOutline').value=localStorage.getItem('vttOutline')||'2';$('#subtitlePosition').value=localStorage.getItem('subtitlePosition')||'12';$('#seekSeconds').value=localStorage.getItem('seekSeconds')||'10';$('#opedAudioAnalysis').checked=localStorage.getItem('opedAudioAnalysis')!=='false';$('#subtitleSizeLabel').textContent=`${$('#subtitleSize').value}%`;$('#subtitleSyncLabel').textContent=`${$('#subtitleSync').value} ms`;$('#outlineLabel').textContent=Number($('#vttOutline').value).toFixed(1);$('#positionLabel').textContent=`${$('#subtitlePosition').value}%`;syncSettingChoices();
   try {
     let season,top;
     if(state.source==='linkkf'){
@@ -680,7 +685,7 @@ $('#loadSkip').onclick=loadOpEdSegments;
 $('#skipNow').onclick=()=>{if(activeSkip){$('#video').currentTime=activeSkip.endTime;activeSkip=null;activeSkipKey=null;$('#skipNow').classList.add('hidden')}};
 $('#speed').onchange=e=>$('#video').playbackRate=Number(e.target.value);$('.dialog-close').onclick=()=>$('#detailDialog').close();$('#detailDialog').addEventListener('click',e=>{if(e.target===$('#detailDialog'))$('#detailDialog').close()});
 $('#contentSource').onchange=e=>{localStorage.setItem('contentSource',e.target.value);window.lilac.activateCatalog(e.target.value).then(renderCatalogIndex).catch(()=>{});syncSettingChoices();toast('콘텐츠 소스를 저장했습니다. 앱을 다시 시작하면 적용됩니다.')};$('#titleLanguage').onchange=e=>{localStorage.setItem('titleLanguage',e.target.value);syncSettingChoices();refreshTitleElements();toast(e.target.value==='en'?'작품 제목을 영어로 표시합니다.':'작품 제목을 한국어로 표시합니다.')};$('#themeSelect').onchange=e=>{localStorage.setItem('theme',e.target.value);applyTheme(e.target.value);syncSettingChoices()};$('#defaultSpeed').oninput=e=>{const value=SPEED_OPTIONS[Number(e.target.value)]||1;localStorage.setItem('defaultSpeed',String(value));$('#speed').value=String(value);$('#speedLabel').textContent=`${value.toFixed(2)}x`};
-['defaultQuality','subtitleSource'].forEach(id=>$(`#${id}`).onchange=e=>{localStorage.setItem(id,e.target.value);syncSettingChoices()});[['titleLanguageChoices','titleLanguage'],['themeChoices','themeSelect'],['sourceChoices','contentSource'],['qualityChoices','defaultQuality'],['subtitleChoices','subtitleSource']].forEach(([group,select])=>$$(`#${group} button`).forEach(button=>button.onclick=()=>{const target=$(`#${select}`);target.value=button.dataset.value;target.dispatchEvent(new Event('change'))}));$('#subtitleSize').oninput=e=>{localStorage.setItem('subtitleSize',e.target.value);$('#subtitleSizeLabel').textContent=`${e.target.value}%`;applyCueStyle()};$('#subtitleSync').oninput=e=>{localStorage.setItem('subtitleSync',e.target.value);window.LilacAss?.setOffset(Number(e.target.value));applyVttLayout();$('#subtitleSyncLabel').textContent=`${e.target.value} ms`};$$('[data-sync]').forEach(button=>button.onclick=()=>{const current=Number($('#subtitleSync').value),delta=Number(button.dataset.sync),next=delta===0?0:Math.max(-5000,Math.min(5000,current+delta));$('#subtitleSync').value=String(next);$('#subtitleSync').dispatchEvent(new Event('input'))});$('#vttBold').onchange=e=>{localStorage.setItem('vttBold',String(e.target.checked));applyCueStyle()};$('#vttOutline').oninput=e=>{localStorage.setItem('vttOutline',e.target.value);applyCueStyle();$('#outlineLabel').textContent=Number(e.target.value).toFixed(1)};$('#subtitlePosition').oninput=e=>{localStorage.setItem('subtitlePosition',e.target.value);applyVttLayout();$('#positionLabel').textContent=`${e.target.value}%`};$('#seekSeconds').onchange=e=>localStorage.setItem('seekSeconds',String(Math.max(1,Number(e.target.value)||10)));['clearOpEdAnalysis','clearOpEdFingerprint','clearOpEdAll'].forEach(id=>$(`#${id}`).onclick=async()=>{await window.lilac.clearOpEd();opEdAnalysisKey=null;skipSegments=[];toast('OP/ED 분석 데이터를 삭제했습니다.')});
+['defaultQuality','playerStart','subtitleSource'].forEach(id=>$(`#${id}`).onchange=e=>{localStorage.setItem(id,e.target.value);syncSettingChoices()});[['titleLanguageChoices','titleLanguage'],['themeChoices','themeSelect'],['sourceChoices','contentSource'],['qualityChoices','defaultQuality'],['playerStartChoices','playerStart'],['subtitleChoices','subtitleSource']].forEach(([group,select])=>$$(`#${group} button`).forEach(button=>button.onclick=()=>{const target=$(`#${select}`);target.value=button.dataset.value;target.dispatchEvent(new Event('change'))}));$('#subtitleSize').oninput=e=>{localStorage.setItem('subtitleSize',e.target.value);$('#subtitleSizeLabel').textContent=`${e.target.value}%`;applyCueStyle()};$('#subtitleSync').oninput=e=>{localStorage.setItem('subtitleSync',e.target.value);window.LilacAss?.setOffset(Number(e.target.value));applyVttLayout();$('#subtitleSyncLabel').textContent=`${e.target.value} ms`};$$('[data-sync]').forEach(button=>button.onclick=()=>{const current=Number($('#subtitleSync').value),delta=Number(button.dataset.sync),next=delta===0?0:Math.max(-5000,Math.min(5000,current+delta));$('#subtitleSync').value=String(next);$('#subtitleSync').dispatchEvent(new Event('input'))});$('#vttBold').onchange=e=>{localStorage.setItem('vttBold',String(e.target.checked));applyCueStyle()};$('#vttOutline').oninput=e=>{localStorage.setItem('vttOutline',e.target.value);applyCueStyle();$('#outlineLabel').textContent=Number(e.target.value).toFixed(1)};$('#subtitlePosition').oninput=e=>{localStorage.setItem('subtitlePosition',e.target.value);applyVttLayout();$('#positionLabel').textContent=`${e.target.value}%`};$('#seekSeconds').onchange=e=>localStorage.setItem('seekSeconds',String(Math.max(1,Number(e.target.value)||10)));['clearOpEdAnalysis','clearOpEdFingerprint','clearOpEdAll'].forEach(id=>$(`#${id}`).onclick=async()=>{await window.lilac.clearOpEd();opEdAnalysisKey=null;skipSegments=[];toast('OP/ED 분석 데이터를 삭제했습니다.')});
 $('#video').addEventListener('timeupdate',e=>{applyPendingResume();const v=e.currentTarget,duration=playbackDuration();$('#playerSeek').value=duration?Math.round(v.currentTime/duration*1000):0;$('#playerTime').textContent=`${formatTime(v.currentTime)} / ${formatTime(duration)}`;activeSkip=skipSegments.find(x=>v.currentTime>=x.startTime&&v.currentTime<x.endTime)||null;activeSkipKey=activeSkip?`${activeSkip.type}:${activeSkip.startTime}:${activeSkip.endTime}`:null;updateSkipState(v);if(activeSkip){const type=activeSkip.type.toLowerCase();$('#skipNow span').textContent=type==='recap'?'요약 스킵':type.includes('ed')?'ED 스킵':'OP 스킵'}if(!duration||!currentHistoryKey)return;const item=state.history.find(x=>(x.key||x.src)===currentHistoryKey);if(!item)return;item.progress=Math.max(0,Math.min(100,Math.round(v.currentTime/duration*100)));item.updated=Date.now();if(Date.now()-(saveHistorySoon.last||0)>5000)saveHistorySoon();const card=$$('.continue-card').find(x=>x.dataset.historyKey===currentHistoryKey);if(card){card.querySelector('.history-progress i').style.width=`${item.progress}%`;card.querySelector(':scope > span').textContent=`EP.${item.episode?.number||1} · ${item.progress}%`}});
 $('#video').addEventListener('playing',()=>{$('#immersivePlayer').classList.add('is-playing');$('#playerEmpty').classList.add('hidden');showPlayerControls()});
 // Progress is saved every few seconds while playing, and right away on pause and when leaving the player.

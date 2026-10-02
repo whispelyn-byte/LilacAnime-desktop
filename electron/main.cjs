@@ -1366,20 +1366,23 @@ async function jimakuDownload(file,anime,episode){
   const out=path.join(dir,`${communityFileName(file.name).replace(/\.[^.]+$/,'')}${ext}`);fs.writeFileSync(out,text,'utf8');
   return subtitleResult(out,{source:'jimaku',label:'Jimaku 자막',name:file.name});
 }
-// The work a translation is for: its provider title next to the Korean one, and its main characters (AniList), so
-// Gemini spells their names the same way in every line.
-const anilistCharacterCache=new Map();
-async function anilistCharacters(anilistId){
-  const id=Number(anilistId);if(!id)return [];if(anilistCharacterCache.has(id))return anilistCharacterCache.get(id);
-  const query='query($id:Int){Media(id:$id,type:ANIME){characters(perPage:25,sort:[ROLE,RELEVANCE]){nodes{name{full native}}}}}';
+// The work a translation is for: its provider title next to the Korean one, its genres and story, and its main
+// characters (AniList: names split into given and family name, gender), so names are spelled the same way in every
+// line and who says what to whom can be told.
+const anilistStoryCache=new Map();
+async function anilistStory(anilistId){
+  const id=Number(anilistId);if(!id)return null;if(anilistStoryCache.has(id))return anilistStoryCache.get(id);
+  const query='query($id:Int){Media(id:$id,type:ANIME){genres description(asHtml:false) characters(perPage:25,sort:[ROLE,RELEVANCE]){nodes{name{full native first last} gender}}}}';
   const response=await fetch('https://graphql.anilist.co',{signal:AbortSignal.timeout(15000),method:'POST',headers:{Accept:'application/json','Content-Type':'application/json','User-Agent':'LilacAnime Android'},body:JSON.stringify({query,variables:{id}})});
-  if(!response.ok)return [];
-  const list=((await response.json())?.data?.Media?.characters?.nodes||[]).map(node=>({name:String(node?.name?.full||''),native:String(node?.name?.native||'')})).filter(item=>item.name||item.native);
-  anilistCharacterCache.set(id,list);return list;
+  if(!response.ok)return null;
+  const media=(await response.json())?.data?.Media||{};
+  const characters=(media.characters?.nodes||[]).map(node=>({name:String(node?.name?.full||''),native:String(node?.name?.native||''),first:String(node?.name?.first||''),last:String(node?.name?.last||''),gender:String(node?.gender||'')})).filter(item=>item.name||item.native);
+  const synopsis=String(media.description||'').replace(/<[^>]*>/g,' ').replace(/\(Source:[^)]*\)/gi,' ').replace(/\s+/g,' ').trim().slice(0,700);
+  const value={characters,genres:Array.isArray(media.genres)?media.genres:[],synopsis};anilistStoryCache.set(id,value);return value;
 }
 async function translationContext(anime={},title=''){
-  const anilistId=await jimakuAnilistId(anime||{}).catch(()=>null);
-  return {originalTitle:anime?.title&&anime.title!==title?String(anime.title):'',characters:anilistId?await anilistCharacters(anilistId).catch(()=>[]):[]};
+  const anilistId=await jimakuAnilistId(anime||{}).catch(()=>null),media=anilistId?await anilistStory(anilistId).catch(()=>null):null;
+  return {originalTitle:anime?.title&&anime.title!==title?String(anime.title):'',characters:media?.characters||[],genres:media?.genres||[],synopsis:media?.synopsis||''};
 }
 const ANISSIA_API='https://api.anissia.net';
 // Online subtitle sources in their default search order.
@@ -1867,7 +1870,7 @@ app.whenReady().then(async () => {
     const send=value=>{if(!event.sender.isDestroyed())event.sender.send('translate:progress',{id,...value})};
     const context=await translationContext(anime||{},String(title||''));
     const result=await translator().translate({file:resolved,title:String(title||''),provider:['gemini','local'].includes(provider)?provider:'',context,progress:(done,total)=>send({done,total}),status:text=>send({status:text})});
-    return subtitleResult(result.path,{model:result.model,failed:result.failed,cached:result.cached});
+    return subtitleResult(result.path,{model:result.model,failed:result.failed,cached:result.cached,fallbackFrom:result.fallbackFrom||'',fallbackReason:result.fallbackReason||''});
   });
   // Several lookups at a time (TMDB answers quickly; AniList allows about 90 requests a minute).
   ipcMain.handle('titles:resolve',async(_,list=[])=>{

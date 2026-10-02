@@ -7,6 +7,7 @@ const path = require('path');
 const net = require('net');
 const { spawn } = require('child_process');
 const AdmZip = require('adm-zip');
+const { characterTerms, termsFor } = require('./anime-glossary.cjs');
 
 // Android's choices: HY-MT1.5 (current default there) and the Japanese -> Korean VN model it used before.
 const MODELS = [
@@ -17,8 +18,17 @@ const MODELS = [
 const RUNTIME_ASSET = /^llama-b\d+-bin-win-vulkan-x64\.zip$/;
 const PARALLEL = 4, IDLE_STOP = 5 * 60 * 1000;
 // HY-MT's own prompt, one line at a time. Previous lines as context (Android's prompt, or HY-MT's contextual one) made
-// the 1.8B model translate the context instead of the line in about a third of short lines, so none is sent.
-const prompt = source => `Translate the following segment into Korean, without additional explanation.\n\n${source}`;
+// the 1.8B model translate the context instead of the line in about a third of short lines, so none is sent. What it
+// gets instead is HY-MT's terminology list with the names and set phrases found in the line (anime-glossary): without
+// it 真昼 came out as 정오 (noon), 周くん as 주군 and いただきます as 감사합니다. Its Chinese "translate into Korean"
+// prompt left Japanese words in, so the English one follows the list. Other models get the list in English.
+const INSTRUCTION = 'Translate the following segment into Korean, without additional explanation.';
+function prompt(source, terms, hyMt) {
+  if (!terms.length) return `${INSTRUCTION}\n\n${source}`;
+  if (hyMt) return `参考下面的翻译：\n${terms.map(term => `${term.ja} 翻译成 ${term.ko}`).join('\n')}\n\n${INSTRUCTION}\n\n${source}`;
+  return `This is a line from a Japanese anime. Use these Korean translations:\n${terms.map(term => `${term.ja} = ${term.ko}`).join('\n')}\n\n${INSTRUCTION}\n\n${source}`;
+}
+const KANA = /[぀-ゟ゠-ヺヽ-ヿ]/;
 
 function createLocalAi(userData) {
   const root = path.join(userData, 'local-ai'), runtimeDir = path.join(root, 'runtime'), modelDir = path.join(root, 'models');
@@ -138,19 +148,27 @@ function createLocalAi(userData) {
   }
   // Every line once, four at a time. Returns translations by index (failed
   // lines are left out, so the caller keeps the original text).
-  async function translateLines(texts, { modelId, progress = () => {}, status = () => {} } = {}) {
+  // context: the work's {characters} from AniList, for the names in the terminology list.
+  async function translateLines(texts, { modelId, progress = () => {}, status = () => {}, context = {} } = {}) {
     const model = models().find(item => item.id === modelId) || models().find(item => item.installed);
     if (!model) throw new Error('로컬 AI 모델이 없습니다. 설정 > 자막 자동 번역에서 모델을 받아 주세요.');
     const { port } = await start(model, status);
+    const names = characterTerms(context.characters || []), hyMt = /hy-mt/i.test(`${model.id} ${model.file || ''} ${model.label}`);
+    const ask = async content => {
+      const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, { method: 'POST', signal: AbortSignal.timeout(120000), headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: [{ role: 'user', content }], temperature: 0.7, top_p: 0.6, top_k: 20, repeat_penalty: 1.05, max_tokens: 512, stream: false }) });
+      if (!response.ok) throw new Error(`llama.cpp HTTP ${response.status}`);
+      return (await response.json())?.choices?.[0]?.message?.content;
+    };
     const result = new Map(); let next = 0, done = 0, fatal = null;
     progress(0, texts.length);
     await Promise.all(Array.from({ length: PARALLEL }, async () => {
       while (next < texts.length && !fatal) {
-        const index = next++, source = texts[index];
+        const index = next++, source = texts[index], content = prompt(source, termsFor(source, names), hyMt);
         try {
-          const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, { method: 'POST', signal: AbortSignal.timeout(120000), headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: [{ role: 'user', content: prompt(source) }], temperature: 0.7, top_p: 0.6, top_k: 20, repeat_penalty: 1.05, max_tokens: 512, stream: false }) });
-          if (!response.ok) throw new Error(`llama.cpp HTTP ${response.status}`);
-          const text = clean((await response.json())?.choices?.[0]?.message?.content, source); if (text) result.set(index, text);
+          // A Japanese word left in the answer (えっ, 先輩) is asked again, twice at most.
+          let text = '';
+          for (let attempt = 0; attempt < 3; attempt++) { text = clean(await ask(content), source); if (text && !KANA.test(text)) break; }
+          if (text) result.set(index, text);
         } catch (error) { if (!server) fatal = error; }
         touch(); progress(++done, texts.length);
       }
