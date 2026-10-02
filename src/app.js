@@ -90,6 +90,8 @@ function switchView(name) {
   if (name === 'library') renderLibrary();
   if (name === 'all') loadFullCatalog();
   if (name === 'history') renderHistory();
+  // Where the local model last ran changes with each translation.
+  if (name === 'settings') window.lilac.geminiSettings().then(value=>{translationSettings=value||translationSettings;renderLocalAi(value)}).catch(()=>{});
   if(name!=='player')document.querySelector('main').scrollTo({top:0,behavior:'smooth'});
 }
 
@@ -754,13 +756,15 @@ $('#saveGeminiKey').onclick=saveGeminiSettings;$('#geminiModel').onchange=saveGe
 // 번역 방식 (Gemini / 로컬 AI) and the local models: presets downloaded with progress, or a GGUF file added from disk.
 const localModelProgress={};
 async function saveTranslation(change){try{renderGeminiState(await window.lilac.setGeminiSettings(change))}catch(error){toast(`저장하지 못했습니다: ${ipcMessage(error)}`)}}
+// Where the model last ran: all of it on the graphics card, part of it (the CPU sets the pace), or the CPU alone.
+const localRunText=run=>run.layers?`마지막 실행: ${run.device||'그래픽카드'} · ${run.layers}/${run.total}층${run.layers<run.total?' (나머지는 CPU라 느림)':''}`:`마지막 실행: CPU만 사용${run.reason?` (${run.reason})`:''}`;
 function renderLocalAi(value){
   if(!value)return;
   $('#localModelList').replaceChildren(...(value.localModels||[]).map(model=>{
     // Only a model on disk can be in use; one not downloaded yet shows what it needs instead.
     const row=document.createElement('div'),progress=localModelProgress[model.id],selected=model.installed&&model.id===value.localModel;row.className=`local-model${selected?' selected':''}`;
     const state=selected?'사용 중':model.installed?'받음 · 눌러서 사용':progress!=null?'받는 중':'받지 않음';
-    row.innerHTML=`<button type="button" class="local-model-pick"><b>${escapeHtml(model.label)}</b><small>${escapeHtml(model.note||'')}</small></button><span class="local-model-state">${state}</span><button type="button" class="local-model-action"></button>`;
+    row.innerHTML=`<button type="button" class="local-model-pick"><b>${escapeHtml(model.label)}</b><small>${escapeHtml(model.note||'')}</small>${model.installed&&model.run?`<small class="local-model-run${model.run.layers<model.run.total||!model.run.layers?' partial':''}">${escapeHtml(localRunText(model.run))}</small>`:''}</button><span class="local-model-state">${state}</span><button type="button" class="local-model-action"></button>`;
     const pick=row.querySelector('.local-model-pick'),action=row.querySelector('.local-model-action');pick.disabled=!model.installed||selected;pick.onclick=()=>saveTranslation({localModel:model.id});
     if(progress!=null){action.textContent=`받는 중 ${progress}%`;action.disabled=true}
     else if(model.installed){action.textContent=model.path?'목록에서 빼기':'삭제';action.onclick=async()=>{if(!confirm(`${model.label} 모델을 ${model.path?'목록에서 뺄까요':'삭제할까요'}?`))return;renderGeminiState(await window.lilac.removeLocalModel(model.id))}}
