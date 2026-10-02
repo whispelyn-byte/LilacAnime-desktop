@@ -263,13 +263,18 @@ function showPendingPlayer(name,context={}){
 
 
 // Animenosub / Miruro: SUB servers have English burned in, RAW ones none. A server picked in the player is used again;
-// otherwise RAW when this episode has a Korean subtitle (saved, or found online within 8 s), else SUB.
+// otherwise RAW when this episode has a Korean subtitle (saved, or found online within 8 s), else SUB. A show whose
+// earlier episode had one found online goes RAW at once, without waiting for the search.
 const videoServerKey=provider=>`${provider||'animenosub'}Server`;
-async function resolveWithVideoServer(episode,koreanSearch){
+const KOREAN_SHOWS_KEY='koreanSubtitleShows';
+function koreanShows(){try{return JSON.parse(localStorage.getItem(KOREAN_SHOWS_KEY)||'[]')}catch{return []}}
+async function resolveWithVideoServer(episode,koreanSearch,anime){
   const picked=localStorage.getItem(videoServerKey(episode.provider))||'';let prefer='sub';
+  const show=anime?.id?`${anime.provider||episode.provider}:${anime.id}`:'';
+  koreanSearch.then(found=>{if(!found||!show)return;const list=koreanShows().filter(key=>key!==show);list.unshift(show);try{localStorage.setItem(KOREAN_SHOWS_KEY,JSON.stringify(list.slice(0,300)))}catch{}});
   if(!picked){
     const saved=await window.lilac.savedSubtitles(episodeRef(episode)).catch(()=>[]);
-    if(saved.some(entry=>entry.source!=='provider')||await Promise.race([koreanSearch,new Promise(resolve=>setTimeout(()=>resolve(null),8000))]))prefer='raw';
+    if(saved.some(entry=>entry.source!=='provider')||(show&&koreanShows().includes(show))||await Promise.race([koreanSearch,new Promise(resolve=>setTimeout(()=>resolve(null),8000))]))prefer='raw';
   }
   return window.lilac.providerResolve({...episode,server:picked,prefer});
 }
@@ -279,7 +284,7 @@ async function resolveIntoPlayer(resolver,name,context={},subtitleTitle='',episo
   const koreanSearch=onlineSubtitleFor(searchTitle,episode,context.anime?{provider:context.anime.provider,id:context.anime.id,title:context.anime.title||context.anime.title_english||'',anilistId:context.anime.anilistId||null,malId:context.anime.malId||null}:null).catch(()=>null);
   try{
     const downloaded=context.episode?jobByRef(episodeRef(context.episode)):null;
-    const stream=downloaded?.status==='completed'?{...await window.lilac.playDownload(downloaded.id),downloaded:true}:['animenosub','miruro'].includes(context.episode?.provider)?await resolveWithVideoServer(context.episode,koreanSearch):await resolver();
+    const stream=downloaded?.status==='completed'?{...await window.lilac.playDownload(downloaded.id),downloaded:true}:['animenosub','miruro'].includes(context.episode?.provider)?await resolveWithVideoServer(context.episode,koreanSearch,context.anime):await resolver();
     if(requestId!==playbackRequestId)return;
     const offlineEpisodes=downloaded?.status==='completed'?downloadedSeries(downloaded):[];
     play(stream.url,name,{...context,seriesEpisodes:offlineEpisodes.length?offlineEpisodes:context.seriesEpisodes,streamHeaders:stream.headers||{},offline:Boolean(downloaded?.status==='completed')});

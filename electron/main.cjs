@@ -383,13 +383,19 @@ async function resolveProviderEpisode(episode) {
   }
   if(episode.provider==='animenosub'){
     const servers=animenosubServers(await providerFetch(episode.url,{referer:`${ANIMENOSUB_WEB}/`}),episode.url);
-    // The server picked in the player first, then the preferred kind (RAW under a Korean subtitle), then SUB; within
-    // a kind the host that worked last ("Omega") first. A host that does not answer is given up after 15 s.
-    const host=server=>server.label.split(/\s*-\s*/).pop();
-    const rank=server=>(server.label===episode.server?0:server.kind===episode.prefer?2:server.kind==='sub'?4:6)-(host(server)===animenosubWorkingHost?1:0);
+    // The server picked in the player first, then the preferred kind (RAW under a Korean subtitle), then SUB. Server
+    // names point at different hosts from episode to episode and some hosts never answer, so the servers of one kind
+    // are tried at once (each in a session of its own) and the first that answers is used; the others are stopped.
+    const tierOf=server=>server.label===episode.server?0:server.kind===episode.prefer?1:server.kind==='sub'?2:server.kind==='raw'?3:4;
+    const tiers=[...new Set(servers.map(tierOf))].sort((a,b)=>a-b).map(tier=>servers.filter(server=>tierOf(server)===tier));
     let lastError=null;
-    for(const server of servers.slice().sort((a,b)=>rank(a)-rank(b))){
-      try{const stream=await resolveStreamPage(server.url,episode.url,15000);animenosubWorkingHost=host(server);return {...stream,servers:servers.map(({label,kind})=>({label,kind})),server:server.label}}catch(error){lastError=error}
+    for(const tier of tiers){
+      const controller=new AbortController();
+      try{
+        const {stream,server}=await Promise.any(tier.map(server=>resolveStreamPage(server.url,episode.url,15000,{partition:`lilac-resolve-${resolverSlot=(resolverSlot+1)%8}`,waitSubtitle:false,signal:controller.signal}).then(stream=>({stream,server}))));
+        return {...stream,servers:servers.map(({label,kind})=>({label,kind})),server:server.label};
+      }catch(error){lastError=error.errors?.[0]||error}
+      finally{controller.abort()}
     }
     if(servers.length)throw lastError||new Error('모든 영상 서버 연결에 실패했습니다.');
   }
@@ -398,7 +404,7 @@ async function resolveProviderEpisode(episode) {
 
 // Animenosub's server menu: base64 <iframe> snippets labelled "SUB - Moon", "RAW - Omega"… SUB videos carry burned-in
 // English subtitles, RAW ones none. Pages without the menu have a single embedded player.
-let animenosubWorkingHost='';
+let resolverSlot=0;
 function animenosubServers(html,pageUrl){
   const $=cheerio.load(html),servers=[];
   $('option[value]').each((_,option)=>{
@@ -447,6 +453,14 @@ function miruroPlayableEpisodes(list,root,now=Date.now()){
     if(counts.raw!=null||number<=Math.max(counts.sub??0,counts.dub??0))return true;
     const aired=raw.aired_on?Date.parse(raw.aired_on):NaN;return Number.isFinite(aired)?aired<=now:root.status!=='NOT_YET_RELEASED';
   });
+}
+// Whether a show has an episode to play now (the home rail's check), remembered for half an hour.
+const miruroEpisodeCheck=new Map();
+async function miruroHasEpisodes(root){
+  const known=miruroEpisodeCheck.get(root.id);if(known&&Date.now()-known.time<30*60*1000)return known.value;
+  const list=await miruroApi(`anime/${root.id}/episodes`,{kind:root.format==='MOVIE'?'film':'regular',limit:10000}).catch(()=>null);
+  const value=Boolean(list&&miruroPlayableEpisodes(list.data||[],root).length);
+  miruroEpisodeCheck.set(root.id,{value,time:Date.now()});return value;
 }
 async function miruroDetail(anime){
   const root=await miruroApi(`anime/${anime.id}`);
@@ -582,31 +596,46 @@ async function saveRemoteSubtitle(url,{referer='',userAgent=LINKKF_UA,headers={}
 }
 
 // Android gives the player WebView 30 s (Re:Anime) or 15 s (Linkkf) to expose the stream.
-async function resolveStreamPage(targetUrl, referer = '', timeoutMs = 30000) {
+// options: partition (a session of its own, so several pages can be resolved at once without swapping each other's
+// request hooks), waitSubtitle (Linkkf pages carry a Korean subtitle requested after the video), signal (stops it).
+async function resolveStreamPage(targetUrl, referer = '', timeoutMs = 30000, { partition: ownPartition = '', waitSubtitle = true, signal = null } = {}) {
   const isFlixCloud=/flixcloud\.cc/i.test(targetUrl);
-  const partition=isFlixCloud?'persist:lilac-android-webview-v2':'persist:lilac-provider';
+  const partition=ownPartition||(isFlixCloud?'persist:lilac-android-webview-v2':'persist:lilac-provider');
   const browserUa=isFlixCloud?ANDROID_WEBVIEW_UA:LINKKF_UA;
   const resolver=new BrowserWindow({show:false,width:960,height:640,webPreferences:{partition,contextIsolation:true,nodeIntegration:false,sandbox:true,autoplayPolicy:'no-user-gesture-required',backgroundThrottling:false}});
   resolver.webContents.setUserAgent(browserUa);
   const ses=resolver.webContents.session;let stream=null,subtitle=null,lastHeaders={},flixPk='',flixVideo='',flixAudio='';const streams=new Map();
   const filter={urls:['*://*/*']};
   ses.webRequest.onBeforeSendHeaders(filter,(details,callback)=>{const lower=details.url.toLowerCase(),headers=details.requestHeaders||{};if(isFlixCloud){headers['User-Agent']=ANDROID_WEBVIEW_UA;headers['sec-ch-ua']='"Chromium";v="131", "Not_A Brand";v="24"';headers['sec-ch-ua-mobile']='?1';headers['sec-ch-ua-platform']='"Android"';headers['Accept-Language']='en-US,en;q=0.9,ko;q=0.7'}const adMedia=/runative|magsrv|juneworewyjyna|pxltag/i.test(lower),media=lower.includes('.m3u8')||/\.(mp4|webm)(?:\?|$)/i.test(lower);if(media&&!adMedia&&!lower.includes('ad')){streams.set(details.url,{...headers});if(!stream){stream=details.url;lastHeaders={...headers}}}if(!isFlixCloud&&lower.includes('.vtt')&&!/thumbnail/i.test(lower))subtitle ||= details.url;callback({requestHeaders:headers});});
+  const stop=()=>{if(!resolver.isDestroyed())resolver.destroy()};signal?.addEventListener('abort',stop);
   try {
-    await resolver.loadURL(targetUrl,{httpReferrer:referer||new URL(targetUrl).origin+'/',userAgent:browserUa});
-    const blocked=await resolver.webContents.executeJavaScript(`(()=>{const text=(document.title+' '+(document.body?.innerText||'')).toLowerCase();return text.includes('sorry, you have been blocked')||text.includes('you have been blocked')})()`,true).catch(()=>false);
-    if(blocked)throw new Error('FlixCloud가 이 앱 세션을 차단했습니다. 다른 영상 서버로 전환합니다.');
+    // The address is looked for while the page loads: a player page can keep loading ads for half a minute after the
+    // video request this waits for. The time limit covers the load too, so a host that does not answer is left in time.
+    let loaded=false,blockChecked=false;
+    resolver.loadURL(targetUrl,{httpReferrer:referer||new URL(targetUrl).origin+'/',userAgent:browserUa}).then(()=>{loaded=true},()=>{loaded=true});
     const streamDeadline=Date.now()+timeoutMs;
     while(!stream&&!resolver.isDestroyed()&&Date.now()<streamDeadline){
+      if(isFlixCloud&&loaded&&!blockChecked){
+        blockChecked=true;
+        const blocked=await resolver.webContents.executeJavaScript(`(()=>{const text=(document.title+' '+(document.body?.innerText||'')).toLowerCase();return text.includes('sorry, you have been blocked')||text.includes('you have been blocked')})()`,true).catch(()=>false);
+        if(blocked)throw new Error('FlixCloud가 이 앱 세션을 차단했습니다. 다른 영상 서버로 전환합니다.');
+      }
       for(const frame of resolver.webContents.mainFrame.frames){
         frame.executeJavaScript(`(()=>{document.querySelectorAll('video').forEach(v=>{v.muted=true;v.play().catch(()=>{})});const els=[...document.querySelectorAll('button,[role=button],.play,.vjs-big-play-button,.jw-display-icon-container,.jw-icon-display,.jwplayer')];const play=els.find(e=>/play|재생|watch|jw-display|jw-icon-display/i.test((e.innerText||e.getAttribute('aria-label')||e.className||'')));if(play&&!play.dataset.lilacClicked){play.dataset.lilacClicked='1';play.click()}let jw=[];try{const api=window.jwplayer?.();const item=api?.getPlaylistItem?.();jw=[item?.file,...(item?.sources||[]).map(x=>x.file)].filter(Boolean);api?.play?.()}catch{}const resources=performance.getEntriesByType('resource').map(e=>e.name);return {urls:[...jw,...resources].filter(u=>/\.(m3u8|mp4|webm)(?:\?|$)/i.test(u)&&!/runative|magsrv|juneworewyjyna|pxltag/i.test(u)),pk:window.__pk||''}})()`,true).then(result=>{if(Array.isArray(result?.urls)){const preferred=result.urls[0];if(preferred&&!stream)stream=preferred}if(result?.pk)flixPk=result.pk}).catch(()=>{});
       }
       await new Promise(resolve=>setTimeout(resolve,350));
     }
     if(isFlixCloud&&stream&&!resolver.isDestroyed()){
-      let previousSize=-1,stableChecks=0;
-      while(stableChecks<6&&!resolver.isDestroyed()){
-        await new Promise(resolve=>setTimeout(resolve,500));
-        if(streams.size===previousSize)stableChecks++;else{previousSize=streams.size;stableChecks=0}
+      // Done as soon as the playlists (a master, or video and audio) and the key are there; a page that offers
+      // something else is taken once its list of addresses has stopped growing for 1.5 s.
+      const has=pattern=>[...streams.keys()].some(url=>pattern.test(new URL(url).pathname));
+      const complete=()=>has(/master/i)||(has(/\/video(?:\/|\.|$)/i)&&has(/\/audio(?:\/|\.|$)/i));
+      const readyDeadline=Date.now()+10000;let previousSize=-1,stableSince=Date.now();
+      while(!resolver.isDestroyed()&&Date.now()<readyDeadline){
+        if(!flixPk)flixPk=await resolver.webContents.executeJavaScript(`window.__pk||''`,true).catch(()=>'');
+        if(streams.size!==previousSize){previousSize=streams.size;stableSince=Date.now()}
+        if(flixPk&&(complete()||Date.now()-stableSince>=1500))break;
+        await new Promise(resolve=>setTimeout(resolve,150));
       }
       const urls=[...streams.keys()];
       flixVideo=urls.find(url=>/\/video(?:\/|\.|$)/i.test(new URL(url).pathname))||'';
@@ -626,13 +655,13 @@ async function resolveStreamPage(targetUrl, referer = '', timeoutMs = 30000) {
       subtitleTracks=parseFlixSubtitleTracks(html);
       subtitle=subtitleTracks.find(isKoreanTrack)?.url||null;
     }
-    if(stream&&!subtitle&&!isFlixCloud){const subtitleDeadline=Date.now()+2500;while(Date.now()<subtitleDeadline&&!subtitle)await new Promise(resolve=>setTimeout(resolve,200));}
+    if(stream&&!subtitle&&!isFlixCloud&&waitSubtitle){const subtitleDeadline=Date.now()+2500;while(Date.now()<subtitleDeadline&&!subtitle)await new Promise(resolve=>setTimeout(resolve,200));}
     if(!stream)throw new Error(resolver.isDestroyed()?'플레이어 창이 닫혀 스트림 탐색을 중단했습니다.':'영상 주소를 찾지 못했습니다 (응답 시간 초과).');
     // The key appears with the player; a page that never sets it is given up instead of waiting forever.
     if(isFlixCloud){const keyDeadline=Date.now()+15000;while(!flixPk&&!resolver.isDestroyed()&&Date.now()<keyDeadline){flixPk=await resolver.webContents.executeJavaScript(`window.__pk||''`,true).catch(()=>'');if(!flixPk)await new Promise(resolve=>setTimeout(resolve,250))}if(!flixPk)throw new Error(resolver.isDestroyed()?'플레이어 창이 닫혀 복호화 키 탐색을 중단했습니다.':'FlixCloud 복호화 키를 찾지 못했습니다.');const headers={...lastHeaders,Referer:targetUrl,'User-Agent':ANDROID_WEBVIEW_UA};stream=flixVideo&&flixAudio?await createFlixAvProxyUrl(flixVideo,flixAudio,flixPk,headers):await createFlixProxyUrl(stream,flixPk,headers);}
     let subtitleUrl=subtitle,subtitlePath=null,subtitleAss=null;if(subtitle){try{const saved=subtitleResult(await saveRemoteSubtitle(subtitle,{referer:targetUrl,userAgent:browserUa,headers:lastHeaders}));subtitleUrl=saved.url;subtitlePath=saved.path;subtitleAss=saved.assUrl?{url:saved.assUrl,path:saved.assPath}:null}catch{/* Community subtitle fallback remains available. */}}
     resolvedStreamHeaders.set(new URL(stream).host,{...lastHeaders,Referer:targetUrl});return {url:stream,subtitleUrl,subtitlePath,subtitleAss,subtitleTracks,headers:lastHeaders,referer:targetUrl};
-  } finally {ses.webRequest.onBeforeSendHeaders(null);if(!resolver.isDestroyed())resolver.destroy();}
+  } finally {signal?.removeEventListener('abort',stop);ses.webRequest.onBeforeSendHeaders(null);if(!resolver.isDestroyed())resolver.destroy();}
 }
 
 function simpleTitle(value=''){return value.toLowerCase().normalize('NFKC').replace(/\[[^\]]*]|\([^)]*\)/g,' ').replace(/\b(?:subtitle|sub)\b|(?:한글|한국어)?\s*자막/gi,' ').replace(/[^a-z0-9가-힣]+/g,' ').trim()}
@@ -1668,12 +1697,19 @@ app.whenReady().then(async () => {
       // Its status can say "Not Yet Released" for a show with episodes, so the episode counts decide.
       data.push(...reanimeItems(root).filter(item=>item.subbed>0||item.dubbed>0));
     } else if (provider === 'miruro') {
-      let cursor;
-      for(let page=0;page<6&&data.length<40;page++){
+      let cursor;const candidates=[];
+      for(let page=0;page<6&&candidates.length<40;page++){
         const root=await miruroApi('anime',current?{season,season_year:year,sort:'-popularity',limit:15,cursor}:{status:'RELEASING',sort:'-popularity',limit:15,cursor});
-        data.push(...(root.data||[]).filter(raw=>Object.values(raw.episode_counts||{}).some(count=>Number(count)>0)).map(miruroItem));
+        candidates.push(...(root.data||[]).filter(raw=>raw.status!=='NOT_YET_RELEASED'&&Object.values(raw.episode_counts||{}).some(count=>Number(count)>0)));
         cursor=root.next_cursor;if(!root.has_more||!cursor)break;
       }
+      // Its status and counts can promise episodes of a new show that has none to play yet (Cyberpunk: Edgerunners 2 had
+      // 9, Narumi's Week at Work 4), so this season's shows are checked against their episode lists.
+      if(current){
+        let next=0;const playable=new Set();
+        await Promise.all(Array.from({length:6},async()=>{while(next<candidates.length){const raw=candidates[next++];if(await miruroHasEpisodes(raw))playable.add(raw.id)}}));
+        data.push(...candidates.filter(raw=>playable.has(raw.id)).map(miruroItem));
+      }else data.push(...candidates.map(miruroItem));
     } else if (provider === 'animenosub') {
       const filter=current?`season%5B0%5D=${season.toLowerCase()}-${year}`:'status=ongoing';
       for(let page=1;page<=3;page++){
