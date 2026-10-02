@@ -1563,18 +1563,41 @@ app.whenReady().then(async () => {
   const subtitleStore=new SubtitleStore({app});
   // Same order as the player's ensureSubtitle: the preferred source's saved file, the stream's own
   // subtitle, any saved file, then Kairan/Csora.
+  const downloadSubtitleKey=job=>{const episode=job.episode||{};return encodeURIComponent(String(episode.url||episode.token||episode.id||episode.number||''))};
   const findDownloadSubtitle=async(job,stream)=>{
-    const episode=job.episode||{},key=encodeURIComponent(String(episode.url||episode.token||episode.id||episode.number||'')),saved=key?subtitleStore.list(key):[],preferred=job.subtitleSource||'reanime';
-    const fromSaved=entry=>({path:entry.path,assPath:entry.assPath,fonts:entry.fonts||[],label:entry.label});
+    const key=downloadSubtitleKey(job),saved=key?subtitleStore.list(key):[],preferred=job.subtitleSource||'reanime';
+    const fromSaved=entry=>({source:entry.source,path:entry.path,assPath:entry.assPath,fonts:entry.fonts||[],label:entry.label});
     // A Gemini translation stands for the Re:Anime subtitle it was made from.
     const savedPreferred=(preferred==='reanime'&&saved.find(entry=>entry.source==='gemini'))||saved.find(entry=>entry.source===preferred);if(savedPreferred)return fromSaved(savedPreferred);
     if(stream?.subtitleUrl)return {stream:true};
     if(saved[0])return fromSaved(saved[0]);
-    const anime=job.anime||{},title=job.title||anime.title||'',titles=['reanime','animenosub','miruro'].includes(anime.provider)?await koreanTitleCandidates(title,anime).catch(()=>[title]):[title];
+    const search=communitySearch(job);
     for(const source of COMMUNITY_SOURCES.includes(preferred)?[preferred,...COMMUNITY_SOURCES.filter(x=>x!==preferred)]:COMMUNITY_SOURCES){
-      try{const result=await findCommunitySubtitleByTitles(source,titles,Number(job.episodeNumber)||1,{originalTitle:anime.title||'',offsets:await previousSeasonEpisodes(anime,title).catch(()=>[])});return {path:result.path,assPath:result.assPath,fonts:result.fonts,label:communitySubtitleLabel(source,result)}}catch{/* next source */}
+      try{return await search(source)}catch{/* next source */}
     }
     return null;
+  };
+  // One online source's Korean subtitle for a download (the Korean titles are looked up once per download).
+  const communitySearch=job=>{
+    const anime=job.anime||{},title=job.title||anime.title||'',episode=Number(job.episodeNumber)||1;
+    const titles=['reanime','animenosub','miruro'].includes(anime.provider)?koreanTitleCandidates(title,anime).catch(()=>[title]):Promise.resolve([title]),offsets=previousSeasonEpisodes(anime,title).catch(()=>[]);
+    return async source=>{const result=await findCommunitySubtitleByTitles(source,await titles,episode,{originalTitle:anime.title||'',offsets:await offsets});return {source,path:result.path,assPath:result.assPath,fonts:result.fonts,label:communitySubtitleLabel(source,result)}};
+  };
+  // Unless the stream has its own Korean track: the episode's best Jimaku file (saved for the episode too, so the
+  // player offers it), translated when 설정 > Jimaku 자막 자동 번역 is Gemini or the local AI and one of them is set up.
+  const jimakuTranslation=()=>{const setting=translator().settings().jimakuTranslate;return setting!=='off'&&translator().ready()?setting:null};
+  const findDownloadJimaku=async job=>{
+    const anime=job.anime||{},episode=Number(job.episodeNumber)||1,[file]=await jimakuEpisodeFiles(anime,episode).catch(()=>[]);if(!file)return null;
+    const result=await jimakuDownload(file,anime,episode),key=downloadSubtitleKey(job);
+    if(key)subtitleStore.save(key,{source:'jimaku',label:'Jimaku 자막',path:result.path,assPath:result.assPath,fonts:result.fonts});
+    return {path:result.path,assPath:result.assPath,fonts:result.fonts,label:'Jimaku 일본어 자막'};
+  };
+  const translateDownloadJimaku=async(job,file)=>{
+    const provider=jimakuTranslation();if(!provider)return null;
+    const title=job.displayTitles?.ko||job.title||'',result=await translator().translate({file,title,provider,context:await translationContext(job.anime||{},title)});
+    const label=`${String(result.model||'').startsWith('local:')?'로컬 AI':'Gemini'} 번역 (Jimaku)`,key=downloadSubtitleKey(job);
+    if(key&&!result.failed)subtitleStore.save(key,{source:'gemini',label,path:result.path});
+    return {path:result.path,label};
   };
   // Android LilacDownloadService: AniSkip timestamps are saved with the download (one retry after 500 ms);
   // without them the local analyzer runs over the anime's other downloaded episodes.
@@ -1586,9 +1609,10 @@ app.whenReady().then(async () => {
   const analyzeDownload=async(job,siblings)=>analyzeOfflineOpEd({title:job.title,episode:job.episodeNumber,currentUrl:pathToFileURL(job.filePath).href,duration:job.duration,candidates:siblings.map(item=>({...item.episode,number:item.episodeNumber,localUrl:pathToFileURL(item.filePath).href}))});
   downloadManager=new DownloadManager({app,resolveTitles:anime=>resolveDisplayTitle(anime),
     saveTrack:(url,referer)=>saveRemoteSubtitle(String(url),remoteTrackOptions(url,referer)).then(file=>subtitleResult(file)),
-    translateTrack:async(file,title,anime)=>{const settings=translator().settings();return translator().ready()&&settings.translateDownloads?translator().translate({file,title,context:await translationContext(anime||{},title)}):null},findSubtitle:findDownloadSubtitle,findSkips:findDownloadSkips,analyzeOpEd:analyzeDownload,// Animenosub and Miruro downloads follow the player: the RAW video when the episode has a Korean subtitle (saved or found
-    // by the same search the download attaches afterwards), else SUB with its burned-in English.
-    resolveEpisode:async(episode,job)=>{if(!['animenosub','miruro'].includes(episode?.provider))return resolveProviderEpisode(episode);return resolveProviderEpisode({...episode,prefer:await findDownloadSubtitle(job,null).catch(()=>null)?'raw':'sub',download:true})},resolveLinkkf:async episode=>{
+    translateTrack:async(file,title,anime)=>{const settings=translator().settings();return translator().ready()&&settings.translateDownloads?translator().translate({file,title,context:await translationContext(anime||{},title)}):null},findSubtitle:findDownloadSubtitle,findJimaku:findDownloadJimaku,translateJimaku:translateDownloadJimaku,findSkips:findDownloadSkips,analyzeOpEd:analyzeDownload,// Animenosub and Miruro downloads follow the player: the RAW video when the episode has a Korean subtitle (saved or found
+    // by the same search the download attaches afterwards) or a Jimaku file it will translate, else SUB with its
+    // burned-in English.
+    resolveEpisode:async(episode,job)=>{if(!['animenosub','miruro'].includes(episode?.provider))return resolveProviderEpisode(episode);const korean=await findDownloadSubtitle(job,null).catch(()=>null),jimaku=!korean&&jimakuTranslation()&&(await jimakuEpisodeFiles(job.anime||{},Number(job.episodeNumber)||1).catch(()=>[])).length;return resolveProviderEpisode({...episode,prefer:korean||jimaku?'raw':'sub',download:true})},resolveLinkkf:async episode=>{
     let playerUrl='';try{const root=await linkkfFetch(`https://emdlinkkf.5imgdarr.top/apilink2.php?data=${encodeURIComponent(episode.token)}`);const links=Array.isArray(root.data)?root.data:[];playerUrl=(links.find(x=>String(x.server).toUpperCase()==='NR-HD')||links[0]||{}).link||'';}catch{}
     if(!playerUrl)playerUrl=`${LINKKF_WEB}/up/${encodeURIComponent(episode.postId)}/watch/?slug=${encodeURIComponent(episode.slug)}`;return resolveStreamPage(playerUrl,`${LINKKF_WEB}/`,15000);
   },broadcast});

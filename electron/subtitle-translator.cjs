@@ -20,7 +20,7 @@ function createTranslator(userData) {
   const installedModel = id => { const models = local.models(); return models.some(model => model.id === id && model.installed) ? id : models.find(model => model.installed)?.id || id; };
   const read = () => {
     let value = {}; try { value = JSON.parse(fs.readFileSync(settingsFile, 'utf8')) || {}; } catch { /* defaults */ }
-    return { key: String(value.key || '').trim(), model: String(value.model || '').trim(), models: Array.isArray(value.models) ? value.models : [], translateDownloads: value.translateDownloads !== false,
+    return { key: String(value.key || '').trim(), model: String(value.model || '').trim(), models: Array.isArray(value.models) ? value.models : [], translateDownloads: Boolean(value.translateDownloadsChosen) && value.translateDownloads === true, translateDownloadsChosen: Boolean(value.translateDownloadsChosen),
       localModel: installedModel(String(value.localModel || 'hy-mt-1.8b')),
       // How a picked Jimaku file is translated by itself: 'off', 'gemini' or 'local' (older settings: on = whichever is set up).
       jimakuTranslate: ['off', 'gemini', 'local'].includes(value.jimakuTranslate) ? value.jimakuTranslate : value.autoJimaku === false ? 'off' : 'gemini' };
@@ -58,7 +58,8 @@ function createTranslator(userData) {
   // Only the fields given change; a new key is checked by listing its models.
   async function saveSettings(change = {}) {
     const current = read(), next = { ...current };
-    if ('translateDownloads' in change) next.translateDownloads = change.translateDownloads !== false;
+    // Off unless turned on in 설정 (older settings saved it on without anyone choosing, so they start off once).
+    if ('translateDownloads' in change) Object.assign(next, { translateDownloads: change.translateDownloads === true, translateDownloadsChosen: true });
     if ('jimakuTranslate' in change && ['off', 'gemini', 'local'].includes(change.jimakuTranslate)) next.jimakuTranslate = change.jimakuTranslate;
     if ('localModel' in change) next.localModel = String(change.localModel || current.localModel);
     if ('model' in change && next.models.includes(change.model)) next.model = change.model;

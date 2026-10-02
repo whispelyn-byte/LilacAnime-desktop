@@ -105,7 +105,7 @@ function createLocalAi(userData) {
   const freePort = () => new Promise((resolve, reject) => { const probe = net.createServer(); probe.once('error', reject); probe.listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); }); });
   function stop() { clearTimeout(idleTimer); if (server?.child && !server.child.killed) { server.child.kill(); try { fs.unlinkSync(pidFile); } catch {} } server = null; starting = null; }
   function touch() { clearTimeout(idleTimer); idleTimer = setTimeout(stop, IDLE_STOP); idleTimer.unref?.(); }
-  // One server for the selected model; GPU layers are offloaded when the Vulkan build finds a device.
+  // One server for the selected model; layers go to the graphics card when the Vulkan build finds one.
   async function start(model, status = () => {}) {
     const file = modelPath(model);
     if (server?.model === file && !server.child.killed) { touch(); return server; }
@@ -116,20 +116,33 @@ function createLocalAi(userData) {
       status('llama.cpp 준비 중');
       const exe = await ensureRuntime((done, total) => status(`llama.cpp 받는 중 ${total ? Math.round(done / total * 100) : 0}%`));
       await stopLeftover();
-      const port = await freePort();
-      const child = spawn(exe, ['-m', file, '--host', '127.0.0.1', '--port', String(port), '-c', '8192', '-np', String(PARALLEL), '-ngl', '99', '--jinja', '--no-webui'], { cwd: path.dirname(exe), windowsHide: true });
-      try { fs.writeFileSync(pidFile, String(child.pid)); } catch {}
-      let log = ''; const keep = chunk => { log = (log + chunk.toString()).slice(-4000); };
-      child.stdout.on('data', keep); child.stderr.on('data', keep);
-      const exited = new Promise(resolve => child.once('exit', code => resolve(code)));
+      // llama.cpp puts as many layers on the graphics card as fit in its free memory and runs the rest on the CPU.
+      // Forcing all of them (-ngl 99) stopped a 7B model (4.6 GB) from loading on a 4 GB card. Should the card still
+      // fail to allocate, the model is loaded again on the CPU alone.
+      const launch = async gpuLayers => {
+        const port = await freePort();
+        const child = spawn(exe, ['-m', file, '--host', '127.0.0.1', '--port', String(port), '-c', '8192', '-np', String(PARALLEL), ...gpuLayers, '--jinja', '--no-webui'], { cwd: path.dirname(exe), windowsHide: true });
+        try { fs.writeFileSync(pidFile, String(child.pid)); } catch {}
+        let log = ''; const keep = chunk => { log = (log + chunk.toString()).slice(-8000); };
+        child.stdout.on('data', keep); child.stderr.on('data', keep);
+        const exited = new Promise(resolve => child.once('exit', code => resolve(code)));
+        const deadline = Date.now() + 180000;
+        for (;;) {
+          const code = await Promise.race([exited, new Promise(resolve => setTimeout(() => resolve(undefined), 500))]);
+          if (code !== undefined) {
+            const memory = /OutOfDeviceMemory|unable to allocate|failed to allocate/i.test(log);
+            const error = new Error(memory ? '그래픽카드 메모리가 부족해 모델을 불러오지 못했습니다. 더 작은 모델(HY-MT1.5 1.8B)을 써 보세요.' : `llama.cpp가 종료되었습니다: ${log.trim().split('\n').filter(line => / E /.test(line)).pop() || log.trim().split('\n').pop() || code}`);
+            error.memory = memory; throw error;
+          }
+          try { const response = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(2000) }); if (response.ok) return { child, port }; } catch { /* still loading */ }
+          if (Date.now() > deadline) { child.kill(); throw new Error('모델을 불러오는 데 너무 오래 걸립니다.'); }
+        }
+      };
       status('모델 불러오는 중');
-      const deadline = Date.now() + 180000;
-      for (;;) {
-        const code = await Promise.race([exited, new Promise(resolve => setTimeout(() => resolve(undefined), 500))]);
-        if (code !== undefined) throw new Error(`llama.cpp가 종료되었습니다: ${(log.trim().split('\n').pop() || code)}`);
-        try { const response = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(2000) }); if (response.ok) break; } catch { /* still loading */ }
-        if (Date.now() > deadline) { child.kill(); throw new Error('모델을 불러오는 데 너무 오래 걸립니다.'); }
-      }
+      let started;
+      try { started = await launch([]); }
+      catch (error) { if (!error.memory) throw error; status('그래픽카드 메모리가 부족해 CPU로 불러오는 중'); started = await launch(['-ngl', '0']); }
+      const { child, port } = started;
       server = { child, port, model: file }; child.once('exit', () => { if (server?.child === child) server = null; }); touch();
       return server;
     })();

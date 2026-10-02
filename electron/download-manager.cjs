@@ -3,6 +3,9 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { pathToFileURL, fileURLToPath } = require('url');
 
+// Saved subtitle sources that stand for the stream's own Korean track.
+const STREAM_SOURCES = ['reanime', 'linkkf', 'provider'];
+
 function safeName(value = '') {
   return String(value).normalize('NFKC').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/[. ]+$/g, '').trim().slice(0, 120) || 'episode';
 }
@@ -17,12 +20,12 @@ const HLS_PARALLEL = 6;
 const HLS_USER_AGENT = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome || '131.0.0.0'} Safari/537.36`;
 
 class DownloadManager {
-  constructor({ app, resolveEpisode, resolveLinkkf, findSubtitle, findSkips, analyzeOpEd, resolveTitles, saveTrack, translateTrack, broadcast }) {
+  constructor({ app, resolveEpisode, resolveLinkkf, findSubtitle, findJimaku, translateJimaku, findSkips, analyzeOpEd, resolveTitles, saveTrack, translateTrack, broadcast }) {
     this.root = path.join(app.getPath('videos'), 'LilacAnime');
     this.stateFile = path.join(app.getPath('userData'), 'downloads.json');
     this.resolveEpisode = resolveEpisode;
     this.resolveLinkkf = resolveLinkkf;
-    this.findSubtitle = findSubtitle;
+    this.findSubtitle = findSubtitle; this.findJimaku = findJimaku; this.translateJimaku = translateJimaku;
     this.saveTrack = saveTrack;
     this.translateTrack = translateTrack;
     this.trackQueue = Promise.resolve();
@@ -64,10 +67,13 @@ class DownloadManager {
   remove(id) {
     const job = this.jobs.find(item => item.id === id); if (!job) return false;
     this.active.get(id)?.process?.kill?.();
-    for (const file of [job.filePath, job.subtitlePath, job.subtitleAssPath, job.partialPath]) { if (file) try { fs.unlinkSync(file); } catch {} }
+    for (const file of [job.filePath, job.subtitlePath, job.subtitleAssPath, job.partialPath, ...(job.subtitleOriginals || [])]) { if (file) try { fs.unlinkSync(file); } catch {} }
     if (job.partialPath) try { fs.rmSync(`${job.partialPath}.hls`, { recursive: true, force: true }); } catch {} // mirrorHls copy
     if (job.filePath && job.subtitleTracks) try { fs.rmSync(trackDir(job), { recursive: true, force: true }); } catch {}
-    this.jobs = this.jobs.filter(item => item.id !== id); this.save(); return true;
+    this.jobs = this.jobs.filter(item => item.id !== id);
+    // The series poster goes with its last episode.
+    if (job.posterPath && !this.jobs.some(item => item.posterPath === job.posterPath)) try { fs.unlinkSync(job.posterPath); } catch {}
+    this.save(); return true;
   }
 
   pump() {
@@ -99,6 +105,7 @@ class DownloadManager {
       job.stage='subtitle';this.save();await this.attachSubtitle(job,stream);job.stage='';job.updated=Date.now();this.save();
       await this.attachSkips(job);
       await this.attachTitles(job);
+      await this.attachPoster(job);
       this.queueTracks(job, stream);
     } catch (error) {
       // A job resumed while this run was stopping stays queued and starts again below.
@@ -186,7 +193,17 @@ class DownloadManager {
     let found = null;
     try { found = await this.findSubtitle?.(job, stream); } catch { /* fall back to the stream's own subtitle */ }
     job.subtitleChecked = true;
-    if (!found || found.stream) { await this.saveSubtitle(job, stream?.subtitleUrl); this.saveAssSubtitle(job, stream?.subtitleAss?.path); return; }
+    // RE:Anime's / Miruro's own Korean track is used alone. Otherwise the Jimaku file comes too: as the subtitle when
+    // nothing Korean was found, else next to the fansub one (saved for the episode, so the player offers it).
+    if (!found || found.stream) {
+      await this.saveSubtitle(job, stream?.subtitleUrl); this.saveAssSubtitle(job, stream?.subtitleAss?.path);
+      if (!found && !job.subtitlePath) await this.attachJimaku(job, stream, true);
+      return;
+    }
+    this.copySubtitle(job, found);
+    if (!STREAM_SOURCES.includes(found.source)) await this.attachJimaku(job, stream, false);
+  }
+  copySubtitle(job, found) {
     const base = job.filePath.replace(/\.mp4$/i, '');
     try {
       if (found.path && fs.existsSync(found.path)) { job.subtitlePath = base + path.extname(found.path); fs.copyFileSync(found.path, job.subtitlePath); }
@@ -196,6 +213,50 @@ class DownloadManager {
       if (fonts.length) { const dir = path.join(path.dirname(job.filePath), 'fonts'); fs.mkdirSync(dir, { recursive: true }); job.subtitleFonts = fonts.map(file => { const out = path.join(dir, path.basename(file)); if (!fs.existsSync(out)) fs.copyFileSync(file, out); return out; }); }
       job.subtitleLabel = found.label || '';
     } catch { /* the video is still usable without a subtitle */ }
+  }
+
+  // The episode's Japanese file from Jimaku (findJimaku saves it for the episode) and its Korean translation
+  // (설정 > Jimaku 자막 자동 번역), which follows in the track queue so a long local translation holds no download
+  // slot. primary: nothing Korean was found, so the file becomes the episode's subtitle (not over English burned into
+  // the video) and then its translation does.
+  async attachJimaku(job, stream, primary) {
+    let file = null;
+    try { file = await this.findJimaku?.(job); } catch { /* the video is still usable without a subtitle */ }
+    if (!file) return;
+    const burned = (stream?.servers || []).find(server => server.label === stream?.server)?.kind === 'sub';
+    if (primary && !burned) this.copySubtitle(job, file);
+    this.trackQueue = this.trackQueue.then(() => this.translateJimakuFor(job, file, primary && !burned)).catch(() => {});
+  }
+  async translateJimakuFor(job, file, primary) {
+    if (!this.jobs.includes(job) || !this.translateJimaku) return;
+    job.stage = 'translate'; job.translateProgress = 'Jimaku 자막'; this.save();
+    try {
+      const result = await this.translateJimaku(job, file.path);
+      if (!primary || !result || !this.jobs.includes(job) || !fs.existsSync(job.filePath || '')) return;
+      const out = job.filePath.replace(/\.mp4$/i, '.ko.vtt'); fs.copyFileSync(result.path, out);
+      job.subtitleOriginals = [...(job.subtitleOriginals || []), job.subtitlePath, job.subtitleAssPath].filter(item => item && item !== out);
+      Object.assign(job, { subtitlePath: out, subtitleAssPath: null, subtitleFonts: [], subtitleLabel: result.label });
+    } catch { /* the Japanese file stays the episode's subtitle */ }
+    finally { job.stage = ''; delete job.translateProgress; job.updated = Date.now(); this.save(); }
+  }
+
+  // The anime's poster, kept once in its series folder so the downloads list (and the player) show it offline.
+  async attachPoster(job) {
+    job.posterChecked = true;
+    if (job.posterPath && fs.existsSync(job.posterPath)) return;
+    if (!/^https?:\/\//i.test(job.image || '') || !job.filePath) return;
+    const dir = path.dirname(job.filePath);
+    let file = ['.jpg', '.png', '.webp'].map(ext => path.join(dir, `poster${ext}`)).find(item => fs.existsSync(item));
+    if (!file) {
+      try {
+        const response = await fetch(job.image, { signal: AbortSignal.timeout(20000), headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'image/*' } });
+        const type = response.headers.get('content-type') || '';
+        if (!response.ok || !/^image\//i.test(type)) return;
+        file = path.join(dir, `poster${/png/i.test(type) ? '.png' : /webp/i.test(type) ? '.webp' : '.jpg'}`);
+        fs.writeFileSync(file, Buffer.from(await response.arrayBuffer()));
+      } catch { return; }
+    }
+    job.posterPath = file; job.posterUrl = pathToFileURL(file).href; this.save();
   }
 
   // Re:Anime and Miruro subtitle tracks are all kept with the episode and, when the user set up Gemini, translated into
@@ -268,6 +329,7 @@ class DownloadManager {
       }
       for (const job of this.jobs.filter(item => item.status === 'completed' && !item.skipChecked && fs.existsSync(item.filePath || ''))) await this.attachSkips(job);
       for (const job of this.jobs.filter(item => item.status === 'completed' && item.anime && !(item.displayTitles?.ko && item.displayTitles?.en))) await this.attachTitles(job);
+      for (const job of this.jobs.filter(item => item.status === 'completed' && item.image && !item.posterChecked && fs.existsSync(item.filePath || ''))) await this.attachPoster(job);
     } finally { this.backfilling = false; }
   }
 
