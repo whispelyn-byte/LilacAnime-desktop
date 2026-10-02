@@ -1,7 +1,7 @@
 // Local subtitle translation (설정 > 자막 자동 번역 > 로컬 AI), like Android's local AI: a GGUF translation model run by
 // llama.cpp. llama.cpp's Windows server (the Vulkan build, which falls back to the CPU without a usable GPU) and the
 // model are downloaded on first use into userData/local-ai; the server listens on 127.0.0.1 only while translating
-// and is stopped after a few idle minutes.
+// and is stopped half a minute after the last line (loading the model again takes a few seconds).
 const fs = require('fs');
 const path = require('path');
 const net = require('net');
@@ -16,7 +16,7 @@ const MODELS = [
   { id: 'ja-ko-vn-7b', label: 'ja-ko-vn 7B', note: '4.6GB · 일본어 → 한국어 특화', repo: 'hell0ks/ja-ko-vn-7b-v1-gguf', file: 'model-Q4_K_M.gguf', size: 4630e6 }
 ];
 const RUNTIME_ASSET = /^llama-b\d+-bin-win-vulkan-x64\.zip$/;
-const PARALLEL = 4, IDLE_STOP = 5 * 60 * 1000;
+const PARALLEL = 4, IDLE_STOP = 30 * 1000;
 // HY-MT's own prompt, one line at a time. Previous lines as context (Android's prompt, or HY-MT's contextual one) made
 // the 1.8B model translate the context instead of the line in about a third of short lines, so none is sent. What it
 // gets instead is HY-MT's terminology list with the names and set phrases found in the line (anime-glossary): without
@@ -130,8 +130,12 @@ function createLocalAi(userData) {
       // with more room left on the card, then on the CPU alone.
       const launch = async extra => {
         const port = await freePort();
-        const child = spawn(exe, ['-m', file, '--host', '127.0.0.1', '--port', String(port), '-c', '4096', '-np', String(PARALLEL), '-fa', 'on', '-ctk', 'q8_0', '-ctv', 'q8_0', '--fit-target', '512', ...extra, '--jinja', '--no-webui', '-lv', '4'], { cwd: path.dirname(exe), windowsHide: true });
+        const child = spawn(exe, ['-m', file, '--host', '127.0.0.1', '--port', String(port), '-c', '4096', '-np', String(PARALLEL), '-fa', 'on', '-ctk', 'q8_0', '-ctv', 'q8_0', '--fit-target', '512', ...extra, '--jinja', '--no-webui', '-lv', '4'], { cwd: path.dirname(exe), windowsHide: true, env: { ...process.env, LLAMA_ARG_LOAD_MODE: 'none', LLAMA_ARG_NO_MMAP: '1' } });
         try { fs.writeFileSync(pidFile, String(child.pid)); } catch {}
+        // The model file is read rather than memory-mapped: on Windows a mapped file stays in RAM whole even with every
+        // layer on the graphics card (1.4 GB for the 1.8B model, 0.3 GB read; 5.2 GB against 2.7 GB for ja-ko-vn on a
+        // 4 GB card). Set through the environment, which a llama.cpp without the option (load mode is newer than
+        // no-mmap) ignores instead of refusing to start.
         // The device and layer count are read as the model loads (-lv 4 prints them).
         let log = '', device = '', layers = 0, total = 0;
         const keep = chunk => {

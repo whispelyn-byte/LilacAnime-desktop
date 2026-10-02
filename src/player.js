@@ -39,18 +39,18 @@ function syncPlayerSettingsUI() {
   $('#psAutoPlay').checked = playerFlag('playerAutoPlay');
   $('#psSkipButton').checked = playerFlag('playerSkipButton');
   $('#psAutoSkip').checked = playerFlag('playerAutoSkip', false);
-  $('#assEffectsHint').textContent = assEffectsEnabled() ? '원본 위치·색상·효과를 유지합니다' : '효과를 단순화해 성능을 우선합니다';
+  $('#assEffectsHint').textContent = assEffectsEnabled() ? '노래 가사·간판 번역 등의 위치·색·움직임을 그대로 보여 줍니다' : '효과를 줄여 가볍게 보여 줍니다 (영상이 버벅일 때)';
   const source = localStorage.getItem('subtitleSource') || 'reanime';
   $$('#psSubtitleSources button').forEach(button => button.classList.toggle('selected', button.dataset.source === source));
   const size = Number(localStorage.getItem('subtitleSize') || 100), position = Number(localStorage.getItem('subtitlePosition') || 12), outline = Number(localStorage.getItem('vttOutline') || 2), sync = Number(localStorage.getItem('subtitleSync') || 0);
   $('#psSubtitleSize').value = String(size); $('#psSizeLabel').textContent = `${size}%`;
   $('#psSubtitlePosition').value = String(position); $('#psPositionLabel').textContent = `${position}%`;
   $('#psVttOutline').value = String(outline); $('#psOutlineLabel').textContent = `${outline.toFixed(1)}px`;
-  $('#psSyncLabel').textContent = `${sync}ms`;
+  $('#psSyncLabel').textContent = sync ? `${sync > 0 ? '+' : ''}${(sync / 1000).toFixed(2)}초 (${sync > 0 ? '늦게' : '빠르게'})` : '0초';
   $('#psVttStyle').checked = playerFlag('vttStyle');
   $('#psVttBold').checked = localStorage.getItem('vttBold') !== 'false';
   const fontFile = localStorage.getItem('subtitleFontPath') || '';
-  $('#psFontName').textContent = fontFile ? fontFile.split(/[\\/]/).pop() : '기본 폰트 사용 중';
+  $('#psFontName').textContent = fontFile ? fontFile.split(/[\\/]/).pop() : '기본 글꼴 사용 중';
   const speed = $('#video').playbackRate || 1;
   $('#psSpeedLabel').textContent = `${speed.toFixed(2)}x`;
   $$('#psSpeeds button').forEach(button => button.classList.toggle('selected', Number(button.dataset.speed) === speed));
@@ -211,7 +211,7 @@ function applyDefaultQuality() {
 // a picked server is kept for later episodes of that source. Changing it reloads the episode at the same point.
 // Servers are grouped by kind (Miruro offers a dozen): 자동 and one chip per kind, and the servers of one kind under
 // them, first the kind playing now. Names lose the kind prefix ("SUB - animepahe animepahe" -> animepahe).
-const SERVER_KINDS = { sub: ['SUB', '영어 자막이 영상에 박혀 있어요.'], soft: ['SOFT', '자막을 따로 입혀서 트랙을 바꾸거나 번역할 수 있어요.'], raw: ['RAW', '자막이 없는 원본이에요.'], dub: ['DUB', '영어 더빙이에요.'] };
+const SERVER_KINDS = { sub: ['SUB · 영어 자막', '영어 자막이 영상에 박혀 있어요. 한국어 자막을 입히면 겹쳐 보여요.'], soft: ['SOFT · 자막 따로', '자막 없는 영상에 자막을 따로 입혀요. 자막 트랙을 바꾸거나 한국어로 번역할 수 있어요.'], raw: ['RAW · 자막 없음', '자막이 없는 원본이에요. 한국어 자막을 입혀 보기에 좋아요.'], dub: ['DUB · 영어 더빙', '영어 더빙이에요.'] };
 let openServerKind = '';
 const serverKind = server => String(server.kind || server.label.split(/\s*-\s*/)[0] || '').toLowerCase();
 function serverName(server) {
@@ -227,8 +227,8 @@ function renderVideoServers() {
   $('#psServerNote').textContent = `재생 중: ${playing || '-'}`;
   const chip = (text, className, onclick) => { const button = document.createElement('button'); button.type = 'button'; button.textContent = text; button.className = className; button.onclick = onclick; return button; };
   const kindRow = document.createElement('div'); kindRow.className = 'ps-chips ps-server-kinds';
-  kindRow.append(chip('자동', picked ? '' : 'selected', () => selectVideoServer('')),
-    ...kinds.map(kind => { const button = chip(`${SERVER_KINDS[kind]?.[0] || kind.toUpperCase()} ${servers.filter(server => serverKind(server) === kind).length}`, kind === openServerKind ? 'open' : '', () => { openServerKind = kind; renderVideoServers(); }); button.setAttribute('aria-expanded', String(kind === openServerKind)); return button; }));
+  kindRow.append(chip('자동 (추천)', picked ? '' : 'selected', () => selectVideoServer('')),
+    ...kinds.map(kind => { const button = chip(SERVER_KINDS[kind]?.[0] || kind.toUpperCase(), kind === openServerKind ? 'open' : '', () => { openServerKind = kind; renderVideoServers(); }); button.setAttribute('aria-expanded', String(kind === openServerKind)); return button; }));
   const group = document.createElement('div'); group.className = 'ps-chips ps-server-group';
   group.append(...servers.filter(server => serverKind(server) === openServerKind).map(server => { const button = chip(serverName(server), [server.label === picked ? 'selected' : '', server.label === playing ? 'playing' : ''].join(' ').trim(), () => selectVideoServer(server.label)); button.title = server.label; return button; }));
   const note = document.createElement('small'); note.className = 'ps-note'; note.textContent = SERVER_KINDS[openServerKind]?.[1] || '';

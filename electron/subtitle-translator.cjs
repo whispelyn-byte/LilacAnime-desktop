@@ -20,7 +20,7 @@ function createTranslator(userData) {
   const installedModel = id => { const models = local.models(); return models.some(model => model.id === id && model.installed) ? id : models.find(model => model.installed)?.id || id; };
   const read = () => {
     let value = {}; try { value = JSON.parse(fs.readFileSync(settingsFile, 'utf8')) || {}; } catch { /* defaults */ }
-    return { key: String(value.key || '').trim(), model: String(value.model || '').trim(), models: Array.isArray(value.models) ? value.models : [], translateDownloads: Boolean(value.translateDownloadsChosen) && value.translateDownloads === true, translateDownloadsChosen: Boolean(value.translateDownloadsChosen),
+    return { key: String(value.key || '').trim(), model: String(value.model || '').trim(), models: Array.isArray(value.models) ? value.models : [], translateDownloads: value.translateDownloadsChosen ? value.translateDownloads === true : true, translateDownloadsChosen: Boolean(value.translateDownloadsChosen),
       localModel: installedModel(String(value.localModel || 'hy-mt-1.8b')),
       // How a picked Jimaku file is translated by itself: 'off', 'gemini' or 'local' (older settings: on = whichever is set up).
       jimakuTranslate: ['off', 'gemini', 'local'].includes(value.jimakuTranslate) ? value.jimakuTranslate : value.autoJimaku === false ? 'off' : 'gemini' };
