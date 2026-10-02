@@ -52,6 +52,7 @@ contextBridge.exposeInMainWorld('lilac', {
   chooseSubtitle: async () => (await ipcRenderer.invoke('file:subtitle'))?.url || null,
   chooseSubtitleDetails: () => ipcRenderer.invoke('file:subtitle'),
   setWindowTheme: light => ipcRenderer.invoke('window:theme', Boolean(light)),
+  setWindowButtons: mode => ipcRenderer.invoke('window:buttons', String(mode || 'page')),
   updateState: () => ipcRenderer.invoke('update:state'),
   checkUpdate: () => ipcRenderer.invoke('update:check'),
   downloadUpdate: () => ipcRenderer.invoke('update:download'),

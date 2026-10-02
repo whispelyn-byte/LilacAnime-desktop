@@ -1785,7 +1785,13 @@ app.whenReady().then(async () => {
   ipcMain.handle('subtitle-store:list',(_,key)=>subtitleStore.list(String(key||'')));
   ipcMain.handle('subtitle-store:save',(_,key,entry)=>subtitleStore.save(String(key||''),entry));
   ipcMain.handle('subtitle-store:remove',(_,key,id)=>subtitleStore.remove(String(key||''),String(id||'')));
-  ipcMain.handle('window:theme',(event,light)=>{const win=BrowserWindow.fromWebContents(event.sender);if(win&&!win.isDestroyed())win.setTitleBarOverlay(light?{color:'#ffffff',symbolColor:'#1c1b1f',height:42}:{color:'#121212',symbolColor:'#d0cdd6',height:42});});
+  // The window buttons Windows draws over the page: in the theme's colors, and over the player in a window white on the
+  // video, or not drawn at all while the player's controls are hidden (they come back with the controls).
+  const windowButtons=new WeakMap();
+  const paintWindowButtons=win=>{const {light=false,mode='page'}=windowButtons.get(win)||{};win.setTitleBarOverlay({...(mode==='hidden'?{color:'#00000000',symbolColor:'#00000000'}:mode==='player'?{color:'#00000000',symbolColor:'#ffffff'}:light?{color:'#ffffff',symbolColor:'#1c1b1f'}:{color:'#121212',symbolColor:'#d0cdd6'}),height:42})};
+  const setWindowButtons=(event,change)=>{const win=BrowserWindow.fromWebContents(event.sender);if(!win||win.isDestroyed())return;windowButtons.set(win,{...windowButtons.get(win),...change});paintWindowButtons(win)};
+  ipcMain.handle('window:theme',(event,light)=>setWindowButtons(event,{light:Boolean(light)}));
+  ipcMain.handle('window:buttons',(event,mode)=>setWindowButtons(event,{mode:['player','hidden'].includes(mode)?mode:'page'}));
   ipcMain.handle('update:state',()=>updater.state);
   ipcMain.handle('update:notes',()=>updater.notes());
   ipcMain.handle('update:check',()=>updater.check());
