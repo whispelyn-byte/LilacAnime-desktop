@@ -15,10 +15,12 @@ const BATCH_LINES = 600, BATCH_CHARS = 30000, PARALLEL = 2, PROMPT_VERSION = 'pr
 function createTranslator(userData) {
   const settingsFile = path.join(userData, 'gemini.json'), cacheDir = path.join(userData, 'subtitles', 'translated');
   const local = createLocalAi(userData);
+  // The picked model, or the first one on disk when the picked one is not (never downloaded, or deleted).
+  const installedModel = id => { const models = local.models(); return models.some(model => model.id === id && model.installed) ? id : models.find(model => model.installed)?.id || id; };
   const read = () => {
     let value = {}; try { value = JSON.parse(fs.readFileSync(settingsFile, 'utf8')) || {}; } catch { /* defaults */ }
     return { key: String(value.key || '').trim(), model: String(value.model || '').trim(), models: Array.isArray(value.models) ? value.models : [], translateDownloads: value.translateDownloads !== false,
-      localModel: String(value.localModel || 'hy-mt-1.8b'),
+      localModel: installedModel(String(value.localModel || 'hy-mt-1.8b')),
       // How a picked Jimaku file is translated by itself: 'off', 'gemini' or 'local' (older settings: on = whichever is set up).
       jimakuTranslate: ['off', 'gemini', 'local'].includes(value.jimakuTranslate) ? value.jimakuTranslate : value.autoJimaku === false ? 'off' : value.key ? 'gemini' : 'local' };
   };

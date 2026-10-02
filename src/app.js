@@ -748,10 +748,12 @@ async function saveTranslation(change){try{renderGeminiState(await window.lilac.
 function renderLocalAi(value){
   if(!value)return;
   $('#localModelList').replaceChildren(...(value.localModels||[]).map(model=>{
-    const row=document.createElement('div'),progress=localModelProgress[model.id],selected=model.id===value.localModel;row.className=`local-model${selected?' selected':''}`;
-    row.innerHTML=`<button type="button" class="local-model-pick"><b>${escapeHtml(model.label)}${selected?' · 사용 중':''}</b><small>${escapeHtml(model.note||'')}</small></button><button type="button" class="local-model-action"></button>`;
-    const pick=row.querySelector('.local-model-pick'),action=row.querySelector('.local-model-action');pick.disabled=!model.installed;pick.onclick=()=>saveTranslation({localModel:model.id});
-    if(progress){action.textContent=`받는 중 ${progress}%`;action.disabled=true}
+    // Only a model on disk can be in use; one not downloaded yet shows what it needs instead.
+    const row=document.createElement('div'),progress=localModelProgress[model.id],selected=model.installed&&model.id===value.localModel;row.className=`local-model${selected?' selected':''}`;
+    const state=selected?'사용 중':model.installed?'받음 · 눌러서 사용':progress!=null?'받는 중':'받지 않음';
+    row.innerHTML=`<button type="button" class="local-model-pick"><b>${escapeHtml(model.label)}</b><small>${escapeHtml(model.note||'')}</small></button><span class="local-model-state">${state}</span><button type="button" class="local-model-action"></button>`;
+    const pick=row.querySelector('.local-model-pick'),action=row.querySelector('.local-model-action');pick.disabled=!model.installed||selected;pick.onclick=()=>saveTranslation({localModel:model.id});
+    if(progress!=null){action.textContent=`받는 중 ${progress}%`;action.disabled=true}
     else if(model.installed){action.textContent=model.path?'목록에서 빼기':'삭제';action.onclick=async()=>{if(!confirm(`${model.label} 모델을 ${model.path?'목록에서 뺄까요':'삭제할까요'}?`))return;renderGeminiState(await window.lilac.removeLocalModel(model.id))}}
     else{action.textContent=`받기 · ${(model.size/1e9).toFixed(1)}GB`;action.onclick=()=>installLocalModel(model.id)}
     return row;
