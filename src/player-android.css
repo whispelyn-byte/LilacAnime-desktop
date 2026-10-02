@@ -148,3 +148,17 @@
 .ps-server-group { padding: 8px; border-radius: 10px; background: #ffffff0a; }
 .ps-server-group button.playing::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: #c8a2c8; vertical-align: middle; }
 .ps-server-list .ps-note { margin-top: -2px; }
+
+/* Plain-language help: what each source is, what a box holds, when to use a control. */
+.ps-pane > .ps-note { margin: 2px 0 6px; line-height: 1.45; }
+.ps-pane > .ps-note.ps-after-chips { margin-top: 6px; }
+.ps-section .ps-note { line-height: 1.45; }
+.ps-section .ps-note.ps-playing { margin-top: 4px; color: #ffffffa8; }
+.ps-box-note { margin: 4px 0 8px; line-height: 1.45; }
+.ps-body .sheet-tracks > .track-list + .sheet-button-row { margin-top: 10px; }
+.ps-sources { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; }
+.ps-sources button { display: grid; gap: 2px; padding: 7px 10px; text-align: left; }
+.ps-sources button b { font-size: 12px; font-weight: 600; }
+.ps-sources button small { color: #ffffff8c; font-size: 10px; }
+.ps-sources button.selected small { color: #0000008c; }
+.ps-sources button.hidden { display: none; }

@@ -451,7 +451,19 @@ async function ensureSubtitle(stream,title,episode,{skipSaved=false}={}){
   if(saved[0]){applySavedSubtitle(saved[0]);offerAfter(saved[0].source,!['provider','jimaku'].includes(saved[0].source));return true}
   const superseded=()=>requestId!==playbackRequestId||Boolean(currentPlaybackContext.selectedSubtitleTrack);$('#subtitleState').textContent='온라인 자막을 찾는 중...';
   const found=await onlineSubtitleFor(title,episode,subtitleSearchAnime());if(superseded())return false;if(found){attachOnlineSubtitle(found);return true}
+  if(await autoJimaku(superseded))return true;
   if(superseded())return false;const needsTmdb=currentPlaybackContext.episode?.provider==='reanime'&&!(await window.lilac.tmdbKey().catch(()=>({})))?.key;if(superseded())return false;$('#subtitleState').textContent=needsTmdb?'Kairan/Csora 자막을 찾지 못했습니다. 설정 > 한국어 제목 검색에서 TMDB API 키를 넣으면 더 많은 작품을 찾을 수 있어요.':trackProvider()&&currentPlaybackContext.subtitleTracks?.length?`한국어 자막이 없습니다. 아래 ${trackSourceLabel()} 트랙에서 다른 언어를 고르거나 내 자막 파일을 열 수 있어요.`:'자동으로 찾은 자막이 없습니다. 내 자막 파일을 열 수 있어요.';return false;
+}
+// No Korean subtitle anywhere (no Korean track, nothing from Kairan / Csora / Anissia): the episode's best Jimaku file,
+// translated as 설정 > 자막 자동 번역 > Jimaku 자막 자동 번역 says (the Japanese file plays until the translation is in).
+async function autoJimaku(superseded){
+  translationSettings=await window.lilac.geminiSettings().catch(()=>translationSettings);
+  const provider=translationSettings?.jimakuTranslate,anime=subtitleSearchAnime();
+  if(superseded()||!['gemini','local'].includes(provider)||!anime||!(translationReady('gemini')||translationReady('local')))return false;
+  $('#subtitleState').textContent='한국어 자막이 없어 Jimaku 일본어 자막을 찾는 중...';
+  const episode=Number($('#skipEpisode').value)||Number(currentPlaybackContext.episode?.number)||1;
+  const files=await window.lilac.jimakuList(anime,episode).catch(()=>[]);if(superseded()||!files.length)return false;
+  currentPlaybackContext.jimakuFiles=files;$('#jimakuBox').classList.remove('hidden');await applyJimaku(files[0]);return true;
 }
 function communityLabel(source,result={}){return source==='anissia'?`Anissia${result.maker?` · ${result.maker}`:''} 자막`:`${source==='kairan'?'Kairan':'Csora'} 자막`}
 function subtitleSearchAnime(){const anime=currentPlaybackContext.anime;return anime?{provider:anime.provider,id:anime.id,title:anime.title||anime.title_english||'',anilistId:anime.anilistId||null,malId:anime.malId||null}:null}
@@ -466,7 +478,9 @@ function trackProvider(){const provider=currentPlaybackContext.episode?.provider
 function trackSourceLabel(){return trackProvider()==='miruro'?'Miruro':'Re:Anime'}
 function renderSubtitleTracks(){
   const box=$('#subtitleTracks'),list=$('#subtitleTrackList'),tracks=currentPlaybackContext.subtitleTracks||[],hasTracks=Boolean(trackProvider());
-  $('#subtitleTracks .sheet-tracks-head b').textContent=`${trackSourceLabel()} 자막 트랙`;$$('[data-source="reanime"]').forEach(button=>button.textContent=trackProvider()==='miruro'?'Miruro':'Re:Anime');
+  $('#subtitleTracks .sheet-tracks-head b').textContent=`${trackSourceLabel()} 자막 트랙`;$$('[data-source="reanime"]').forEach(button=>(button.querySelector('b')||button).textContent=trackProvider()==='miruro'?'Miruro':'Re:Anime');
+  // Only the sources this episode can use: the site's own subtitle (Linkkf) or tracks (Re:Anime / Miruro) when it has them.
+  $('#psSubtitleSources [data-source="linkkf"]').classList.toggle('hidden',currentPlaybackContext.resolveKind!=='linkkf');$('#psSubtitleSources [data-source="reanime"]').classList.toggle('hidden',!trackProvider());
   if(!currentPlaybackContext.jimakuFiles)$('#jimakuBox').classList.add('hidden');
   box.classList.toggle('hidden',!hasTracks);if(!hasTracks){list.replaceChildren();return}
   $('#subtitleTrackState').textContent=tracks.length?`${tracks.length}개 트랙`:currentPlaybackContext.resolving||currentPlaybackContext.tracksLoading?'현재 회차의 자막 트랙을 불러오는 중…':'자막 트랙을 불러오지 못했습니다.';$('#reloadSubtitleTracks').classList.toggle('hidden',Boolean(tracks.length||currentPlaybackContext.resolving||currentPlaybackContext.tracksLoading));
