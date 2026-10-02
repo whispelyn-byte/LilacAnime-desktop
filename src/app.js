@@ -481,7 +481,7 @@ async function loadMissingSubtitleTracks(){
 // set, otherwise with the local AI (as downloads are).
 let translationSettings=null;
 const translationReady=provider=>provider==='local'?(translationSettings?.localModels||[]).some(model=>model.id===translationSettings.localModel&&model.installed):provider==='gemini'?Boolean(translationSettings?.key):Boolean(autoProvider());
-const autoProvider=()=>translationReady('gemini')?'gemini':translationReady('local')?'local':null;
+const autoProvider=()=>translationReady('local')?'local':translationReady('gemini')?'gemini':null;
 const translatedLabel=(result,name)=>`${String(result.model||'').startsWith('local:')?'로컬 AI':'Gemini'} 번역 (${name})`;
 // A track's file: the copy saved with the download, else fetched.
 const trackFile=track=>track.localUrl?Promise.resolve({path:track.path,url:track.localUrl,assPath:track.assUrl?track.assPath:null,assUrl:track.assUrl||null,fonts:[]}):window.lilac.remoteSubtitle(track.url,currentPlaybackContext.subtitleReferer);

@@ -22,14 +22,14 @@ function createTranslator(userData) {
     return { key: String(value.key || '').trim(), model: String(value.model || '').trim(), models: Array.isArray(value.models) ? value.models : [], translateDownloads: value.translateDownloads !== false,
       localModel: installedModel(String(value.localModel || 'hy-mt-1.8b')),
       // How a picked Jimaku file is translated by itself: 'off', 'gemini' or 'local' (older settings: on = whichever is set up).
-      jimakuTranslate: ['off', 'gemini', 'local'].includes(value.jimakuTranslate) ? value.jimakuTranslate : value.autoJimaku === false ? 'off' : value.key ? 'gemini' : 'local' };
+      jimakuTranslate: ['off', 'gemini', 'local'].includes(value.jimakuTranslate) ? value.jimakuTranslate : value.autoJimaku === false ? 'off' : 'local' };
   };
   // With the local AI the installed model list is part of the settings the page shows.
   const settings = () => { const value = read(); return { ...value, localModels: local.models() }; };
-  // The player has a button for each provider. Translations nobody asks for (a picked Jimaku file, downloads) use
-  // Gemini when a key is set, otherwise the local AI when its model is on disk.
+  // The player has a button for each provider. Translations nobody asks for (downloads) use the local AI when its
+  // model is on disk, otherwise Gemini when a key is set.
   const ready = provider => { const value = read(); return provider === 'local' ? local.models().some(model => model.id === value.localModel && model.installed) : provider === 'gemini' ? Boolean(value.key) : Boolean(autoProvider()); };
-  const autoProvider = () => ready('gemini') ? 'gemini' : ready('local') ? 'local' : null;
+  const autoProvider = () => ready('local') ? 'local' : ready('gemini') ? 'gemini' : null;
   const write = value => { fs.mkdirSync(path.dirname(settingsFile), { recursive: true }); fs.writeFileSync(settingsFile, JSON.stringify(value), 'utf8'); return value; };
 
   async function api(pathname, key, init = {}) {
