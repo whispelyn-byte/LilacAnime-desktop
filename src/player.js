@@ -11,14 +11,25 @@ window.addEventListener('pointerdown', () => { usingKeyboard = false; }, true);
 const autoSkipState = { enteredKey: null, enteredAt: 0, skippedKey: null };
 
 function playerSettingsOpen() { return $('#playerSettings').classList.contains('open'); }
+// The sheet is split into 재생 / 자막 / 자막 모양; the tab used last opens next time.
+function showPlayerSettingsTab(name) {
+  if (!$(`[data-ps-pane="${name}"]`)) name = 'play';
+  $$('[data-ps-tab]').forEach(button => { const on = button.dataset.psTab === name; button.classList.toggle('selected', on); button.setAttribute('aria-selected', String(on)); });
+  $$('[data-ps-pane]').forEach(pane => pane.classList.toggle('hidden', pane.dataset.psPane !== name));
+  $('#playerSettings .ps-body').scrollTop = 0;
+  try { localStorage.setItem('playerSettingsTab', name); } catch { /* the tab is only a convenience */ }
+}
+$$('[data-ps-tab]').forEach(button => button.onclick = () => showPlayerSettingsTab(button.dataset.psTab));
+showPlayerSettingsTab((() => { try { return localStorage.getItem('playerSettingsTab'); } catch { return null; } })() || 'play');
 function openPlayerSettings(open, focusSection = null) {
   const panel = $('#playerSettings');
   panel.classList.toggle('open', open); panel.setAttribute('aria-hidden', String(!open));
   $('#playerSettingsButton').setAttribute('aria-expanded', String(open));
   if (open) {
     syncPlayerSettingsUI();
+    const focusPane = focusSection?.closest('[data-ps-pane]'); if (focusPane) showPlayerSettingsTab(focusPane.dataset.psPane);
     if (focusSection) focusSection.scrollIntoView({ block: 'start' });
-    if (usingKeyboard) (focusSection?.querySelector('input,button') || panel.querySelector('.ps-body input,.ps-body button'))?.focus({ preventScroll: true });
+    if (usingKeyboard) (focusSection?.querySelector('input,button') || panel.querySelector('.ps-tabs button.selected'))?.focus({ preventScroll: true });
   }
   showPlayerControls();
 }
@@ -198,17 +209,30 @@ function applyDefaultQuality() {
 }
 // Animenosub / Miruro video servers ("SUB - Moon", "RAW - anikoto HD-2"…). 자동 = RAW under a Korean subtitle, else SUB;
 // a picked server is kept for later episodes of that source. Changing it reloads the episode at the same point.
+// Servers are grouped by kind (Miruro offers a dozen): 자동 and one chip per kind, and the servers of one kind under
+// them, first the kind playing now. Names lose the kind prefix ("SUB - animepahe animepahe" -> animepahe).
+const SERVER_KINDS = { sub: ['SUB', '영어 자막이 영상에 박혀 있어요.'], soft: ['SOFT', '자막을 따로 입혀서 트랙을 바꾸거나 번역할 수 있어요.'], raw: ['RAW', '자막이 없는 원본이에요.'], dub: ['DUB', '영어 더빙이에요.'] };
+let openServerKind = '';
+const serverKind = server => String(server.kind || server.label.split(/\s*-\s*/)[0] || '').toLowerCase();
+function serverName(server) {
+  const name = server.label.replace(/^[A-Za-z]+\s*-\s*/, ''), words = name.split(/\s+/);
+  return words.length === 2 && words[0].toLowerCase() === words[1].toLowerCase() ? words[0] : name;
+}
 function renderVideoServers() {
-  const servers = currentPlaybackContext.videoServers || [], box = $('#psServers');
-  box.classList.toggle('hidden', servers.length < 2); if (servers.length < 2) { $('#psServerList').replaceChildren(); return; }
-  const picked = localStorage.getItem(videoServerKey(currentPlaybackContext.episode?.provider)) || '';
-  $('#psServerNote').textContent = `재생 중: ${currentPlaybackContext.videoServer || '-'} · SUB는 영어 자막이 영상에 박혀 있고 RAW는 자막이 없어요${servers.some(server => server.kind === 'soft') ? ' · SOFT는 자막 파일을 따로 입혀서 트랙을 바꾸거나 번역할 수 있어요' : ''}`;
-  $('#psServerList').replaceChildren(...[{ label: '자동', value: '' }, ...servers.map(server => ({ label: server.label, value: server.label }))].map(option => {
-    const button = document.createElement('button'); button.type = 'button'; button.textContent = option.label;
-    button.classList.toggle('selected', option.value === picked);
-    button.onclick = () => selectVideoServer(option.value);
-    return button;
-  }));
+  const servers = currentPlaybackContext.videoServers || [], box = $('#psServers'), list = $('#psServerList');
+  box.classList.toggle('hidden', servers.length < 2); if (servers.length < 2) { list.replaceChildren(); return; }
+  const picked = localStorage.getItem(videoServerKey(currentPlaybackContext.episode?.provider)) || '', playing = currentPlaybackContext.videoServer || '';
+  const kinds = [...new Set(servers.map(serverKind))].sort((a, b) => Object.keys(SERVER_KINDS).indexOf(a) - Object.keys(SERVER_KINDS).indexOf(b));
+  if (!kinds.includes(openServerKind)) openServerKind = serverKind(servers.find(server => server.label === playing) || servers[0]);
+  $('#psServerNote').textContent = `재생 중: ${playing || '-'}`;
+  const chip = (text, className, onclick) => { const button = document.createElement('button'); button.type = 'button'; button.textContent = text; button.className = className; button.onclick = onclick; return button; };
+  const kindRow = document.createElement('div'); kindRow.className = 'ps-chips ps-server-kinds';
+  kindRow.append(chip('자동', picked ? '' : 'selected', () => selectVideoServer('')),
+    ...kinds.map(kind => { const button = chip(`${SERVER_KINDS[kind]?.[0] || kind.toUpperCase()} ${servers.filter(server => serverKind(server) === kind).length}`, kind === openServerKind ? 'open' : '', () => { openServerKind = kind; renderVideoServers(); }); button.setAttribute('aria-expanded', String(kind === openServerKind)); return button; }));
+  const group = document.createElement('div'); group.className = 'ps-chips ps-server-group';
+  group.append(...servers.filter(server => serverKind(server) === openServerKind).map(server => { const button = chip(serverName(server), [server.label === picked ? 'selected' : '', server.label === playing ? 'playing' : ''].join(' ').trim(), () => selectVideoServer(server.label)); button.title = server.label; return button; }));
+  const note = document.createElement('small'); note.className = 'ps-note'; note.textContent = SERVER_KINDS[openServerKind]?.[1] || '';
+  list.replaceChildren(kindRow, group, note);
 }
 function selectVideoServer(label) {
   const context = currentPlaybackContext, video = $('#video'), episode = context.episode, key = videoServerKey(episode?.provider);

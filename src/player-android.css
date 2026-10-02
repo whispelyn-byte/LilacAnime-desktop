@@ -122,3 +122,29 @@
 /* Picture-in-picture source: composed frames with subtitles; it only has to exist in the page. */
 .pip-source { position: fixed; left: 0; top: 0; width: 2px; height: 2px; opacity: 0; pointer-events: none; }
 #miniPlayer.active { color: var(--lilac, #c8a2c8); }
+
+/* 재생 / 자막 / 자막 모양 tabs */
+.ps-tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin: 10px 14px 2px; padding: 4px; border-radius: 12px; background: #ffffff12; }
+.ps-tabs button { height: 32px; border: 0; border-radius: 9px; background: transparent; color: #ffffffb3; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+.ps-tabs button:hover { color: #fff; }
+.ps-tabs button.selected { background: #fff; color: #000; }
+.ps-pane { padding: 4px 18px 0; }
+.ps-pane.hidden { display: none; }
+.ps-pane > .ps-group:first-child { margin-top: 6px; }
+.ps-pane .ps-section { margin: 0 0 6px; padding: 6px 0 10px; border: 0; border-bottom: 1px solid #ffffff12; }
+.ps-body .sheet-button { min-height: 38px; margin-top: 0; padding: 8px 12px; border-radius: 10px; font: inherit; font-size: 13px; text-align: center; }
+.ps-body .sheet-tracks > .sheet-button, .ps-body .sheet-tracks > .sheet-button-row { margin-top: 10px; }
+.ps-pane > .sheet-button-row { margin-top: 8px; }
+.ps-pane > .sheet-button-row + .ps-note { margin-top: 6px; }
+.ps-body .track-list { max-height: 260px; }
+.ps-body .track-option { font: inherit; font-size: 13px; }
+.ps-body .track-option > span { display: grid; gap: 1px; min-width: 0; }
+.ps-body .track-option b { font-weight: 600; }
+.ps-body .track-option em { overflow: hidden; color: #ffffff80; font-size: 11px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 영상 서버: kinds, then the servers of the open kind */
+.ps-server-list { display: grid; gap: 8px; margin-top: 8px; }
+.ps-server-kinds button.open { background: #c8a2c833; color: #fff; box-shadow: inset 0 0 0 1px #c8a2c8; }
+.ps-server-group { padding: 8px; border-radius: 10px; background: #ffffff0a; }
+.ps-server-group button.playing::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: #c8a2c8; vertical-align: middle; }
+.ps-server-list .ps-note { margin-top: -2px; }

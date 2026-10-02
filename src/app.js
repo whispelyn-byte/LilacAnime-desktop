@@ -417,15 +417,15 @@ function onlineSubtitleFor(title,episode,anime){
   return promise;
 }
 function attachOnlineSubtitle({source,result}){currentSubtitlePath=result.path;attachSubtitle(result.url,communityLabel(source,result),{path:result.path,assUrl:result.assUrl,assPath:result.assPath,fonts:result.fonts,source})}
-// The stream's own subtitle is not Korean (e.g. a Re:ANIME English track): offer a Korean one when it turns up.
-// Also offered over Linkkf's own or Re:ANIME's Korean subtitle, since fansubs are usually the better script.
-async function offerKoreanSubtitle(title,episode,requestId,current,{korean=false}={}){
+// The subtitle playing is not Korean (a saved Jimaku file, a saved stream subtitle): offer a Korean one when it
+// turns up. A Korean one already playing (the stream's own track, a saved or translated file) is left alone.
+async function offerKoreanSubtitle(title,episode,requestId,current){
   const found=await onlineSubtitleFor(title,episode,subtitleSearchAnime());
   if(!found||requestId!==playbackRequestId||currentSubtitle!==current)return;
   const name=communityLabel(found.source,found.result).replace(/ 자막$/,'');
-  const box=$('#subtitleOffer');$('#subtitleOfferText').textContent=korean?`${name} 한국어 자막이 있어요. 적용할까요?`:`한국어 자막(${name})을 찾았어요. 바꿀까요?`;
+  const box=$('#subtitleOffer');$('#subtitleOfferText').textContent=`한국어 자막(${name})을 찾았어요. 바꿀까요?`;
   box.classList.remove('hidden');clearTimeout(offerKoreanSubtitle.timer);offerKoreanSubtitle.timer=setTimeout(()=>box.classList.add('hidden'),20000);
-  $('#subtitleOfferApply').textContent=korean?'적용':'바꾸기';$('#subtitleOfferApply').onclick=()=>{box.classList.add('hidden');if(requestId===playbackRequestId)attachOnlineSubtitle(found)};
+  $('#subtitleOfferApply').textContent='바꾸기';$('#subtitleOfferApply').onclick=()=>{box.classList.add('hidden');if(requestId===playbackRequestId)attachOnlineSubtitle(found)};
   $('#subtitleOfferDismiss').onclick=()=>box.classList.add('hidden');
 }
 async function ensureSubtitle(stream,title,episode,{skipSaved=false}={}){
@@ -433,13 +433,12 @@ async function ensureSubtitle(stream,title,episode,{skipSaved=false}={}){
   $('#subtitleOffer').classList.add('hidden');
   const saved=key&&!skipSaved?await window.lilac.savedSubtitles(key).catch(()=>[]):[];if(requestId!==playbackRequestId)return false;
   // Same order as Android: the preferred source's saved file, the stream's own subtitle, any saved file, then online search.
-  // Fansub sources and the user's own files are final; anything else gets the online Korean offer.
-  const offerAfter=(source,korean)=>{if(!['kairan','csora','anissia','user','gemini'].includes(source))offerKoreanSubtitle(title,episode,requestId,currentSubtitle,{korean})};
+  // Only a subtitle that is not Korean gets the online Korean offer; fansubs and the user's own files are final.
+  const offerAfter=(source,korean)=>{if(!korean&&!['kairan','csora','anissia','user','gemini'].includes(source))offerKoreanSubtitle(title,episode,requestId,currentSubtitle)};
   // A machine translation stands for the Re:Anime / Jimaku subtitle it was made from.
-  const savedPreferred=(['reanime','jimaku'].includes(preferred)&&saved.find(entry=>entry.source==='gemini'))||saved.find(entry=>entry.source===preferred);if(savedPreferred){applySavedSubtitle(savedPreferred);offerAfter(savedPreferred.source,true);return true}
-  // Re:ANIME: like Android only a Korean track is applied by itself; any other language is left for the user
-  // to pick from the track list while the Korean search runs. Miruro applies its English file itself (stream.subtitleTrack)
-  // when the episode has no Korean subtitle.
+  const savedPreferred=(['reanime','jimaku'].includes(preferred)&&saved.find(entry=>entry.source==='gemini'))||saved.find(entry=>entry.source===preferred);if(savedPreferred){applySavedSubtitle(savedPreferred);offerAfter(savedPreferred.source,savedPreferred.source!=='jimaku');return true}
+  // Re:ANIME and Miruro: like Android only a Korean track is applied by itself; any other language is left for the user
+  // to pick from the track list while the Korean search runs.
   const reanime=currentPlaybackContext.episode?.provider==='reanime',koreanUrl=url=>/(?:^|[^a-z])(?:kor|korean|ko)(?:[^a-z]|$)|한국/i.test(decodeURIComponent(String(url||'')));
   // A downloaded episode's subtitle was picked for it when it was saved (a fansub, or the track the user chose).
   const fromDownload=Boolean(stream?.downloaded),fansub=fromDownload&&/Kairan|Csora|Anissia/.test(stream.subtitleLabel||'');
@@ -447,7 +446,7 @@ async function ensureSubtitle(stream,title,episode,{skipSaved=false}={}){
   if(stream?.subtitleUrl&&(!reanime||streamKorean)){if(!fromDownload&&(track||stream.subtitleTrack))currentPlaybackContext.selectedSubtitleTrack=track?.url||stream.subtitleTrack;renderSubtitleTracks();const source=track?'reanime':currentPlaybackContext.resolveKind==='linkkf'?'linkkf':reanime?'reanime':'provider';if(!track)currentPlaybackContext.streamSubtitle={src:stream.subtitleUrl,label:stream.subtitleLabel||'제공 자막',options:{path:stream.subtitlePath||null,assUrl:stream.subtitleAss?.url||null,assPath:stream.subtitleAss?.path||null,fonts:stream.subtitleAss?.fonts||[],source:stream.subtitlePath?source:null}};attachSubtitle(stream.subtitleUrl,track&&!fromDownload?`${trackSourceLabel()} ${track.label} 자막`:stream.subtitleLabel||(fromDownload?'다운로드 자막':'제공 자막'),{path:stream.subtitlePath||null,assUrl:stream.subtitleAss?.url||null,assPath:stream.subtitleAss?.path||null,fonts:stream.subtitleAss?.fonts||[],source:stream.subtitlePath?source:null});
     if(!fansub)offerAfter(source,streamKorean);
     return true}
-  if(saved[0]){applySavedSubtitle(saved[0]);offerAfter(saved[0].source,saved[0].source!=='provider');return true}
+  if(saved[0]){applySavedSubtitle(saved[0]);offerAfter(saved[0].source,!['provider','jimaku'].includes(saved[0].source));return true}
   const superseded=()=>requestId!==playbackRequestId||Boolean(currentPlaybackContext.selectedSubtitleTrack);$('#subtitleState').textContent='온라인 자막을 찾는 중...';
   const found=await onlineSubtitleFor(title,episode,subtitleSearchAnime());if(superseded())return false;if(found){attachOnlineSubtitle(found);return true}
   if(superseded())return false;const needsTmdb=currentPlaybackContext.episode?.provider==='reanime'&&!(await window.lilac.tmdbKey().catch(()=>({})))?.key;if(superseded())return false;$('#subtitleState').textContent=needsTmdb?'Kairan/Csora 자막을 찾지 못했습니다. 설정 > 한국어 제목 검색에서 TMDB API 키를 넣으면 더 많은 작품을 찾을 수 있어요.':trackProvider()&&currentPlaybackContext.subtitleTracks?.length?`한국어 자막이 없습니다. 아래 ${trackSourceLabel()} 트랙에서 다른 언어를 고르거나 내 자막 파일을 열 수 있어요.`:'자동으로 찾은 자막이 없습니다. 내 자막 파일을 열 수 있어요.';return false;
@@ -469,7 +468,12 @@ function renderSubtitleTracks(){
   if(!currentPlaybackContext.jimakuFiles)$('#jimakuBox').classList.add('hidden');
   box.classList.toggle('hidden',!hasTracks);if(!hasTracks){list.replaceChildren();return}
   $('#subtitleTrackState').textContent=tracks.length?`${tracks.length}개 트랙`:currentPlaybackContext.resolving||currentPlaybackContext.tracksLoading?'현재 회차의 자막 트랙을 불러오는 중…':'자막 트랙을 불러오지 못했습니다.';$('#reloadSubtitleTracks').classList.toggle('hidden',Boolean(tracks.length||currentPlaybackContext.resolving||currentPlaybackContext.tracksLoading));
-  list.replaceChildren(...tracks.map(track=>{const button=document.createElement('button'),selected=currentPlaybackContext.selectedSubtitleTrack===track.url;button.type='button';button.className=`track-option${selected?' selected':''}`;button.setAttribute('aria-pressed',String(selected));button.innerHTML=`<span>${escapeHtml(track.label)}</span><small>${escapeHtml(String(track.format||'vtt').toUpperCase())}${track.translatedUrl?' · 번역됨':''}</small>`;button.onclick=()=>selectSubtitleTrack(track);return button}));
+  // Korean, English and Japanese first; a label like "Chinese (Chinese (Han, Simplified) - Full Subtitles)" shows the
+  // language on top and the rest small underneath.
+  const rank=track=>isKoreanTrack(track)?0:/english|^en(?:[-_]|$)/i.test(`${track.label} ${track.language||''}`)?1:/japanese|^ja(?:[-_]|$)/i.test(`${track.label} ${track.language||''}`)?2:3;
+  list.replaceChildren(...tracks.map((track,index)=>({track,index})).sort((a,b)=>rank(a.track)-rank(b.track)||a.index-b.index).map(({track})=>{const button=document.createElement('button'),selected=currentPlaybackContext.selectedSubtitleTrack===track.url;button.type='button';button.className=`track-option${selected?' selected':''}`;button.setAttribute('aria-pressed',String(selected));button.title=track.label;
+    const parts=String(track.label||'').match(/^(.*?)\s*\((.*)\)$/),name=parts?.[1]||track.label,detail=parts?parts[2].replace(name,'').replace(/^[\s-]+/,'').trim():'';
+    button.innerHTML=`<span><b>${escapeHtml(name)}</b>${detail?`<em>${escapeHtml(detail)}</em>`:''}</span><small>${escapeHtml(String(track.format||'vtt').toUpperCase())}${track.translatedUrl?' · 번역됨':''}</small>`;button.onclick=()=>selectSubtitleTrack(track);return button}));
 }
 // Downloaded episodes play from disk, so fetch the Re:ANIME track list separately.
 async function loadMissingSubtitleTracks(){

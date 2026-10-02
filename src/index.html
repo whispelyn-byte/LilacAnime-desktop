@@ -124,40 +124,47 @@
               <div><b>플레이어 설정</b><small>재생 · 화질 · 자막</small></div>
               <button id="closePlayerSettings" class="player-icon" aria-label="닫기"><svg viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></svg></button>
             </div>
+            <div class="ps-tabs" role="tablist" aria-label="플레이어 설정 분류"><button type="button" role="tab" data-ps-tab="play">재생</button><button type="button" role="tab" data-ps-tab="subtitle">자막</button><button type="button" role="tab" data-ps-tab="style">자막 모양</button></div>
             <div class="ps-body">
-              <label class="ps-switch"><span><b>다음 화 자동재생</b><small>영상이 끝나면 다음 화를 재생합니다</small></span><input id="psAutoPlay" type="checkbox"></label>
-              <label class="ps-switch"><span><b>OP/ED 스킵 버튼</b><small>재생 화면에 스킵 버튼을 표시합니다</small></span><input id="psSkipButton" type="checkbox"></label>
-              <label class="ps-switch"><span><b>OP/ED 자동 스킵</b><small>감지된 OP/ED 구간을 자동으로 건너뜁니다</small></span><input id="psAutoSkip" type="checkbox"></label>
-              <section class="ps-section">
-                <label class="ps-switch"><span><b>자막</b><small>표시 · 소스 · 트랙 · 크기 · 위치 · 싱크 · 스타일</small></span><input id="subtitleEnabled" type="checkbox" checked></label>
+              <div class="ps-pane" data-ps-pane="play" role="tabpanel">
+                <section id="psServers" class="ps-section hidden"><p class="ps-group">영상 서버</p><small id="psServerNote" class="ps-note"></small><div id="psServerList" class="ps-server-list"></div></section><section id="psQuality" class="ps-section hidden"><p class="ps-group">화질</p><small class="ps-note">현재 스트림에서 선택 가능한 화질</small><div id="psQualityList" class="ps-chips"></div></section>
+                <div class="ps-row ps-speed"><span><b>재생 속도</b><small id="psSpeedLabel">1.00x</small></span><div id="psSpeeds" class="ps-chips"><button type="button" data-speed="0.75">0.75x</button><button type="button" data-speed="1">1.00x</button><button type="button" data-speed="1.25">1.25x</button><button type="button" data-speed="1.5">1.50x</button><button type="button" data-speed="2">2.00x</button></div></div>
+                <small id="psSeekNote" class="ps-note">뒤로/앞으로 버튼 이동: 10초</small>
+                <p class="ps-group">자동 재생 · 스킵</p>
+                <label class="ps-switch"><span><b>다음 화 자동재생</b><small>영상이 끝나면 다음 화를 재생합니다</small></span><input id="psAutoPlay" type="checkbox"></label>
+                <label class="ps-switch"><span><b>OP/ED 스킵 버튼</b><small>재생 화면에 스킵 버튼을 표시합니다</small></span><input id="psSkipButton" type="checkbox"></label>
+                <label class="ps-switch"><span><b>OP/ED 자동 스킵</b><small>감지된 OP/ED 구간을 자동으로 건너뜁니다</small></span><input id="psAutoSkip" type="checkbox"></label>
+              </div>
+              <div class="ps-pane" data-ps-pane="subtitle" role="tabpanel">
+                <label class="ps-switch"><span><b>자막 표시</b><small>끄면 자막을 숨깁니다</small></span><input id="subtitleEnabled" type="checkbox" checked></label>
                 <p id="subtitleState" class="ps-state">자막을 찾는 중...</p>
-                <label class="ps-switch ps-small"><span><b>ASS 자막 효과</b><small id="assEffectsHint">원본 위치·색상·효과를 유지합니다</small></span><input id="assEffectsSheet" type="checkbox" checked></label>
                 <p class="ps-label">자막 소스</p>
                 <div id="psSubtitleSources" class="ps-chips"><button type="button" data-source="linkkf">Linkkf</button><button type="button" data-source="reanime">Re:Anime</button><button type="button" data-source="kairan">Kairan</button><button type="button" data-source="csora">Csora</button><button type="button" data-source="anissia">Anissia</button><button type="button" data-source="jimaku">Jimaku</button><button type="button" data-source="user">사용자</button></div>
                 <div id="anissiaMakers" class="sheet-tracks hidden"><div class="sheet-tracks-head"><b>Anissia 제작자</b><span id="anissiaMakerState"></span></div><div id="anissiaMakerList" class="ps-chips"></div></div>
                 <div id="subtitleTracks" class="sheet-tracks hidden"><div class="sheet-tracks-head"><b>Re:Anime 자막 트랙</b><span id="subtitleTrackState"></span></div><div class="sheet-button-row"><button id="translateSubtitle" type="button" class="sheet-button" data-provider="gemini">Gemini 번역</button><button id="translateSubtitleLocal" type="button" class="sheet-button" data-provider="local">로컬 AI 번역</button></div><button id="reloadSubtitleTracks" type="button" class="sheet-button hidden">자막 트랙 다시 불러오기</button><div id="subtitleTrackList" class="track-list"></div></div>
                 <div id="jimakuBox" class="sheet-tracks hidden"><div class="sheet-tracks-head"><b>Jimaku 일본어 자막</b><span id="jimakuState"></span></div><div id="jimakuTranslate" class="sheet-button-row hidden"><button id="translateJimaku" type="button" class="sheet-button" data-provider="gemini">Gemini 번역</button><button id="translateJimakuLocal" type="button" class="sheet-button" data-provider="local">로컬 AI 번역</button></div><div id="jimakuList" class="track-list"></div></div>
+                <div id="savedSubtitles" class="sheet-tracks hidden"><div class="sheet-tracks-head"><b>이 회차의 저장 자막</b><span id="savedSubtitleCount"></span></div><div id="savedSubtitleList" class="track-list"></div></div>
+                <p class="ps-group">자막 파일</p>
+                <div class="sheet-button-row"><button id="findSubtitle" class="sheet-button" type="button">온라인 자막 다시 찾기</button><button id="openSubtitle" class="sheet-button" type="button">사용자 자막 추가</button></div>
+                <small class="ps-note">사용자 자막: ASS / SSA / SRT / VTT / SMI 파일</small>
+              </div>
+              <div class="ps-pane" data-ps-pane="style" role="tabpanel">
                 <p class="ps-label">자막 크기 <span id="psSizeLabel">100%</span></p>
                 <input id="psSubtitleSize" type="range" min="50" max="180" step="5" value="100" aria-label="자막 크기">
                 <p class="ps-label">자막 위치 <span id="psPositionLabel">12%</span></p>
                 <input id="psSubtitlePosition" type="range" min="3" max="30" step="1" value="12" aria-label="자막 위치">
                 <p class="ps-label">자막 싱크 <span id="psSyncLabel">0ms</span></p>
                 <div class="ps-chips"><button type="button" data-ps-sync="-250">-250ms</button><button type="button" data-ps-sync="0">초기화</button><button type="button" data-ps-sync="250">+250ms</button></div>
+                <p class="ps-group">스타일</p>
+                <label class="ps-switch ps-small"><span><b>ASS 자막 효과</b><small id="assEffectsHint">원본 위치·색상·효과를 유지합니다</small></span><input id="assEffectsSheet" type="checkbox" checked></label>
                 <label class="ps-switch ps-small"><span><b>VTT 원본 스타일</b><small>원본 색상/스타일 유지</small></span><input id="psVttStyle" type="checkbox"></label>
                 <label class="ps-switch ps-small"><span><b>VTT 굵게</b><small>자막 글자를 굵게 표시</small></span><input id="psVttBold" type="checkbox"></label>
                 <p class="ps-label">VTT 테두리 <span id="psOutlineLabel">2.0px</span></p>
                 <input id="psVttOutline" type="range" min="0" max="6" step="0.5" value="2" aria-label="VTT 테두리">
-                <p class="ps-group">자막 파일 및 폰트</p>
-                <small class="ps-note">저장된 자막, 사용자 자막, ASS 폰트를 한 곳에서 관리합니다.</small>
-                <div id="psDiscoveredFonts" class="hidden"><p class="ps-label">발견된 ASS 폰트</p><div id="psFontChips" class="ps-chips"></div></div>
+                <p class="ps-group">폰트</p>
                 <div class="ps-row"><span><b>커스텀 폰트</b><small id="psFontName">기본 폰트 사용 중</small></span><button id="psChooseFont" type="button">불러오기</button></div>
-                <div class="ps-row"><span><b>사용자 자막</b><small>ASS / SSA / SRT / VTT / SMI</small></span><button id="openSubtitle" type="button">추가</button></div>
-                <button id="findSubtitle" class="sheet-button" type="button">온라인 자막 다시 찾기</button>
-                <div id="savedSubtitles" class="sheet-tracks hidden"><div class="sheet-tracks-head"><b>이 회차의 저장 자막</b><span id="savedSubtitleCount"></span></div><div id="savedSubtitleList" class="track-list"></div></div>
-              </section>
-              <section id="psServers" class="ps-section hidden"><p class="ps-group">영상 서버</p><small id="psServerNote" class="ps-note"></small><div id="psServerList" class="ps-chips"></div></section><section id="psQuality" class="ps-section hidden"><p class="ps-group">화질</p><small class="ps-note">현재 스트림에서 선택 가능한 화질</small><div id="psQualityList" class="ps-chips"></div></section>
-              <div class="ps-row ps-speed"><span><b>재생 속도</b><small id="psSpeedLabel">1.00x</small></span><div id="psSpeeds" class="ps-chips"><button type="button" data-speed="0.75">0.75x</button><button type="button" data-speed="1">1.00x</button><button type="button" data-speed="1.25">1.25x</button><button type="button" data-speed="1.5">1.50x</button><button type="button" data-speed="2">2.00x</button></div></div>
-              <small id="psSeekNote" class="ps-note">뒤로/앞으로 버튼 이동: 10초</small>
+                <div id="psDiscoveredFonts" class="hidden"><p class="ps-label">발견된 ASS 폰트</p><div id="psFontChips" class="ps-chips"></div></div>
+              </div>
             </div>
           </aside>
           <div class="player-utilities" aria-hidden="true"><select id="speed"><option value=".1">0.1×</option><option value=".25">0.25×</option><option value=".5">0.5×</option><option value=".75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="1.75">1.75×</option><option value="2">2×</option></select><input id="streamUrl"><input id="skipTitle"><input id="skipEpisode" type="number" value="1"><button id="playUrl"></button><button id="openVideo"></button><button id="downloadVideo"></button><button id="loadSkip"></button></div>

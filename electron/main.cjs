@@ -508,9 +508,8 @@ async function resolveMiruroEpisode(episode){
   const rank=server=>(server.label===episode.server?0:kindRank(server)*100)+(server.provider===miruroWorkingProvider?0:10)+known(server.provider);
   const result=async(server,extra={})=>{
     const stream={url:server.url,headers:server.headers,referer:server.headers.Referer||'',servers:servers.map(({label,kind})=>({label,kind})),server:server.label,subtitleTracks:server.tracks,...extra};
-    // A Korean file is applied by itself. Without a Korean subtitle the SOFT video gets its English file, like the
-    // burned-in SUB but switchable and translatable.
-    const track=server.kind!=='soft'?null:server.tracks.find(isKoreanTrack)||(episode.prefer!=='raw'?server.tracks.find(isEnglishTrack):null);
+    // Only a Korean file is applied by itself, as with Re:Anime; other languages wait in the track list.
+    const track=server.kind!=='soft'?null:server.tracks.find(isKoreanTrack);
     if(track)try{const file=subtitleResult(await saveRemoteSubtitle(track.url,remoteTrackOptions(track.url)));Object.assign(stream,{subtitleUrl:file.url,subtitlePath:file.path,subtitleAss:file.assUrl?{url:file.assUrl,path:file.assPath}:null,subtitleLabel:`Miruro ${track.label} 자막`,subtitleTrack:track.url})}catch{/* the track list still offers it */}
     return stream;
   };
