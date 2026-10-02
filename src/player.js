@@ -306,6 +306,22 @@ function setPlayerLocked(locked) {
 function flashUnlockButton() { $('#unlockPlayer').classList.remove('hidden'); clearTimeout(unlockTimer); unlockTimer = setTimeout(() => $('#unlockPlayer').classList.add('hidden'), 3000); }
 
 function setPlayerWindowed() { $('#immersivePlayer').classList.toggle('windowed', !playerWindowFullscreen); }
+// The window's minimize / maximize / close buttons follow the player's controls while it plays in a window: shown with
+// them (white, on the video) and hidden with them; on a locked screen they come with the unlock button (a move or a
+// click shows it for a few seconds). Anywhere else they are the theme's.
+let windowButtonsMode = '';
+function syncWindowButtons() {
+  const player = $('#immersivePlayer'), inPlayer = document.body.classList.contains('player-mode') && player.classList.contains('windowed');
+  const mode = !inPlayer ? 'page' : (player.classList.contains('locked') ? !$('#unlockPlayer').classList.contains('hidden') : player.classList.contains('controls-visible')) ? 'player' : 'hidden';
+  if (mode !== windowButtonsMode) { windowButtonsMode = mode; window.lilac.setWindowButtons?.(mode); }
+}
+new MutationObserver(syncWindowButtons).observe($('#immersivePlayer'), { attributes: true, attributeFilter: ['class'] });
+new MutationObserver(syncWindowButtons).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+new MutationObserver(syncWindowButtons).observe($('#unlockPlayer'), { attributes: true, attributeFilter: ['class'] });
+// Moving the mouse brings the controls (and with them the window buttons) back, so the hidden buttons are seen before
+// a click can land on them. Only real movement counts: some mice report a move without moving.
+let lastPointer = '';
+$('#immersivePlayer').addEventListener('mousemove', event => { const at = `${event.screenX},${event.screenY}`; if (at === lastPointer) return; lastPointer = at; if (playerLocked) flashUnlockButton(); else showPlayerControls(); }, { passive: true });
 
 // --- Picture-in-picture ---------------------------------------------------------------------
 // Chromium's picture-in-picture window shows a bare <video>: caption tracks and the libass canvas stay behind.
