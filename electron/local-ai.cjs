@@ -40,7 +40,7 @@ function createLocalAi(userData) {
   const addedFile = path.join(root, 'added.json');
   const added = () => { try { return JSON.parse(fs.readFileSync(addedFile, 'utf8')).filter(item => fs.existsSync(item.path)); } catch { return []; } };
   const models = () => [...MODELS, ...added().map(item => ({ id: `file:${item.path}`, label: path.basename(item.path), note: '직접 추가한 파일', path: item.path, size: item.size }))]
-    .map(model => ({ ...model, installed: fs.existsSync(modelPath(model)), downloading: downloads.get(model.id) || null }));
+    .map(model => ({ ...model, installed: fs.existsSync(modelPath(model)), downloading: downloads.get(model.id) || null, run: runs()[modelPath(model)] || null }));
   function addFile(file) {
     if (!/\.gguf$/i.test(file) || !fs.existsSync(file)) throw new Error('GGUF 파일을 골라 주세요.');
     const list = added().filter(item => item.path !== file); list.push({ path: file, size: fs.statSync(file).size });
@@ -103,6 +103,11 @@ function createLocalAi(userData) {
     return new Promise(resolve => list.once('close', () => { if (/llama-server\.exe/i.test(out)) try { process.kill(pid); } catch {} resolve(); }));
   }
   const freePort = () => new Promise((resolve, reject) => { const probe = net.createServer(); probe.once('error', reject); probe.listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); }); });
+  // Where each model last ran (graphics card and how many of its layers, or the CPU and why), shown under the model in
+  // the settings so a slow translation can be told apart from one that never reached the card.
+  const runsFile = path.join(root, 'runs.json');
+  const runs = () => { try { return JSON.parse(fs.readFileSync(runsFile, 'utf8')) || {}; } catch { return {}; } };
+  function saveRun(file, run) { try { fs.mkdirSync(root, { recursive: true }); fs.writeFileSync(runsFile, JSON.stringify({ ...runs(), [file]: run })); } catch {} }
   function stop() { clearTimeout(idleTimer); if (server?.child && !server.child.killed) { server.child.kill(); try { fs.unlinkSync(pidFile); } catch {} } server = null; starting = null; }
   function touch() { clearTimeout(idleTimer); idleTimer = setTimeout(stop, IDLE_STOP); idleTimer.unref?.(); }
   // One server for the selected model; layers go to the graphics card when the Vulkan build finds one.
@@ -116,14 +121,24 @@ function createLocalAi(userData) {
       status('llama.cpp 준비 중');
       const exe = await ensureRuntime((done, total) => status(`llama.cpp 받는 중 ${total ? Math.round(done / total * 100) : 0}%`));
       await stopLeftover();
-      // llama.cpp puts as many layers on the graphics card as fit in its free memory and runs the rest on the CPU.
-      // Forcing all of them (-ngl 99) stopped a 7B model (4.6 GB) from loading on a 4 GB card. Should the card still
-      // fail to allocate, the model is loaded again on the CPU alone.
-      const launch = async gpuLayers => {
+      // llama.cpp puts as many layers on the graphics card as fit in its free memory and runs the rest on the CPU, and
+      // a layer left on the CPU makes the CPU set the pace. Forcing all of them (-ngl 99) stopped a 7B model (4.6 GB)
+      // from loading on a 4 GB card. The context memory is kept small so that a 7B model fits an 8 GB card whole:
+      // ja-ko-vn keeps 0.5 MB per token, so the 8192 tokens asked for before took 4 GB and pushed a third of the model
+      // onto the CPU of an RX 6600. A subtitle line needs far less than the 1024 tokens each of the four slots now
+      // gets, and 8-bit context memory halves it again. Should the card still fail to allocate, the model is loaded
+      // with more room left on the card, then on the CPU alone.
+      const launch = async extra => {
         const port = await freePort();
-        const child = spawn(exe, ['-m', file, '--host', '127.0.0.1', '--port', String(port), '-c', '8192', '-np', String(PARALLEL), ...gpuLayers, '--jinja', '--no-webui'], { cwd: path.dirname(exe), windowsHide: true });
+        const child = spawn(exe, ['-m', file, '--host', '127.0.0.1', '--port', String(port), '-c', '4096', '-np', String(PARALLEL), '-fa', 'on', '-ctk', 'q8_0', '-ctv', 'q8_0', '--fit-target', '512', ...extra, '--jinja', '--no-webui', '-lv', '4'], { cwd: path.dirname(exe), windowsHide: true });
         try { fs.writeFileSync(pidFile, String(child.pid)); } catch {}
-        let log = ''; const keep = chunk => { log = (log + chunk.toString()).slice(-8000); };
+        // The device and layer count are read as the model loads (-lv 4 prints them).
+        let log = '', device = '', layers = 0, total = 0;
+        const keep = chunk => {
+          log = (log + chunk.toString()).slice(-8000);
+          device ||= log.match(/using device \S+ \(([^)]+)\)/)?.[1] || '';
+          const offloaded = log.match(/offloaded (\d+)\/(\d+) layers to GPU/); if (offloaded) { layers = Number(offloaded[1]); total = Number(offloaded[2]); }
+        };
         child.stdout.on('data', keep); child.stderr.on('data', keep);
         const exited = new Promise(resolve => child.once('exit', code => resolve(code)));
         const deadline = Date.now() + 180000;
@@ -134,15 +149,21 @@ function createLocalAi(userData) {
             const error = new Error(memory ? '그래픽카드 메모리가 부족해 모델을 불러오지 못했습니다. 더 작은 모델(HY-MT1.5 1.8B)을 써 보세요.' : `llama.cpp가 종료되었습니다: ${log.trim().split('\n').filter(line => / E /.test(line)).pop() || log.trim().split('\n').pop() || code}`);
             error.memory = memory; throw error;
           }
-          try { const response = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(2000) }); if (response.ok) return { child, port }; } catch { /* still loading */ }
+          try { const response = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(2000) }); if (response.ok) return { child, port, device, layers, total }; } catch { /* still loading */ }
           if (Date.now() > deadline) { child.kill(); throw new Error('모델을 불러오는 데 너무 오래 걸립니다.'); }
         }
       };
       status('모델 불러오는 중');
-      let started;
+      let started, reason = '';
       try { started = await launch([]); }
-      catch (error) { if (!error.memory) throw error; status('그래픽카드 메모리가 부족해 CPU로 불러오는 중'); started = await launch(['-ngl', '0']); }
-      const { child, port } = started;
+      catch (error) {
+        if (!error.memory) throw error;
+        status('그래픽카드 메모리가 부족해 다시 불러오는 중');
+        try { started = await launch(['--fit-target', '2048']); }
+        catch (retry) { if (!retry.memory) throw retry; reason = '그래픽카드 메모리 부족'; status('그래픽카드 메모리가 부족해 CPU로 불러오는 중'); started = await launch(['-ngl', '0']); }
+      }
+      const { child, port, device, layers, total } = started;
+      saveRun(file, { device: layers ? device : '', layers, total, reason: layers ? '' : reason || (device ? '' : '그래픽카드를 찾지 못함'), time: Date.now() });
       server = { child, port, model: file }; child.once('exit', () => { if (server?.child === child) server = null; }); touch();
       return server;
     })();

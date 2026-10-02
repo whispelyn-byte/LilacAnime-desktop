@@ -10,6 +10,7 @@
 .local-model-pick b { font-size: 14px; }
 .local-model.selected .local-model-pick b { color: var(--lilac); }
 .local-model-pick small { color: var(--muted); font-size: 12px; }
+.local-model-pick .local-model-run.partial { color: #d9a441; }
 .local-model-state { flex: none; color: var(--muted); font-size: 12px; }
 .local-model.selected .local-model-state { color: var(--lilac); font-weight: 700; }
 .local-model-action { flex: none; width: 120px; height: 38px; padding: 0 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel2); color: var(--text); font: inherit; cursor: pointer; }
