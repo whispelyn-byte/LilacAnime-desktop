@@ -3,9 +3,6 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { pathToFileURL, fileURLToPath } = require('url');
 
-// Saved subtitle sources that stand for the stream's own Korean track.
-const STREAM_SOURCES = ['reanime', 'linkkf', 'provider'];
-
 function safeName(value = '') {
   return String(value).normalize('NFKC').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/[. ]+$/g, '').trim().slice(0, 120) || 'episode';
 }
@@ -20,7 +17,7 @@ const HLS_PARALLEL = 6;
 const HLS_USER_AGENT = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome || '131.0.0.0'} Safari/537.36`;
 
 class DownloadManager {
-  constructor({ app, resolveEpisode, resolveLinkkf, findSubtitle, findJimaku, translateJimaku, findSkips, analyzeOpEd, resolveTitles, saveTrack, translateTrack, broadcast }) {
+  constructor({ app, resolveEpisode, resolveLinkkf, findSubtitle, findJimaku, translateJimaku, jimakuTranslates, findSkips, analyzeOpEd, resolveTitles, saveTrack, translateTrack, broadcast }) {
     this.root = path.join(app.getPath('videos'), 'LilacAnime');
     this.stateFile = path.join(app.getPath('userData'), 'downloads.json');
     this.resolveEpisode = resolveEpisode;
@@ -28,6 +25,7 @@ class DownloadManager {
     this.findSubtitle = findSubtitle; this.findJimaku = findJimaku; this.translateJimaku = translateJimaku;
     this.saveTrack = saveTrack;
     this.translateTrack = translateTrack;
+    this.jimakuTranslates = jimakuTranslates;
     this.trackQueue = Promise.resolve();
     this.resolveTitles = resolveTitles;
     this.findSkips = findSkips;
@@ -193,15 +191,16 @@ class DownloadManager {
     let found = null;
     try { found = await this.findSubtitle?.(job, stream); } catch { /* fall back to the stream's own subtitle */ }
     job.subtitleChecked = true;
-    // RE:Anime's / Miruro's own Korean track is used alone. Otherwise the Jimaku file comes too: as the subtitle when
-    // nothing Korean was found, else next to the fansub one (saved for the episode, so the player offers it).
+    // The Jimaku file (and its translation) always comes too: as the subtitle when nothing Korean was found, else next
+    // to the Korean one (a fansub, or RE:Anime's / Miruro's own Korean track), saved for the episode so the player
+    // offers it.
     if (!found || found.stream) {
       await this.saveSubtitle(job, stream?.subtitleUrl); this.saveAssSubtitle(job, stream?.subtitleAss?.path);
-      if (!found && !job.subtitlePath) await this.attachJimaku(job, stream, true);
+      await this.attachJimaku(job, stream, !found && !job.subtitlePath);
       return;
     }
     this.copySubtitle(job, found);
-    if (!STREAM_SOURCES.includes(found.source)) await this.attachJimaku(job, stream, false);
+    await this.attachJimaku(job, stream, false);
   }
   copySubtitle(job, found) {
     const base = job.filePath.replace(/\.mp4$/i, '');
@@ -223,6 +222,7 @@ class DownloadManager {
     let file = null;
     try { file = await this.findJimaku?.(job); } catch { /* the video is still usable without a subtitle */ }
     if (!file) return;
+    job.jimakuFound = true; this.save();
     const burned = (stream?.servers || []).find(server => server.label === stream?.server)?.kind === 'sub';
     if (primary && !burned) this.copySubtitle(job, file);
     this.trackQueue = this.trackQueue.then(() => this.translateJimakuFor(job, file, primary && !burned)).catch(() => {});
@@ -259,9 +259,9 @@ class DownloadManager {
     job.posterPath = file; job.posterUrl = pathToFileURL(file).href; this.save();
   }
 
-  // Re:Anime and Miruro subtitle tracks are all kept with the episode and, when the user set up Gemini, translated into
-  // Korean, so the track list and the translations work offline. This runs one episode at a time after the
-  // download has finished, so it never holds a download slot.
+  // Re:Anime and Miruro subtitle tracks are all kept with the episode, so the track list works offline, and one of them
+  // is translated into Korean (설정 > 다운로드할 때 자막 트랙 번역). This runs one episode at a time after the download
+  // has finished, so it never holds a download slot.
   queueTracks(job, stream) {
     if (!stream?.subtitleTracks?.length || !this.saveTrack) return;
     this.trackQueue = this.trackQueue.then(() => this.attachTracks(job, stream)).catch(() => {});
@@ -281,20 +281,21 @@ class DownloadManager {
     }
     if (!saved.length || !this.jobs.includes(job)) return;
     job.subtitleTracks = saved; job.updated = Date.now(); this.save();
+    // One Korean subtitle is enough: none is made when the episode's Jimaku file is translated (설정 > Jimaku 자막 자동
+    // 번역) or a Korean track came with it; otherwise the Japanese track (the original dialogue, translated once) or
+    // else the English one is translated. Translating every track took one run per language, hours with the local AI.
+    if (job.jimakuFound && this.jimakuTranslates?.()) return;
+    const text = track => `${track.label} ${track.language}`, code = (track, lang) => new RegExp(`^${lang}(?:[-_]|$)`, 'i').test(track.language || '');
+    const korean = saved.some(track => /kor|korean|한국/i.test(text(track)) || code(track, 'ko'));
+    const track = korean ? null : saved.find(item => /japanese|日本/i.test(text(item)) || code(item, 'ja')) || saved.find(item => /english/i.test(text(item)) || code(item, 'en'));
+    if (!track) return;
     const title = job.displayTitles?.ko || job.title;
     try {
-      for (const [index, track] of saved.entries()) {
-        if (!this.jobs.includes(job)) return;
-        job.stage = 'translate'; job.translateProgress = `${index + 1}/${saved.length}`; this.save();
-        let result = null;
-        try { result = await this.translateTrack?.(track.path, title, job.anime); } catch (error) {
-          // A bad key or an exhausted quota fails every track the same way.
-          if ([400, 401, 403, 404, 429].includes(error?.status)) break; continue;
-        }
-        if (!result) break; // no key, or translation of downloads is turned off
-        track.translatedPath = track.path.replace(/\.[^.]+$/, '.ko.vtt'); fs.copyFileSync(result.path, track.translatedPath);
-        track.translatedFailed = result.failed || 0; this.save();
-      }
+      job.stage = 'translate'; job.translateProgress = track.label; this.save();
+      const result = await this.translateTrack?.(track.path, title, job.anime).catch(() => null);
+      if (!result || !this.jobs.includes(job)) return; // no key or model, translation of downloads turned off, or it failed
+      track.translatedPath = track.path.replace(/\.[^.]+$/, '.ko.vtt'); fs.copyFileSync(result.path, track.translatedPath);
+      track.translatedFailed = result.failed || 0; this.save();
     } finally { job.stage = ''; delete job.translateProgress; job.updated = Date.now(); this.save(); }
   }
 

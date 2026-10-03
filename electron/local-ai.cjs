@@ -6,19 +6,23 @@
 const fs = require('fs');
 const path = require('path');
 const net = require('net');
+const os = require('os');
 const { spawn } = require('child_process');
 const AdmZip = require('adm-zip');
 const { characterTerms, termsFor } = require('./anime-glossary.cjs');
 
-// Android's choices: HY-MT1.5 (current default there) and the Japanese -> Korean VN model it used before, plus Hy-MT2.
+// Best translation first (Horimiya episode 1 on a GTX 1050 Ti: Hy-MT2 30B-A3B got the meaning and the names right
+// most often, ja-ko-vn next; the 1.8B model is the quickest; Hy-MT2's paper puts its 7B close to the 30B-A3B). Android's
+// choices were HY-MT1.5 (its default) and the Japanese -> Korean VN model it used before; Hy-MT2 (May 2026) replaced
+// HY-MT1.5, which stays listed only where it was downloaded (legacy), so a PC using it keeps working.
 const MODELS = [
-  { id: 'hy-mt-1.8b', label: 'HY-MT1.5 1.8B', note: '기본 · 1.1GB · 빠름', repo: 'tencent/HY-MT1.5-1.8B-GGUF', file: 'HY-MT1.5-1.8B-Q4_K_M.gguf', size: 1133e6 },
-  // Hy-MT2 (May 2026), HY-MT1.5's successor.
-  { id: 'hy-mt2-1.8b', label: 'Hy-MT2 1.8B', note: '1.1GB · 빠름 · 최신 번역 모델', repo: 'tencent/Hy-MT2-1.8B-GGUF', file: 'Hy-MT2-1.8B-Q4_K_M.gguf', size: 1133e6 },
-  // Hy-MT2's mixture of experts: 30B in all but about 3B worked per word, so it runs from memory on the processor.
-  { id: 'hy-mt2-30b-a3b', label: 'Hy-MT2 30B-A3B', note: '18GB · 가장 정확함 · 램 24GB 이상', repo: 'tencent/Hy-MT2-30B-A3B-GGUF', file: 'Hy-MT2-30B-A3B-Q4_K_M.gguf', size: 18240e6 },
-  { id: 'hy-mt-7b', label: 'HY-MT1.5 7B', note: '4.6GB · 더 정확함', repo: 'tencent/HY-MT1.5-7B-GGUF', file: 'HY-MT1.5-7B-Q4_K_M.gguf', size: 4620e6 },
-  { id: 'ja-ko-vn-7b', label: 'ja-ko-vn 7B', note: '4.6GB · 일본어 → 한국어 특화', repo: 'hell0ks/ja-ko-vn-7b-v1-gguf', file: 'model-Q4_K_M.gguf', size: 4630e6 }
+  // A mixture of experts: 30B in all but about 3B worked per word, so it runs from memory on the processor.
+  { id: 'hy-mt2-30b-a3b', label: 'Hy-MT2 30B-A3B', note: '18GB · 가장 정확함 · 램 24GB 이상', repo: 'tencent/Hy-MT2-30B-A3B-GGUF', file: 'Hy-MT2-30B-A3B-Q4_K_M.gguf', size: 18240e6, ram: 24 },
+  { id: 'hy-mt2-7b', label: 'Hy-MT2 7B', note: '4.6GB · 정확함 · 그래픽카드 메모리 6GB 이상이면 빠름', repo: 'tencent/Hy-MT2-7B-GGUF', file: 'Hy-MT2-7B-Q4_K_M.gguf', size: 4620e6 },
+  { id: 'ja-ko-vn-7b', label: 'ja-ko-vn 7B', note: '4.6GB · 일본어 → 한국어 특화', repo: 'hell0ks/ja-ko-vn-7b-v1-gguf', file: 'model-Q4_K_M.gguf', size: 4630e6 },
+  { id: 'hy-mt2-1.8b', label: 'Hy-MT2 1.8B', note: '기본 · 1.1GB · 빠름', repo: 'tencent/Hy-MT2-1.8B-GGUF', file: 'Hy-MT2-1.8B-Q4_K_M.gguf', size: 1133e6 },
+  { id: 'hy-mt-7b', label: 'HY-MT1.5 7B', note: '이전 버전 · Hy-MT2 7B를 권장', repo: 'tencent/HY-MT1.5-7B-GGUF', file: 'HY-MT1.5-7B-Q4_K_M.gguf', size: 4620e6, legacy: true },
+  { id: 'hy-mt-1.8b', label: 'HY-MT1.5 1.8B', note: '이전 버전 · Hy-MT2 1.8B를 권장', repo: 'tencent/HY-MT1.5-1.8B-GGUF', file: 'HY-MT1.5-1.8B-Q4_K_M.gguf', size: 1133e6, legacy: true }
 ];
 // llama.cpp builds: Vulkan runs on any graphics card (and falls back to the CPU); on an NVIDIA card the CUDA build is
 // about 1.5 times faster (GTX 1050 Ti: Hy-MT2 30B-A3B 1.87 → 1.15 s a line, Hy-MT2 1.8B 0.30 → 0.20 s). CUDA 13 left
@@ -30,26 +34,31 @@ const RUNTIMES = {
   cuda13: { dir: 'runtime-cuda13', label: 'CUDA', assets: [/^llama-b\d+-bin-win-cuda-13\.[\d.]+-x64\.zip$/, /^cudart-llama-bin-win-cuda-13\.[\d.]+-x64\.zip$/] }
 };
 const PARALLEL = 4, IDLE_STOP = 30 * 1000;
-// HY-MT's own prompt, one line at a time. Previous lines as context (Android's prompt, or HY-MT's contextual one) made
-// the 1.8B model translate the context instead of the line in about a third of short lines, so none is sent. What it
-// gets instead is HY-MT's terminology list with the names and set phrases found in the line (anime-glossary): without
-// it 真昼 came out as 정오 (noon), 周くん as 주군 and いただきます as 감사합니다. Its Chinese "translate into Korean"
-// prompt left Japanese words in, so the English one follows the list. Other models get the list in English.
+// One line at a time. HY-MT1.5 gets its own prompt and no previous lines (as context, Android's prompt or HY-MT1.5's
+// contextual one, they made the 1.8B model translate the context instead of the line in about a third of short lines),
+// but HY-MT's terminology list with the names and set phrases found in the line (anime-glossary): without it 真昼 came
+// out as 정오 (noon), 周くん as 주군 and いただきます as 감사합니다. Its Chinese "translate into Korean" prompt left
+// Japanese words in, so the English one follows the list. Other models get the list in English.
 // Each model is asked the way its model card says:
 // - HY-MT1.5: the prompt above, sampling 0.7 / top-p 0.6 / top-k 20 / repeat 1.05.
 // - Hy-MT2: its own wording ("Translate the following text into …") and English terminology list; the 30B-A3B model
-//   samples with top-p 1 and no top-k or repeat penalty.
+//   samples with top-p 1 and no top-k or repeat penalty. The 1.8B and 7B models also get the two lines before as
+//   [Background Information] (Hy-MT2's contextual prompt): on Horimiya the 1.8B model then kept friends' talk in 반말
+//   more often (polite endings 18 → 14 of 60 lines) for a quarter more time; the 30B-A3B model, already right without
+//   it, only got slower (67 → 123 s), so it has none.
 // - ja-ko-vn: trained on the Japanese line alone (no instruction: its chat template adds one), names as a system
 //   message "岡部倫太郎=오카베 린타로,…" (the template turns it into a terminology turn), temperature 0.1, top-p 0.9.
 // - Anything else (Qwen3 Instruct and other chat models): the instruction with the list in English, Qwen's sampling.
 const INSTRUCTION = 'Translate the following segment into Korean, without additional explanation.';
 const HY_MT2_INSTRUCTION = 'Translate the following text into Korean. Note that you should only output the translated result without any additional explanation:';
-function request(source, terms, kind) {
+function request(source, terms, kind, before = []) {
   const user = content => [{ role: 'user', content }];
   if (kind === 'jako') return { messages: [...(terms.length ? [{ role: 'system', content: terms.map(term => `${term.ja}=${term.ko}`).join(',') }] : []), { role: 'user', content: source }], temperature: 0.1, top_p: 0.9, repeat_penalty: 1.05 };
   if (kind === 'hy-mt2' || kind === 'hy-mt2-moe') {
     const sampling = kind === 'hy-mt2-moe' ? { temperature: 0.7, top_p: 1, top_k: 0, repeat_penalty: 1 } : { temperature: 0.7, top_p: 0.6, top_k: 20, repeat_penalty: 1.05 };
-    return { messages: user(terms.length ? `Reference the following translations:\n${terms.map(term => `${term.ja} translates to ${term.ko}`).join('\n')}\n\n${HY_MT2_INSTRUCTION}\n\n${source}` : `${HY_MT2_INSTRUCTION}\n\n${source}`), ...sampling };
+    const reference = terms.length ? `Reference the following translations:\n${terms.map(term => `${term.ja} translates to ${term.ko}`).join('\n')}\n\n` : '';
+    if (kind === 'hy-mt2' && before.length) return { messages: user(`[Background Information]\n${before.join('\n')}\n\n${reference}Please translate the following text into Korean, taking the provided background information into consideration.\n\n[Source Text]\n${source}`), ...sampling };
+    return { messages: user(`${reference}${HY_MT2_INSTRUCTION}\n\n${source}`), ...sampling };
   }
   if (kind === 'hy-mt') return { messages: user(terms.length ? `参考下面的翻译：\n${terms.map(term => `${term.ja} 翻译成 ${term.ko}`).join('\n')}\n\n${INSTRUCTION}\n\n${source}` : `${INSTRUCTION}\n\n${source}`), temperature: 0.7, top_p: 0.6, top_k: 20, repeat_penalty: 1.05 };
   return { messages: user(terms.length ? `This is a line from a Japanese anime. Use these Korean translations:\n${terms.map(term => `${term.ja} = ${term.ko}`).join('\n')}\n\n${INSTRUCTION}\n\n${source}` : `${INSTRUCTION}\n\n${source}`), temperature: 0.7, top_p: 0.8, top_k: 20, repeat_penalty: 1.05 };
@@ -73,8 +82,16 @@ function createLocalAi(userData) {
   // Presets plus GGUF files the user added (kept as-is where they are; listed from added.json).
   const addedFile = path.join(root, 'added.json');
   const added = () => { try { return JSON.parse(fs.readFileSync(addedFile, 'utf8')).filter(item => fs.existsSync(item.path)); } catch { return []; } };
-  const models = () => [...MODELS, ...added().map(item => ({ id: `file:${item.path}`, label: path.basename(item.path), note: '직접 추가한 파일', path: item.path, size: item.size }))]
-    .map(model => ({ ...model, installed: fs.existsSync(modelPath(model)), downloading: downloads.get(model.id) || null, run: runs()[modelPath(model)] || null }));
+  // ram: the memory (GB) a model needs, which is read into memory whole; lowMemory when this PC has less (the
+  // settings warn before it is downloaded or used).
+  const memory = Math.round(os.totalmem() / 2 ** 30);
+  const models = () => {
+    const ran = runs();
+    return [...MODELS, ...added().map(item => ({ id: `file:${item.path}`, label: path.basename(item.path), note: '직접 추가한 파일', path: item.path, size: item.size }))]
+      .map(model => ({ ...model, installed: fs.existsSync(modelPath(model)), downloading: downloads.has(model.id) ? { done: downloads.get(model.id).done, total: downloads.get(model.id).total } : null, partial: !model.path && !downloads.has(model.id) ? partialSize(model) : 0, run: ran[modelPath(model)] || null, ...(model.ram ? { memory, lowMemory: memory < model.ram } : {}) }))
+      .filter(model => !model.legacy || model.installed);
+  };
+  const partialSize = model => { try { return fs.statSync(`${modelPath(model)}.part`).size; } catch { return 0; } };
   function addFile(file) {
     if (!/\.gguf$/i.test(file) || !fs.existsSync(file)) throw new Error('GGUF 파일을 골라 주세요.');
     const list = added().filter(item => item.path !== file); list.push({ path: file, size: fs.statSync(file).size });
@@ -104,51 +121,94 @@ function createLocalAi(userData) {
     return off[kind] && off[kind].driver === gpu?.driver ? 'vulkan' : kind;
   }
 
-  async function download(url, target, progress) {
-    const response = await fetch(url, { headers: { 'User-Agent': 'LilacAnime-Desktop' }, redirect: 'follow' });
+  // Into target.part first: a download cut short (network, the app closed, cancelled) keeps what came and goes on
+  // from there the next time (an HTTP range request); one that ends short of its length is not taken as the file.
+  async function download(url, target, progress, signal = null) {
+    const partial = `${target}.part`;
+    let have = 0; try { have = fs.statSync(partial).size; } catch { /* nothing yet */ }
+    const response = await fetch(url, { headers: { 'User-Agent': 'LilacAnime-Desktop', ...(have ? { Range: `bytes=${have}-` } : {}) }, redirect: 'follow', signal });
+    // Nothing left to send for that range (the kept part is stale or already whole): it starts over.
+    if (have && response.status === 416) { try { fs.unlinkSync(partial); } catch {} return download(url, target, progress, signal); }
     if (!response.ok || !response.body) throw new Error(`다운로드 HTTP ${response.status}`);
-    const total = Number(response.headers.get('content-length')) || 0, partial = `${target}.part`;
+    if (response.status !== 206) have = 0;
+    const total = (Number(response.headers.get('content-length')) || 0) + have;
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    const out = fs.createWriteStream(partial); let done = 0, last = 0;
+    const out = fs.createWriteStream(partial, { flags: have ? 'a' : 'w' }); let done = have, last = 0;
     try {
       for await (const chunk of response.body) {
         if (!out.write(chunk)) await new Promise(resolve => out.once('drain', resolve));
         done += chunk.length; if (Date.now() - last > 500) { last = Date.now(); progress(done, total); }
       }
       await new Promise((resolve, reject) => out.end(error => error ? reject(error) : resolve()));
-    } catch (error) { out.destroy(); try { fs.unlinkSync(partial); } catch {} throw error; }
+    } catch (error) { out.destroy(); throw error; }
+    if (total > have && done !== total) throw new Error(`다운로드가 중간에 끊겼습니다 (${Math.round(done / total * 100)}%). 다시 받으면 이어서 받습니다.`);
     fs.renameSync(partial, target); progress(done, total || done);
   }
-  // The newest llama.cpp release that has every file of the build (CUDA: the program and the CUDA runtime it needs).
+  // The newest llama.cpp release that has every file of the build (CUDA: the program and the CUDA runtime it needs),
+  // unpacked into a folder next to the target and moved in once every file is there (a download cut short leaves no
+  // half build behind). The release's tag and when it was checked are kept with the build.
+  const buildFile = dir => path.join(dir, 'lilac-build.json');
+  const buildOf = kind => { try { return JSON.parse(fs.readFileSync(buildFile(path.join(root, RUNTIMES[kind].dir)), 'utf8')) || {}; } catch { return {}; } };
+  async function latestRuntime(kind) {
+    const releases = await (await fetch('https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=8', { headers: { 'User-Agent': 'LilacAnime-Desktop', Accept: 'application/vnd.github+json' } })).json();
+    for (const release of Array.isArray(releases) ? releases : []) {
+      const assets = RUNTIMES[kind].assets.map(pattern => (release.assets || []).find(item => pattern.test(item.name)));
+      if (assets.every(Boolean)) return { tag: release.tag_name, assets };
+    }
+    throw new Error('llama.cpp 실행 파일을 찾지 못했습니다.');
+  }
+  async function installRuntime(kind, target, progress = () => {}, latest = null) {
+    const { tag, assets } = latest || await latestRuntime(kind);
+    const total = assets.reduce((sum, asset) => sum + (asset.size || 0), 0), unpacked = `${target}.part`; let before = 0;
+    fs.rmSync(unpacked, { recursive: true, force: true });
+    for (const asset of assets) {
+      const zip = path.join(root, asset.name);
+      await download(asset.browser_download_url, zip, done => progress(before + done, total));
+      try { new AdmZip(zip).extractAllTo(unpacked, true); } finally { try { fs.unlinkSync(zip); } catch {} }
+      before += asset.size || 0;
+    }
+    fs.writeFileSync(buildFile(unpacked), JSON.stringify({ tag, checked: Date.now() }));
+    fs.rmSync(target, { recursive: true, force: true }); fs.renameSync(unpacked, target);
+  }
   const installing = new Map(); // build -> download
   function ensureRuntime(kind, progress = () => {}) {
     const existing = runtimeExe(kind); if (existing) return Promise.resolve(existing);
     if (!installing.has(kind)) installing.set(kind, (async () => {
-      const { dir, assets: patterns } = RUNTIMES[kind], target = path.join(root, dir);
-      const releases = await (await fetch('https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=8', { headers: { 'User-Agent': 'LilacAnime-Desktop', Accept: 'application/vnd.github+json' } })).json();
-      const assets = (Array.isArray(releases) ? releases : []).map(release => patterns.map(pattern => (release.assets || []).find(item => pattern.test(item.name)))).find(found => found.every(Boolean));
-      if (!assets) throw new Error('llama.cpp 실행 파일을 찾지 못했습니다.');
-      // Unpacked next to the build's folder and moved in once every file is there, so a download cut short leaves
-      // no half build behind.
-      const total = assets.reduce((sum, asset) => sum + (asset.size || 0), 0), unpacked = `${target}.part`; let before = 0;
-      fs.rmSync(unpacked, { recursive: true, force: true });
-      for (const asset of assets) {
-        const zip = path.join(root, asset.name);
-        await download(asset.browser_download_url, zip, done => progress(before + done, total));
-        try { new AdmZip(zip).extractAllTo(unpacked, true); } finally { try { fs.unlinkSync(zip); } catch {} }
-        before += asset.size || 0;
-      }
-      fs.rmSync(target, { recursive: true, force: true }); fs.renameSync(unpacked, target);
+      await installRuntime(kind, path.join(root, RUNTIMES[kind].dir), progress);
       const exe = runtimeExe(kind); if (!exe) throw new Error('llama.cpp 실행 파일을 풀지 못했습니다.'); return exe;
     })().finally(() => installing.delete(kind)));
     return installing.get(kind);
+  }
+  // A build is checked against the newest release once a month: a newer one is downloaded next to it in the
+  // background (target.next) and put in place the next time llama.cpp starts, while it is not running (its files are
+  // in use until then). update() does the same at once, for a model this build cannot read.
+  const MONTH = 30 * 24 * 60 * 60 * 1000, updating = new Map();
+  function update(kind, force = false) {
+    const target = path.join(root, RUNTIMES[kind].dir), build = buildOf(kind);
+    // A build from before builds were dated counts as checked now, rather than being downloaded again at once.
+    if (!build.checked && !force) { try { fs.writeFileSync(buildFile(target), JSON.stringify({ checked: Date.now() })); } catch {} return Promise.resolve(); }
+    if (!updating.has(kind) && (force || Date.now() - build.checked > MONTH)) updating.set(kind, (async () => {
+      const latest = await latestRuntime(kind);
+      try { fs.writeFileSync(buildFile(target), JSON.stringify({ ...build, checked: Date.now() })); } catch { /* checked again next time */ }
+      if (latest.tag !== build.tag) await installRuntime(kind, `${target}.next`, () => {}, latest);
+    })().catch(() => {}).finally(() => updating.delete(kind)));
+    return updating.get(kind) || Promise.resolve();
+  }
+  function swapInUpdate(kind) {
+    const target = path.join(root, RUNTIMES[kind].dir), next = `${target}.next`, old = `${target}.old`;
+    if (!fs.existsSync(buildFile(next))) return false;
+    try { fs.rmSync(old, { recursive: true, force: true }); fs.renameSync(target, old); } catch { return false; }
+    try { fs.renameSync(next, target); } catch { try { fs.renameSync(old, target); } catch {} return false; }
+    fs.rmSync(old, { recursive: true, force: true });
+    return true;
   }
   // The build to start now: the preferred one when it is on disk. When it is not but the Vulkan build is, Vulkan runs
   // this time and the preferred one comes down meanwhile; with neither, the preferred one is downloaded first (Vulkan
   // if that fails).
   async function runtimeFor(status) {
     const kind = await preferredRuntime(), percent = (done, total) => total ? Math.round(done / total * 100) : 0;
-    if (runtimeExe(kind)) return { kind, exe: runtimeExe(kind) };
+    swapInUpdate(kind);
+    if (runtimeExe(kind)) { update(kind); return { kind, exe: runtimeExe(kind) }; }
     if (kind !== 'vulkan' && runtimeExe('vulkan')) {
       ensureRuntime(kind).catch(() => {});
       status('다음 번역부터 쓸 NVIDIA용 llama.cpp(CUDA)를 받는 중이라 이번엔 Vulkan으로 번역');
@@ -161,16 +221,22 @@ function createLocalAi(userData) {
   async function installModel(id, progress = () => {}) {
     const model = MODELS.find(item => item.id === id); if (!model) throw new Error('모델을 찾지 못했습니다.');
     if (downloads.has(id)) throw new Error('이미 받는 중입니다.');
-    downloads.set(id, { done: 0, total: model.size });
+    const abort = new AbortController();
+    downloads.set(id, { done: 0, total: model.size, abort });
     try {
-      await download(`https://huggingface.co/${model.repo}/resolve/main/${encodeURIComponent(model.file)}?download=true`, modelPath(model), (done, total) => { downloads.set(id, { done, total: total || model.size }); progress(done, total || model.size); });
+      await download(`https://huggingface.co/${model.repo}/resolve/main/${encodeURIComponent(model.file)}?download=true`, modelPath(model), (done, total) => { downloads.set(id, { done, total: total || model.size, abort }); progress(done, total || model.size); }, abort.signal);
+    } catch (error) {
+      if (abort.signal.aborted) throw Object.assign(new Error('받기를 멈췄습니다. 다시 받으면 이어서 받습니다.'), { cancelled: true });
+      throw error;
     } finally { downloads.delete(id); }
   }
+  // Stops a model download; what came stays for the next try.
+  function cancelInstall(id) { downloads.get(id)?.abort.abort(); }
   function removeModel(id) {
     const model = models().find(item => item.id === id); if (!model) return;
     if (model.path) { fs.writeFileSync(addedFile, JSON.stringify(added().filter(item => item.path !== model.path))); return; }
     if (server?.model === modelPath(model)) stop();
-    try { fs.unlinkSync(modelPath(model)); } catch {}
+    for (const file of [modelPath(model), `${modelPath(model)}.part`]) try { fs.unlinkSync(file); } catch {}
   }
 
   // A server left behind by an app that did not close normally is stopped before a new one starts (only when that
@@ -233,7 +299,7 @@ function createLocalAi(userData) {
           const code = await Promise.race([exited, new Promise(resolve => setTimeout(() => resolve(undefined), 500))]);
           if (code !== undefined) {
             const memory = /OutOfDeviceMemory|unable to allocate|failed to allocate|out of memory/i.test(log);
-            const error = new Error(memory ? '그래픽카드 메모리가 부족해 모델을 불러오지 못했습니다. 더 작은 모델(HY-MT1.5 1.8B)을 써 보세요.' : `llama.cpp가 종료되었습니다: ${log.trim().split('\n').filter(line => / E /.test(line)).pop() || log.trim().split('\n').pop() || code}`);
+            const error = new Error(memory ? '그래픽카드 메모리가 부족해 모델을 불러오지 못했습니다. 더 작은 모델(Hy-MT2 1.8B)을 써 보세요.' : `llama.cpp가 종료되었습니다: ${log.trim().split('\n').filter(line => / E /.test(line)).pop() || log.trim().split('\n').pop() || code}`);
             error.memory = memory; throw error;
           }
           let ready = false;
@@ -259,14 +325,23 @@ function createLocalAi(userData) {
       };
       let started;
       try { started = await load(); }
-      catch (error) {
-        // A CUDA build that does not start on this PC (a driver or card it does not support) is not tried again here;
-        // the Vulkan build takes over.
-        if (kind === 'vulkan' || error.memory) throw error;
-        try { fs.mkdirSync(root, { recursive: true }); fs.writeFileSync(brokenFile, JSON.stringify({ ...broken(), [kind]: { driver: (await nvidiaGpu())?.driver || 0, error: error.message.slice(0, 300) } })); } catch {}
-        status('NVIDIA용 llama.cpp가 실행되지 않아 Vulkan으로 다시 불러오는 중');
-        kind = 'vulkan'; exe = await ensureRuntime('vulkan', (done, total) => status(`llama.cpp 받는 중 ${total ? Math.round(done / total * 100) : 0}%`));
-        started = await load();
+      catch (failure) {
+        let error = failure;
+        // A model newer than the build (an architecture it does not know): the newest build, then one more try.
+        if (/unknown model architecture/i.test(error.message)) {
+          status('이 모델을 읽으려면 llama.cpp 새 버전이 필요해 받는 중');
+          await update(kind, true);
+          if (swapInUpdate(kind)) { exe = runtimeExe(kind); try { started = await load(); error = null; } catch (again) { error = again; } }
+        }
+        if (error) {
+          // A CUDA build that does not start on this PC (a driver or card it does not support) is not tried again here;
+          // the Vulkan build takes over.
+          if (kind === 'vulkan' || error.memory) throw error;
+          try { fs.mkdirSync(root, { recursive: true }); fs.writeFileSync(brokenFile, JSON.stringify({ ...broken(), [kind]: { driver: (await nvidiaGpu())?.driver || 0, error: error.message.slice(0, 300) } })); } catch {}
+          status('NVIDIA용 llama.cpp가 실행되지 않아 Vulkan으로 다시 불러오는 중');
+          kind = 'vulkan'; exe = await ensureRuntime('vulkan', (done, total) => status(`llama.cpp 받는 중 ${total ? Math.round(done / total * 100) : 0}%`));
+          started = await load();
+        }
       }
       const { child, port, device, layers, total } = started;
       saveRun(file, { device: layers ? `${device} · ${RUNTIMES[kind].label}` : '', layers, total, reason: layers ? '' : reason || (device ? '' : '그래픽카드를 찾지 못함'), time: Date.now() });
@@ -289,9 +364,9 @@ function createLocalAi(userData) {
     return lines.length ? lines.slice(-wanted).join('\n') : '';
   }
   // Every line once, four at a time. Returns translations by index (failed
-  // lines are left out, so the caller keeps the original text).
+  // lines are left out, so the caller keeps the original text); onLine(index, text) hears each one as it is done.
   // context: the work's {characters} from AniList, for the names in the terminology list.
-  async function translateLines(texts, { modelId, progress = () => {}, status = () => {}, context = {} } = {}) {
+  async function translateLines(texts, { modelId, progress = () => {}, status = () => {}, onLine = () => {}, context = {}, signal = null } = {}) {
     const model = models().find(item => item.id === modelId) || models().find(item => item.installed);
     if (!model) throw new Error('로컬 AI 모델이 없습니다. 설정 > 자막 자동 번역에서 모델을 받아 주세요.');
     const { port, template } = await start(model, status);
@@ -309,14 +384,15 @@ function createLocalAi(userData) {
     const result = new Map(); let next = 0, done = 0, fatal = null;
     progress(0, texts.length);
     await Promise.all(Array.from({ length: PARALLEL }, async () => {
-      while (next < texts.length && !fatal) {
-        const index = next++, source = texts[index], body = request(source, termsFor(source, names), kind);
+      // A cancelled run takes no new line; the four being written finish (a few seconds).
+      while (next < texts.length && !fatal && !signal?.aborted) {
+        const index = next++, source = texts[index], body = request(source, termsFor(source, names), kind, texts.slice(Math.max(0, index - 2), index));
         try {
           // A Japanese word left in the answer (えっ, 先輩) is asked again, twice at most. ja-ko-vn's temperature of 0.1
           // would give the same answer again, so its second and third tries are less certain.
           let text = '';
           for (let attempt = 0; attempt < 3; attempt++) { text = clean(await ask(attempt && kind === 'jako' ? { ...body, temperature: 0.5 } : body, source), source); if (text && !KANA.test(text)) break; }
-          if (text) result.set(index, text);
+          if (text) { result.set(index, text); onLine(index, text); }
         } catch (error) { if (!server) fatal = error; }
         touch(); progress(++done, texts.length);
       }
@@ -325,7 +401,11 @@ function createLocalAi(userData) {
     return { translations: result, model };
   }
 
-  return { models, installModel, removeModel, addFile, translateLines, stop, modelPath };
+  return { models, installModel, cancelInstall, removeModel, addFile, translateLines, stop, modelPath };
 }
 
-module.exports = { createLocalAi, LOCAL_AI_MODELS: MODELS };
+// The prompt a model is asked with, as part of the translation cache key (a changed prompt is not hidden behind
+// translations made with the old one).
+const promptVersion = model => model && modelKind(model) === 'hy-mt2' ? '+context-1' : '';
+
+module.exports = { createLocalAi, LOCAL_AI_MODELS: MODELS, promptVersion };

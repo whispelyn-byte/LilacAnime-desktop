@@ -28,7 +28,9 @@ class SubtitleStore {
   save(key, entry = {}) {
     if (!key || !entry.path || !fs.existsSync(entry.path)) return null;
     const source = SOURCES.includes(entry.source) ? entry.source : 'user';
-    const list = (this.data[key] || []).filter(item => !(item.source === source && item.path === entry.path));
+    // One machine translation per episode: the newest (a finished one after a partial one, a re-translation) takes the
+    // older one's place in the list; its file stays for the translation cache until the cache is cleaned.
+    const list = (this.data[key] || []).filter(item => !(item.source === source && (item.path === entry.path || source === 'gemini')));
     const saved = { id: `sub_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, source, label: String(entry.label || source), path: entry.path, assPath: entry.assPath || null, fonts: Array.isArray(entry.fonts) ? entry.fonts : [], saved: Date.now() };
     this.data[key] = [saved, ...list].slice(0, 20);
     this.write();
@@ -47,6 +49,35 @@ class SubtitleStore {
       if (file && path.resolve(file).startsWith(path.resolve(this.managedRoot)) && !stillUsed(file)) { try { fs.unlinkSync(file); } catch { /* already gone */ } }
     }
     return true;
+  }
+
+  // The files under subtitles/ that no saved subtitle uses: translations and their kept lines, Jimaku and blog
+  // downloads, partial results. A saved ASS subtitle keeps its whole folder (its fonts sit next to it); a file changed
+  // within the hour may belong to a translation still running.
+  unused({ olderThan = 0 } = {}) {
+    const used = new Set(), folders = new Set(), now = Date.now(), files = [];
+    for (const items of Object.values(this.data)) for (const item of items) for (const file of [item.path, item.assPath]) if (file) { used.add(path.resolve(file)); if (/\.(ass|ssa)$/i.test(file)) folders.add(path.dirname(path.resolve(file))); }
+    const walk = dir => { let entries = []; try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries) {
+        const file = path.join(dir, entry.name);
+        if (entry.isDirectory()) { walk(file); continue; }
+        let stat; try { stat = fs.statSync(file); } catch { continue; }
+        const age = now - stat.mtimeMs;
+        files.push({ file, size: stat.size, unused: !used.has(file) && !folders.has(dir) && age > Math.max(olderThan, 60 * 60 * 1000) });
+      } };
+    walk(path.resolve(this.managedRoot));
+    return files;
+  }
+  usage() { const files = this.unused(); return { total: files.reduce((sum, item) => sum + item.size, 0), removable: files.filter(item => item.unused).reduce((sum, item) => sum + item.size, 0) }; }
+  clean(options = {}) {
+    let removed = 0, bytes = 0;
+    for (const item of this.unused(options).filter(entry => entry.unused)) { try { fs.unlinkSync(item.file); removed++; bytes += item.size; } catch { /* in use */ } }
+    // Folders left empty go too.
+    const prune = dir => { let entries = []; try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries) if (entry.isDirectory()) prune(path.join(dir, entry.name));
+      if (dir !== path.resolve(this.managedRoot)) try { fs.rmdirSync(dir); } catch { /* not empty */ } };
+    prune(path.resolve(this.managedRoot));
+    return { removed, bytes };
   }
 }
 
