@@ -101,7 +101,7 @@
    | 그래픽카드 | 쓰는 순서 |
    |---|---|
    | NVIDIA | CUDA (약 600MB, Vulkan보다 약 1.5배 빠름) → Vulkan |
-   | AMD 라데온 RX · PRO | ROCm (약 260MB, 윈도우에서는 RX 6800 이상 · RX 7000 · 9000 등 일부 카드만) → Vulkan |
+   | AMD 라데온 | ROCm (약 260MB: RX 5000 · 6000 · 7000 · 9000 시리즈, 라이젠 내장 680M · 780M · 890M 등) → Vulkan. 그보다 오래된 RX 400 · 500 · Vega는 바로 Vulkan |
    | 인텔 Arc | SYCL (약 150MB) → OpenVINO (약 90MB) → Vulkan |
    | 그 밖 | Vulkan (약 33MB) |
 

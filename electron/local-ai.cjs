@@ -29,7 +29,9 @@ const MODELS = [
 // - CUDA (NVIDIA): about 1.5 times faster (GTX 1050 Ti: Hy-MT2 30B-A3B 1.87 → 1.15 s a line, Hy-MT2 1.8B 0.30 →
 //   0.20 s). CUDA 13 left out the cards before Turing (compute capability below 7.5) and needs driver 580; CUDA 12 runs
 //   those from driver 551.61 but not the RTX 50 cards (12.0).
-// - ROCm (AMD Radeon RX / PRO): AMD's HIP; on Windows only for some cards (RX 6800 and up, RX 7000 / 9000).
+// - ROCm (AMD Radeon): AMD's HIP. The Windows build (b11375) has code for RDNA 1 to 4 (gfx1010-1012, 1030-1036,
+//   1100-1103, 1150-1153, 1200-1201): RX 5000, 6000, 7000 and 9000 cards and the Ryzen graphics of that age (680M,
+//   780M, 890M); not the older Polaris (RX 400 / 500) and Vega ones, which go to Vulkan.
 // - SYCL, then OpenVINO (Intel Arc): Intel's oneAPI and OpenVINO. OpenVINO picks the processor unless told the card
 //   (GGML_OPENVINO_DEVICE=GPU); on a Ryzen + GTX 1050 Ti PC it stopped while loading every model tried.
 // device: the line a build prints when it uses its card. Without it a build ran on the processor alone (its library
@@ -141,7 +143,7 @@ function createLocalAi(userData) {
     let driver = gpu?.driver;
     if (gpu) list.push(gpu.cap >= 7.5 && gpu.driver >= 580 ? 'cuda13' : gpu.cap >= 5 && gpu.cap < 10 && gpu.driver >= 551.61 ? 'cuda12' : null);
     else {
-      const cards = await videoCards(), amd = cards.find(card => /radeon/i.test(card.name) && /\brx\b|pro|instinct/i.test(card.name)), arc = cards.find(card => /intel/i.test(card.name) && /\barc\b/i.test(card.name));
+      const cards = await videoCards(), amd = cards.find(card => /radeon/i.test(card.name) && !/\brx\s*[45]\d0\b|vega|radeon vii|\br[579]\b|\bhd\s*\d/i.test(card.name)), arc = cards.find(card => /intel/i.test(card.name) && /\barc\b/i.test(card.name));
       if (amd) { list.push('rocm'); driver = amd.driver; } else if (arc) { list.push('sycl', 'openvino'); driver = arc.driver; }
     }
     // (A mark from before checks were counted (check 2) may be a CUDA build wrongly given up on a large model: not kept.)
