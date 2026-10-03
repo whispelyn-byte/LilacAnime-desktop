@@ -187,6 +187,19 @@ function createLocalAi(userData) {
     }
     throw new Error('llama.cpp 실행 파일을 찾지 못했습니다.');
   }
+  // Unpacked by Windows' own tar (bsdtar reads zip) in its own process: done here a build's 1 GB DLL (ROCm) kept the
+  // app from answering for 5 seconds and more, long enough for Windows to call it not responding. adm-zip (here, in
+  // one go) only where there is no tar.exe (Windows 10 before 1803).
+  function unzip(zip, dir) {
+    fs.mkdirSync(dir, { recursive: true });
+    const tar = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
+    if (process.platform !== 'win32' || !fs.existsSync(tar)) return Promise.resolve().then(() => new AdmZip(zip).extractAllTo(dir, true));
+    return new Promise((resolve, reject) => {
+      let error = ''; const child = spawn(tar, ['-xf', zip, '-C', dir], { windowsHide: true });
+      child.stderr.on('data', chunk => { error += chunk; }); child.once('error', reject);
+      child.once('close', code => code === 0 ? resolve() : reject(new Error(`llama.cpp 압축을 풀지 못했습니다: ${error.trim().slice(0, 200) || code}`)));
+    });
+  }
   async function installRuntime(kind, target, progress = () => {}, latest = null) {
     const { tag, assets } = latest || await latestRuntime(kind);
     const total = assets.reduce((sum, asset) => sum + (asset.size || 0), 0), unpacked = `${target}.part`; let before = 0;
@@ -194,7 +207,7 @@ function createLocalAi(userData) {
     for (const asset of assets) {
       const zip = path.join(root, asset.name);
       await download(asset.browser_download_url, zip, done => progress(before + done, total));
-      try { new AdmZip(zip).extractAllTo(unpacked, true); } finally { try { fs.unlinkSync(zip); } catch {} }
+      try { await unzip(zip, unpacked); } finally { try { fs.unlinkSync(zip); } catch {} }
       before += asset.size || 0;
     }
     fs.writeFileSync(buildFile(unpacked), JSON.stringify({ tag, checked: Date.now() }));
