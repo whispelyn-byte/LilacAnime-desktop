@@ -24,14 +24,23 @@ const MODELS = [
   { id: 'hy-mt-7b', label: 'HY-MT1.5 7B', note: '이전 버전 · Hy-MT2 7B를 권장', repo: 'tencent/HY-MT1.5-7B-GGUF', file: 'HY-MT1.5-7B-Q4_K_M.gguf', size: 4620e6, legacy: true },
   { id: 'hy-mt-1.8b', label: 'HY-MT1.5 1.8B', note: '이전 버전 · Hy-MT2 1.8B를 권장', repo: 'tencent/HY-MT1.5-1.8B-GGUF', file: 'HY-MT1.5-1.8B-Q4_K_M.gguf', size: 1133e6, legacy: true }
 ];
-// llama.cpp builds: Vulkan runs on any graphics card (and falls back to the CPU); on an NVIDIA card the CUDA build is
-// about 1.5 times faster (GTX 1050 Ti: Hy-MT2 30B-A3B 1.87 → 1.15 s a line, Hy-MT2 1.8B 0.30 → 0.20 s). CUDA 13 left
-// out the cards before Turing (compute capability below 7.5) and needs driver 580; CUDA 12 runs those from driver 551.61
-// but not the RTX 50 cards (12.0).
+// llama.cpp builds: Vulkan runs on any graphics card (and falls back to the CPU); the others are made for one maker's
+// cards and tried first on them, Vulkan taking over when they do not start or find no card:
+// - CUDA (NVIDIA): about 1.5 times faster (GTX 1050 Ti: Hy-MT2 30B-A3B 1.87 → 1.15 s a line, Hy-MT2 1.8B 0.30 →
+//   0.20 s). CUDA 13 left out the cards before Turing (compute capability below 7.5) and needs driver 580; CUDA 12 runs
+//   those from driver 551.61 but not the RTX 50 cards (12.0).
+// - ROCm (AMD Radeon RX / PRO): AMD's HIP; on Windows only for some cards (RX 6800 and up, RX 7000 / 9000).
+// - SYCL, then OpenVINO (Intel Arc): Intel's oneAPI and OpenVINO. OpenVINO picks the processor unless told the card
+//   (GGML_OPENVINO_DEVICE=GPU); on a Ryzen + GTX 1050 Ti PC it stopped while loading every model tried.
+// device: the line a build prints when it uses its card. Without it a build ran on the processor alone (its library
+// for the card did not load, or found no card) and is given up on.
 const RUNTIMES = {
   vulkan: { dir: 'runtime', label: 'Vulkan', assets: [/^llama-b\d+-bin-win-vulkan-x64\.zip$/] },
-  cuda12: { dir: 'runtime-cuda12', label: 'CUDA', assets: [/^llama-b\d+-bin-win-cuda-12\.[\d.]+-x64\.zip$/, /^cudart-llama-bin-win-cuda-12\.[\d.]+-x64\.zip$/] },
-  cuda13: { dir: 'runtime-cuda13', label: 'CUDA', assets: [/^llama-b\d+-bin-win-cuda-13\.[\d.]+-x64\.zip$/, /^cudart-llama-bin-win-cuda-13\.[\d.]+-x64\.zip$/] }
+  cuda12: { dir: 'runtime-cuda12', label: 'CUDA', device: /using device CUDA/i, assets: [/^llama-b\d+-bin-win-cuda-12\.[\d.]+-x64\.zip$/, /^cudart-llama-bin-win-cuda-12\.[\d.]+-x64\.zip$/] },
+  cuda13: { dir: 'runtime-cuda13', label: 'CUDA', device: /using device CUDA/i, assets: [/^llama-b\d+-bin-win-cuda-13\.[\d.]+-x64\.zip$/, /^cudart-llama-bin-win-cuda-13\.[\d.]+-x64\.zip$/] },
+  rocm: { dir: 'runtime-rocm', label: 'ROCm', device: /using device ROCm/i, assets: [/^llama-b\d+-bin-win-rocm-[\d.]+-x64\.zip$/] },
+  sycl: { dir: 'runtime-sycl', label: 'SYCL', device: /using device SYCL/i, assets: [/^llama-b\d+-bin-win-sycl-x64\.zip$/] },
+  openvino: { dir: 'runtime-openvino', label: 'OpenVINO', device: /using device OPENVINO\d+ \(GGML_OPENVINO_DEVICE=GPU/i, env: { GGML_OPENVINO_DEVICE: 'GPU' }, assets: [/^llama-b\d+-bin-win-openvino-[\d.]+-x64\.zip$/] }
 };
 const PARALLEL = 4, IDLE_STOP = 30 * 1000;
 // One line at a time. HY-MT1.5 gets its own prompt and no previous lines (as context, Android's prompt or HY-MT1.5's
@@ -101,8 +110,9 @@ function createLocalAi(userData) {
     const walk = dir => { try { return fs.readdirSync(dir, { withFileTypes: true }).flatMap(item => item.isDirectory() ? walk(path.join(dir, item.name)) : [path.join(dir, item.name)]); } catch { return []; } };
     return walk(path.join(root, RUNTIMES[kind].dir)).find(file => path.basename(file).toLowerCase() === 'llama-server.exe') || null;
   };
-  // The build for this PC: CUDA for an NVIDIA card nvidia-smi reports (with a driver new enough for it), unless that
-  // build failed here with the same driver (a newer driver gets another try); Vulkan otherwise.
+  // The builds for this PC, best first: CUDA for an NVIDIA card nvidia-smi reports (with a driver new enough for it),
+  // ROCm for an AMD Radeon RX / PRO card, SYCL then OpenVINO for an Intel Arc one, Vulkan last; a build that failed here
+  // with the same driver is left out (a newer driver gets another try).
   const brokenFile = path.join(root, 'runtime-broken.json');
   const broken = () => { try { return JSON.parse(fs.readFileSync(brokenFile, 'utf8')) || {}; } catch { return {}; } };
   let gpuInfo = null;
@@ -115,11 +125,29 @@ function createLocalAi(userData) {
     });
     return gpuInfo;
   }
-  async function preferredRuntime() {
-    const gpu = await nvidiaGpu(), off = broken();
-    const kind = !gpu ? 'vulkan' : gpu.cap >= 7.5 && gpu.driver >= 580 ? 'cuda13' : gpu.cap >= 5 && gpu.cap < 10 && gpu.driver >= 551.61 ? 'cuda12' : 'vulkan';
-    return off[kind] && off[kind].driver === gpu?.driver ? 'vulkan' : kind;
+  // The other cards Windows knows (name and driver version), for AMD and Intel.
+  let cardsInfo = null;
+  function videoCards() {
+    cardsInfo ||= new Promise(resolve => {
+      if (process.platform !== 'win32') { resolve([]); return; }
+      let out = ''; const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', 'Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion | ConvertTo-Json -Compress'], { windowsHide: true });
+      child.stdout.on('data', chunk => { out += chunk; }); child.once('error', () => resolve([]));
+      child.once('close', () => { try { const value = JSON.parse(out); resolve((Array.isArray(value) ? value : [value]).filter(Boolean).map(card => ({ name: String(card.Name || ''), driver: String(card.DriverVersion || '') }))); } catch { resolve([]); } });
+    });
+    return cardsInfo;
   }
+  async function preferredRuntimes() {
+    const gpu = await nvidiaGpu(), off = broken(), list = [];
+    let driver = gpu?.driver;
+    if (gpu) list.push(gpu.cap >= 7.5 && gpu.driver >= 580 ? 'cuda13' : gpu.cap >= 5 && gpu.cap < 10 && gpu.driver >= 551.61 ? 'cuda12' : null);
+    else {
+      const cards = await videoCards(), amd = cards.find(card => /radeon/i.test(card.name) && /\brx\b|pro|instinct/i.test(card.name)), arc = cards.find(card => /intel/i.test(card.name) && /\barc\b/i.test(card.name));
+      if (amd) { list.push('rocm'); driver = amd.driver; } else if (arc) { list.push('sycl', 'openvino'); driver = arc.driver; }
+    }
+    // (A mark from before checks were counted (check 2) may be a CUDA build wrongly given up on a large model: not kept.)
+    return [...list.filter(kind => kind && !(off[kind] && off[kind].driver === driver && off[kind].check === 2)), 'vulkan'];
+  }
+  async function cardDriver(kind) { return kind.startsWith('cuda') ? (await nvidiaGpu())?.driver || 0 : (await videoCards()).find(card => kind === 'rocm' ? /radeon/i.test(card.name) : /intel/i.test(card.name))?.driver || ''; }
 
   // Into target.part first: a download cut short (network, the app closed, cancelled) keeps what came and goes on
   // from there the next time (an HTTP range request); one that ends short of its length is not taken as the file.
@@ -202,21 +230,23 @@ function createLocalAi(userData) {
     fs.rmSync(old, { recursive: true, force: true });
     return true;
   }
-  // The build to start now: the preferred one when it is on disk. When it is not but the Vulkan build is, Vulkan runs
-  // this time and the preferred one comes down meanwhile; with neither, the preferred one is downloaded first (Vulkan
+  // The build to start now: the best one for this PC when it is on disk. When it is not but the Vulkan build is, Vulkan
+  // runs this time and the best one comes down meanwhile; with neither, the best one is downloaded first (the next one
   // if that fails).
   async function runtimeFor(status) {
-    const kind = await preferredRuntime(), percent = (done, total) => total ? Math.round(done / total * 100) : 0;
-    swapInUpdate(kind);
-    if (runtimeExe(kind)) { update(kind); return { kind, exe: runtimeExe(kind) }; }
-    if (kind !== 'vulkan' && runtimeExe('vulkan')) {
-      ensureRuntime(kind).catch(() => {});
-      status('다음 번역부터 쓸 NVIDIA용 llama.cpp(CUDA)를 받는 중이라 이번엔 Vulkan으로 번역');
-      return { kind: 'vulkan', exe: runtimeExe('vulkan') };
+    const percent = (done, total) => total ? Math.round(done / total * 100) : 0;
+    for (const kind of await preferredRuntimes()) {
+      swapInUpdate(kind);
+      if (runtimeExe(kind)) { update(kind); return { kind, exe: runtimeExe(kind) }; }
+      if (kind !== 'vulkan' && runtimeExe('vulkan')) {
+        ensureRuntime(kind).catch(() => {});
+        status(`다음 번역부터 쓸 llama.cpp(${RUNTIMES[kind].label})를 받는 중이라 이번엔 Vulkan으로 번역`);
+        return { kind: 'vulkan', exe: runtimeExe('vulkan') };
+      }
+      try { return { kind, exe: await ensureRuntime(kind, (done, total) => status(`llama.cpp(${RUNTIMES[kind].label}) 받는 중 ${percent(done, total)}%`)) }; }
+      catch (error) { if (kind === 'vulkan') throw error; }
     }
-    try { return { kind, exe: await ensureRuntime(kind, (done, total) => status(`llama.cpp${kind === 'vulkan' ? '' : '(CUDA)'} 받는 중 ${percent(done, total)}%`)) }; }
-    catch (error) { if (kind === 'vulkan') throw error; }
-    return { kind: 'vulkan', exe: await ensureRuntime('vulkan', (done, total) => status(`llama.cpp 받는 중 ${percent(done, total)}%`)) };
+    throw new Error('llama.cpp 실행 파일을 찾지 못했습니다.');
   }
   async function installModel(id, progress = () => {}) {
     const model = MODELS.find(item => item.id === id); if (!model) throw new Error('모델을 찾지 못했습니다.');
@@ -279,18 +309,22 @@ function createLocalAi(userData) {
       // with more room left on the card, then on the CPU alone.
       const launch = async extra => {
         const port = await freePort();
-        const child = spawn(exe, ['-m', file, '--host', '127.0.0.1', '--port', String(port), '-c', '4096', '-np', String(PARALLEL), '-fa', 'on', '-ctk', 'q8_0', '-ctv', 'q8_0', '--fit-target', '512', ...extra, '--jinja', '--no-webui', '-lv', '4'], { cwd: path.dirname(exe), windowsHide: true, env: { ...process.env, LLAMA_ARG_LOAD_MODE: 'none', LLAMA_ARG_NO_MMAP: '1' } });
+        const child = spawn(exe, ['-m', file, '--host', '127.0.0.1', '--port', String(port), '-c', '4096', '-np', String(PARALLEL), '-fa', 'on', '-ctk', 'q8_0', '-ctv', 'q8_0', '--fit-target', '512', ...extra, '--jinja', '--no-webui', '-lv', '4'], { cwd: path.dirname(exe), windowsHide: true, env: { ...process.env, LLAMA_ARG_LOAD_MODE: 'none', LLAMA_ARG_NO_MMAP: '1', ...RUNTIMES[kind].env } });
         try { fs.writeFileSync(pidFile, String(child.pid)); } catch {}
         // The model file is read rather than memory-mapped: on Windows a mapped file stays in RAM whole even with every
         // layer on the graphics card (1.4 GB for the 1.8B model, 0.3 GB read; 5.2 GB against 2.7 GB for ja-ko-vn on a
         // 4 GB card). Set through the environment, which a llama.cpp without the option (load mode is newer than
         // no-mmap) ignores instead of refusing to start.
         // The device and layer count are read as the model loads (-lv 4 prints them).
-        let log = '', device = '', layers = 0, total = 0;
+        // They are looked for in the output as it comes, before only its end is kept: a large model prints so much while it
+        // loads that the device line is gone from the last 8000 characters by the time the server answers.
+        let log = '', device = '', onCard = false, layers = 0, total = 0;
         const keep = chunk => {
-          log = (log + chunk.toString()).slice(-8000);
-          device ||= log.match(/using device \S+ \(([^)]+)\)/)?.[1] || '';
-          const offloaded = log.match(/offloaded (\d+)\/(\d+) layers to GPU/); if (offloaded) { layers = Number(offloaded[1]); total = Number(offloaded[2]); }
+          const text = log + chunk.toString();
+          device ||= text.match(/using device \S+ \(([^)]+)\)/)?.[1] || '';
+          onCard ||= Boolean(RUNTIMES[kind].device?.test(text));
+          const offloaded = text.match(/offloaded (\d+)\/(\d+) layers to GPU/); if (offloaded) { layers = Number(offloaded[1]); total = Number(offloaded[2]); }
+          log = text.slice(-8000);
         };
         child.stdout.on('data', keep); child.stderr.on('data', keep);
         const exited = new Promise(resolve => child.once('exit', code => resolve(code)));
@@ -305,9 +339,9 @@ function createLocalAi(userData) {
           let ready = false;
           try { ready = (await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(2000) })).ok; } catch { /* still loading */ }
           // Without a graphics card in use llama.cpp still reports the layers as offloaded, so they count only with a
-          // device. A CUDA build that found none (its CUDA library did not load) would run on the CPU alone: it is
-          // given up for the Vulkan build instead.
-          if (ready && kind !== 'vulkan' && !/using device CUDA/i.test(log)) { child.kill(); throw new Error('NVIDIA 그래픽카드를 쓰지 못했습니다.'); }
+          // device. A maker's build that found none (its library for the card did not load) would run on the CPU alone:
+          // it is given up for the next build instead.
+          if (ready && kind !== 'vulkan' && !onCard) { child.kill(); throw new Error(`llama.cpp(${RUNTIMES[kind].label})가 그래픽카드를 쓰지 못했습니다.`); }
           if (ready) return { child, port, device, layers: device ? layers : 0, total };
           if (Date.now() > deadline) { child.kill(); throw new Error('모델을 불러오는 데 너무 오래 걸립니다.'); }
         }
@@ -324,23 +358,23 @@ function createLocalAi(userData) {
         }
       };
       let started;
-      try { started = await load(); }
-      catch (failure) {
-        let error = failure;
-        // A model newer than the build (an architecture it does not know): the newest build, then one more try.
-        if (/unknown model architecture/i.test(error.message)) {
-          status('이 모델을 읽으려면 llama.cpp 새 버전이 필요해 받는 중');
-          await update(kind, true);
-          if (swapInUpdate(kind)) { exe = runtimeExe(kind); try { started = await load(); error = null; } catch (again) { error = again; } }
-        }
-        if (error) {
-          // A CUDA build that does not start on this PC (a driver or card it does not support) is not tried again here;
-          // the Vulkan build takes over.
+      while (!started) {
+        try { started = await load(); }
+        catch (failure) {
+          let error = failure;
+          // A model newer than the build (an architecture it does not know): the newest build, then one more try.
+          if (/unknown model architecture/i.test(error.message)) {
+            status('이 모델을 읽으려면 llama.cpp 새 버전이 필요해 받는 중');
+            await update(kind, true);
+            if (swapInUpdate(kind)) { exe = runtimeExe(kind); try { started = await load(); error = null; } catch (again) { error = again; } }
+          }
+          if (!error) break;
+          // A maker's build that does not start on this PC (a driver or card it does not support) is not tried again
+          // with this driver; the next build for the PC takes over (Vulkan in the end).
           if (kind === 'vulkan' || error.memory) throw error;
-          try { fs.mkdirSync(root, { recursive: true }); fs.writeFileSync(brokenFile, JSON.stringify({ ...broken(), [kind]: { driver: (await nvidiaGpu())?.driver || 0, error: error.message.slice(0, 300) } })); } catch {}
-          status('NVIDIA용 llama.cpp가 실행되지 않아 Vulkan으로 다시 불러오는 중');
-          kind = 'vulkan'; exe = await ensureRuntime('vulkan', (done, total) => status(`llama.cpp 받는 중 ${total ? Math.round(done / total * 100) : 0}%`));
-          started = await load();
+          try { fs.mkdirSync(root, { recursive: true }); fs.writeFileSync(brokenFile, JSON.stringify({ ...broken(), [kind]: { driver: await cardDriver(kind), check: 2, error: error.message.slice(0, 300) } })); } catch {}
+          status(`llama.cpp(${RUNTIMES[kind].label})가 실행되지 않아 다른 판으로 다시 불러오는 중`);
+          ({ kind, exe } = await runtimeFor(status));
         }
       }
       const { child, port, device, layers, total } = started;
