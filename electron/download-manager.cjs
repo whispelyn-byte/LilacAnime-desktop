@@ -215,7 +215,7 @@ class DownloadManager {
   }
 
   // The episode's Japanese file from Jimaku (findJimaku saves it for the episode) and its Korean translation
-  // (설정 > Jimaku 자막 자동 번역), which follows in the track queue so a long local translation holds no download
+  // (설정 > 자막 자동 번역), which follows in the track queue so a long local translation holds no download
   // slot. primary: nothing Korean was found, so the file becomes the episode's subtitle (not over English burned into
   // the video) and then its translation does.
   async attachJimaku(job, stream, primary) {
@@ -281,13 +281,15 @@ class DownloadManager {
     }
     if (!saved.length || !this.jobs.includes(job)) return;
     job.subtitleTracks = saved; job.updated = Date.now(); this.save();
-    // One Korean subtitle is enough: none is made when the episode's Jimaku file is translated (설정 > Jimaku 자막 자동
-    // 번역) or a Korean track came with it; otherwise the Japanese track (the original dialogue, translated once) or
-    // else the English one is translated. Translating every track took one run per language, hours with the local AI.
+    // One machine translation is enough, made from the best source even beside a Korean subtitle (it may be another
+    // episode's): none from the tracks when the episode's Jimaku file is translated (설정 > 자막 자동 번역); otherwise the
+    // Japanese track (the original dialogue, translated once) or else the English dialogue one (not signs & songs alone,
+    // a written one before an AI dub transcript). Translating every track took one run per language, hours with the
+    // local AI.
     if (job.jimakuFound && this.jimakuTranslates?.()) return;
     const text = track => `${track.label} ${track.language}`, code = (track, lang) => new RegExp(`^${lang}(?:[-_]|$)`, 'i').test(track.language || '');
-    const korean = saved.some(track => /kor|korean|한국/i.test(text(track)) || code(track, 'ko'));
-    const track = korean ? null : saved.find(item => /japanese|日本/i.test(text(item)) || code(item, 'ja')) || saved.find(item => /english/i.test(text(item)) || code(item, 'en'));
+    const rank = track => /signs|songs|forced/i.test(track.label) ? 3 : /dubtitle|\(ai\)|\bai\b/i.test(track.label) ? 2 : /dialogue|full/i.test(track.label) ? 0 : 1;
+    const track = saved.find(item => /japanese|日本/i.test(text(item)) || code(item, 'ja')) || saved.filter(item => /english/i.test(text(item)) || code(item, 'en')).sort((a, b) => rank(a) - rank(b))[0];
     if (!track) return;
     const title = job.displayTitles?.ko || job.title;
     try {
