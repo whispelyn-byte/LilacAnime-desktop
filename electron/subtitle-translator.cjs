@@ -202,7 +202,24 @@ function createTranslator(userData) {
   // stops (no key, the day's free allowance used up, no model, llama.cpp not starting) the other one takes over if it
   // is set up, and translates the lines still left. progress(done, total) is called after each batch (local: each
   // line); status(text) while the local model starts or the other one takes over.
-  async function translate({ file, title = '', provider = '', context = {}, progress = () => {}, status = () => {} }) {
+  // One run per file and provider: asking again while it runs (the episode opened again, a download's track) waits for
+  // the same run and gets its progress from then on.
+  const running = new Map();
+  async function translate({ progress = () => {}, status = () => {}, ...options }) {
+    const key = `${options.file}
+${options.provider || ''}`;
+    let job = running.get(key);
+    if (!job) {
+      job = { listeners: new Set() };
+      job.promise = translateOnce({ ...options, progress: (...args) => job.listeners.forEach(listener => listener.progress(...args)), status: text => job.listeners.forEach(listener => listener.status(text)) })
+        .finally(() => running.delete(key));
+      running.set(key, job);
+    }
+    const listener = { progress, status };
+    job.listeners.add(listener);
+    try { return await job.promise; } finally { job.listeners.delete(listener); }
+  }
+  async function translateOnce({ file, title = '', provider = '', context = {}, progress = () => {}, status = () => {} }) {
     const settings = read(), wanted = provider || autoProvider() || 'gemini';
     const order = [wanted, wanted === 'local' ? 'gemini' : 'local'].filter(name => ready(name));
     if (!order.length) throw new Error(wanted === 'local' ? '설정 > 자막 자동 번역에서 로컬 AI 모델을 먼저 받아 주세요.' : '설정 > 자막 자동 번역에서 Gemini API 키를 넣어 주세요.');
@@ -211,8 +228,13 @@ function createTranslator(userData) {
     // The prompt version is part of the cache key, so a better prompt is not hidden behind older results.
     const source = fs.readFileSync(file, 'utf8');
     const hashOf = name => crypto.createHash('sha1').update(`${modelOf(name)}\n${name === 'local' ? LOCAL_PROMPT_VERSION : PROMPT_VERSION}\n${source}`).digest('hex').slice(0, 20);
-    const out = path.join(cacheDir, `${hashOf(order[0])}.vtt`);
-    if (fs.existsSync(out)) { progress(1, 1); return { path: out, model: modelOf(order[0]), failed: 0, cached: true }; }
+    // The wanted one's cached translation, else the other's (made when the wanted one could not be used, e.g. Gemini
+    // out of quota), so a slow local translation is not done again.
+    for (const name of order) {
+      const out = path.join(cacheDir, `${hashOf(name)}.vtt`);
+      if (!fs.existsSync(out)) continue;
+      progress(1, 1); return { path: out, model: modelOf(name), failed: 0, cached: true };
+    }
 
     const cues = parseVtt(source);
     if (!cues.length) throw new Error('번역할 자막 줄이 없습니다.');

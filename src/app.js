@@ -385,7 +385,7 @@ async function renderAssSubtitle(){
 function attachSubtitle(src,label='자막',options={}){
   const video=$('#video');clearSubtitle();const subtitle={src,label,...options,assRendering:false};currentSubtitle=subtitle;
   const track=document.createElement('track');track.kind='subtitles';track.label=label;track.srclang='ko';track.src=src;track.default=true;video.append(track);
-  track.addEventListener('load',()=>{if(currentSubtitle!==subtitle)return;applyVttLayout();setVttVisible();$('#subtitleState').textContent=`${label} 적용됨${subtitle.assUrl&&assEffectsEnabled()?' · ASS 효과':''}`;toast(`${label}을 적용했습니다.`)});
+  track.addEventListener('load',()=>{if(currentSubtitle!==subtitle)return;applyVttLayout();setVttVisible();if(!translatingNow())$('#subtitleState').textContent=`${label} 적용됨${subtitle.assUrl&&assEffectsEnabled()?' · ASS 효과':''}`;toast(options.notice||`${label}을 적용했습니다.`)});
   track.addEventListener('error',()=>{if(currentSubtitle===subtitle)$('#subtitleState').textContent='자막 파일을 불러오지 못했습니다.'});
   renderAssSubtitle();
   if(options.source&&options.path&&!options.saved)rememberSubtitle(subtitle);else renderSavedSubtitles();if(typeof renderDiscoveredFonts==='function')renderDiscoveredFonts();
@@ -394,7 +394,7 @@ function attachSubtitle(src,label='자막',options={}){
 // Android SubtitleStore parity: subtitles are remembered per episode and source.
 function subtitleStoreKey(){const episode=currentPlaybackContext.episode;return episode?episodeRef(episode):''}
 async function rememberSubtitle(subtitle){const key=subtitleStoreKey();if(!key)return;try{await window.lilac.saveSubtitle(key,{source:subtitle.source,label:subtitle.label,path:subtitle.path,assPath:subtitle.assPath||null,fonts:subtitle.fonts||[]})}catch{}renderSavedSubtitles()}
-function applySavedSubtitle(entry){currentSubtitlePath=entry.path;attachSubtitle(entry.url,entry.label,{path:entry.path,assUrl:entry.assUrl,assPath:entry.assPath,fonts:entry.fonts,source:entry.source,saved:true})}
+function applySavedSubtitle(entry){if(entry.source==='jimaku')return applySavedJimaku(entry);currentSubtitlePath=entry.path;attachSubtitle(entry.url,entry.label,{path:entry.path,assUrl:entry.assUrl,assPath:entry.assPath,fonts:entry.fonts,source:entry.source,saved:true})}
 async function renderSavedSubtitles(){
   const box=$('#savedSubtitles'),list=$('#savedSubtitleList'),key=subtitleStoreKey();if(!key){box.classList.add('hidden');list.replaceChildren();return}
   const entries=await window.lilac.savedSubtitles(key).catch(()=>[]);if(key!==subtitleStoreKey())return;
@@ -438,7 +438,7 @@ async function ensureSubtitle(stream,title,episode,{skipSaved=false}={}){
   // Only a subtitle that is not Korean gets the online Korean offer; fansubs and the user's own files are final.
   const offerAfter=(source,korean)=>{if(!korean&&!['kairan','csora','anissia','user','gemini'].includes(source))offerKoreanSubtitle(title,episode,requestId,currentSubtitle)};
   // A machine translation stands for the Re:Anime / Jimaku subtitle it was made from.
-  const savedPreferred=(['reanime','jimaku'].includes(preferred)&&saved.find(entry=>entry.source==='gemini'))||saved.find(entry=>entry.source===preferred);if(savedPreferred){applySavedSubtitle(savedPreferred);offerAfter(savedPreferred.source,savedPreferred.source!=='jimaku');return true}
+  const savedPreferred=(['reanime','jimaku'].includes(preferred)&&saved.find(entry=>entry.source==='gemini'))||saved.find(entry=>entry.source===preferred);if(savedPreferred){await applySavedSubtitle(savedPreferred);offerAfter(savedPreferred.source,savedPreferred.source!=='jimaku');return true}
   // Re:ANIME and Miruro: like Android only a Korean track is applied by itself; any other language is left for the user
   // to pick from the track list while the Korean search runs.
   const reanime=currentPlaybackContext.episode?.provider==='reanime',koreanUrl=url=>/(?:^|[^a-z])(?:kor|korean|ko)(?:[^a-z]|$)|한국/i.test(decodeURIComponent(String(url||'')));
@@ -448,7 +448,7 @@ async function ensureSubtitle(stream,title,episode,{skipSaved=false}={}){
   if(stream?.subtitleUrl&&(!reanime||streamKorean)){if(!fromDownload&&(track||stream.subtitleTrack))currentPlaybackContext.selectedSubtitleTrack=track?.url||stream.subtitleTrack;renderSubtitleTracks();const source=track?'reanime':currentPlaybackContext.resolveKind==='linkkf'?'linkkf':reanime?'reanime':'provider';if(!track)currentPlaybackContext.streamSubtitle={src:stream.subtitleUrl,label:stream.subtitleLabel||'제공 자막',options:{path:stream.subtitlePath||null,assUrl:stream.subtitleAss?.url||null,assPath:stream.subtitleAss?.path||null,fonts:stream.subtitleAss?.fonts||[],source:stream.subtitlePath?source:null}};attachSubtitle(stream.subtitleUrl,track&&!fromDownload?`${trackSourceLabel()} ${track.label} 자막`:stream.subtitleLabel||(fromDownload?'다운로드 자막':'제공 자막'),{path:stream.subtitlePath||null,assUrl:stream.subtitleAss?.url||null,assPath:stream.subtitleAss?.path||null,fonts:stream.subtitleAss?.fonts||[],source:stream.subtitlePath?source:null});
     if(!fansub)offerAfter(source,streamKorean);
     return true}
-  if(saved[0]){applySavedSubtitle(saved[0]);offerAfter(saved[0].source,!['provider','jimaku'].includes(saved[0].source));return true}
+  if(saved[0]){await applySavedSubtitle(saved[0]);offerAfter(saved[0].source,!['provider','jimaku'].includes(saved[0].source));return true}
   const superseded=()=>requestId!==playbackRequestId||Boolean(currentPlaybackContext.selectedSubtitleTrack);$('#subtitleState').textContent='온라인 자막을 찾는 중...';
   const found=await onlineSubtitleFor(title,episode,subtitleSearchAnime());if(superseded())return false;if(found){attachOnlineSubtitle(found);return true}
   if(await autoJimaku(superseded))return true;
@@ -481,7 +481,8 @@ function renderSubtitleTracks(){
   // Only the sources this episode can use: the site's own subtitle (Linkkf) or tracks (Re:Anime / Miruro) when it has them.
   $('#psSubtitleSources [data-source="linkkf"]').classList.toggle('hidden',currentPlaybackContext.resolveKind!=='linkkf');$('#psSubtitleSources [data-source="reanime"]').classList.toggle('hidden',!trackProvider());
   $('#jimakuBox').classList.toggle('hidden',!subtitleSearchAnime());
-  box.classList.toggle('hidden',!hasTracks);if(!hasTracks){list.replaceChildren();return}
+  // The translate buttons come with a picked track, as they do with a picked Jimaku file.
+  box.classList.toggle('hidden',!hasTracks);$('#subtitleTrackTranslate').classList.toggle('hidden',!tracks.some(track=>track.url===currentPlaybackContext.selectedSubtitleTrack));if(!hasTracks){list.replaceChildren();return}
   $('#subtitleTrackState').textContent=tracks.length?`${tracks.length}개 트랙`:currentPlaybackContext.resolving||currentPlaybackContext.tracksLoading?'현재 회차의 자막 트랙을 불러오는 중…':'자막 트랙을 불러오지 못했습니다.';$('#reloadSubtitleTracks').classList.toggle('hidden',Boolean(tracks.length||currentPlaybackContext.resolving||currentPlaybackContext.tracksLoading));
   // Korean, English and Japanese first; a label like "Chinese (Chinese (Han, Simplified) - Full Subtitles)" shows the
   // language on top and the rest small underneath.
@@ -519,13 +520,15 @@ async function translateSubtitleTrack(provider='gemini'){
 // Translates a subtitle file (file: a function giving {path}) and applies the result; the button shows the progress.
 // Only the newest run applies its result (picking another Jimaku file while one is translated), and a button is put
 // back by the run that last used it.
-const translationButtons=new Map();let translationRun=0;
+const translationButtons=new Map();let translationRun=0,translating=null;
+// A translation for the episode on screen is running: its progress stays in the subtitle state line.
+const translatingNow=()=>translating?.requestId===playbackRequestId;
 async function runTranslation({file,name,button,provider}){
   translationSettings=await window.lilac.geminiSettings().catch(()=>translationSettings);
   if(!translationReady('gemini')&&!translationReady('local')){toast(provider==='local'?'설정 > 자막 자동 번역에서 로컬 AI 모델을 먼저 받아 주세요.':'설정 > 자막 자동 번역에서 Gemini API 키를 넣어 주세요.');return}
   const label=button.dataset.label||(button.dataset.label=button.textContent),run=++translationRun;
   const requestId=playbackRequestId,title=currentPlaybackContext.subtitleTitle||$('#skipTitle').value.trim(),current=()=>requestId===playbackRequestId&&run===translationRun;
-  translationButtons.set(run,button);button.dataset.run=String(run);button.disabled=true;button.textContent='번역 준비 중…';$('#subtitleState').textContent=`${name} 자막을 한국어로 번역하는 중...`;
+  translationButtons.set(run,button);translating={run,requestId,name};button.dataset.run=String(run);button.disabled=true;button.textContent='번역 준비 중…';$('#subtitleState').textContent=`${name} 자막을 한국어로 번역하는 중...`;
   try{
     const source=await file();if(!current())return;
     const result=await window.lilac.translateSubtitle({path:source.path,title,id:run,provider,anime:subtitleSearchAnime()});if(!current())return;
@@ -533,7 +536,7 @@ async function runTranslation({file,name,button,provider}){
     if(result.fallbackFrom){const from=result.fallbackFrom==='local'?'로컬 AI':'Gemini',to=result.fallbackFrom==='local'?'Gemini':'로컬 AI';toast(`${from}를 쓸 수 없어 ${to}로 번역했습니다${result.fallbackReason?`: ${result.fallbackReason}`:'.'}`)}
     if(result.failed)toast(`${result.failed}줄은 번역하지 못해 원문으로 남겼습니다.`);
   }catch(error){if(current()){$('#subtitleState').textContent='자동 번역에 실패했습니다.';toast(`자동 번역 실패: ${ipcMessage(error)}`)}}
-  finally{translationButtons.delete(run);if(button.dataset.run===String(run)){button.disabled=false;button.textContent=label}}
+  finally{translationButtons.delete(run);if(translating?.run===run)translating=null;if(button.dataset.run===String(run)){button.disabled=false;button.textContent=label}}
 }
 // Jimaku (Android JIMAKU_USER_SELECTION_V2): the episode's Japanese subtitle files are listed for the user to pick; the
 // picked one is applied, saved for the episode and, when set up, translated into Korean right away. Like the Re:Anime /
@@ -568,17 +571,35 @@ async function applyJimaku(file){
   try{
     const result=await window.lilac.jimakuDownload(file,subtitleSearchAnime(),episode);if(requestId!==playbackRequestId)return;
     context.jimakuFile=file.url;context.jimakuSubtitle={path:result.path,name:file.name};context.selectedSubtitleTrack=null;currentSubtitlePath=result.path;
-    attachSubtitle(result.url,'Jimaku 자막',{path:result.path,assUrl:result.assUrl,assPath:result.assPath,fonts:result.fonts,source:'jimaku'});renderJimaku();renderSubtitleTracks();
-    translationSettings=await window.lilac.geminiSettings().catch(()=>translationSettings);
-    // 설정 > 자막 자동 번역 > Jimaku 자막 자동 번역: off, Gemini or the local AI.
-    const provider=translationSettings?.jimakuTranslate;
-    if(provider==='gemini'||provider==='local'){if(translationReady('gemini')||translationReady('local'))translateJimaku(provider);else toast('Gemini API 키도 로컬 AI 모델도 없어 자동 번역을 건너뛰었습니다. 설정 > 자막 자동 번역에서 준비할 수 있어요.')}
+    const provider=await jimakuAutoProvider();if(requestId!==playbackRequestId)return;
+    attachSubtitle(result.url,'Jimaku 자막',{path:result.path,assUrl:result.assUrl,assPath:result.assPath,fonts:result.fonts,source:'jimaku',notice:provider?JIMAKU_TRANSLATING:''});renderJimaku();renderSubtitleTracks();
+    if(provider)translateJimaku(provider);
   }catch(error){if(requestId===playbackRequestId){$('#subtitleState').textContent='Jimaku 자막을 받지 못했습니다.';toast(`Jimaku: ${ipcMessage(error)}`)}}
+}
+const JIMAKU_TRANSLATING='일본어 자막을 먼저 띄웠어요. 한국어 번역이 끝나면 바로 바뀌어요.';
+// 설정 > 자막 자동 번역 > Jimaku 자막 자동 번역: off, Gemini or the local AI (null: off, or neither is set up).
+async function jimakuAutoProvider(){
+  translationSettings=await window.lilac.geminiSettings().catch(()=>translationSettings);
+  const provider=translationSettings?.jimakuTranslate;if(provider!=='gemini'&&provider!=='local')return null;
+  if(translationReady('gemini')||translationReady('local'))return provider;
+  toast('Gemini API 키도 로컬 AI 모델도 없어 자동 번역을 건너뛰었습니다. 설정 > 자막 자동 번역에서 준비할 수 있어요.');return null;
+}
+// A Jimaku file saved for the episode whose translation never came in (the episode was closed while it ran, Gemini
+// was out of quota): translated again when the episode opens. A finished translation comes from the cache at once,
+// and one still running is joined.
+async function applySavedJimaku(entry){
+  const requestId=playbackRequestId,provider=await jimakuAutoProvider();if(requestId!==playbackRequestId)return;
+  currentPlaybackContext.jimakuSubtitle={path:entry.path,name:entry.label};
+  currentSubtitlePath=entry.path;attachSubtitle(entry.url,entry.label,{path:entry.path,assUrl:entry.assUrl,assPath:entry.assPath,fonts:entry.fonts,source:entry.source,saved:true,notice:provider?JIMAKU_TRANSLATING:''});renderJimaku();
+  if(provider)translateJimaku(provider);
 }
 function translateJimaku(provider='gemini'){const subtitle=currentPlaybackContext.jimakuSubtitle;if(subtitle)runTranslation({file:async()=>subtitle,name:'Jimaku',button:provider==='local'?$('#translateJimakuLocal'):$('#translateJimaku'),provider})}
 $('#translateJimaku').onclick=()=>translateJimaku('gemini');$('#translateJimakuLocal').onclick=()=>translateJimaku('local');
 $('#translateSubtitle').onclick=()=>translateSubtitleTrack('gemini');$('#translateSubtitleLocal').onclick=()=>translateSubtitleTrack('local');
-window.lilac.onTranslateProgress(({id,done,total,status})=>{const button=translationButtons.get(id);if(button&&button.dataset.run===String(id))button.textContent=status||`번역 중… ${Math.round(done/Math.max(1,total)*100)}%`});
+window.lilac.onTranslateProgress(({id,done,total,status})=>{
+  const button=translationButtons.get(id),percent=`${Math.round(done/Math.max(1,total)*100)}%`;if(button&&button.dataset.run===String(id))button.textContent=status||`번역 중… ${percent}`;
+  if(translating?.run===id&&translatingNow())$('#subtitleState').textContent=status?`${status}…`:`${translating.name} 자막을 한국어로 번역하는 중… ${percent}`;
+});
 async function selectSubtitleTrack(track){
   const requestId=playbackRequestId;$('#subtitleState').textContent=`${track.label} 자막을 불러오는 중...`;
   try{const file=await trackFile(track);if(requestId!==playbackRequestId)return;currentPlaybackContext.selectedSubtitleTrack=track.url;currentSubtitlePath=file.path;localStorage.setItem('subtitleSource','reanime');$('#subtitleSource').value='reanime';syncSettingChoices();renderSubtitleTracks();attachSubtitle(file.url,`${trackSourceLabel()} ${track.label} 자막`,{path:file.path,assUrl:file.assUrl,assPath:file.assPath,fonts:file.fonts,source:'reanime'})}
