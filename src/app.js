@@ -520,7 +520,7 @@ function renderSubtitleTracks(){
   $('#psSubtitleSources [data-source="linkkf"]').classList.toggle('hidden',currentPlaybackContext.resolveKind!=='linkkf');$('#psSubtitleSources [data-source="reanime"]').classList.toggle('hidden',!trackProvider());
   $('#jimakuBox').classList.toggle('hidden',!subtitleSearchAnime());
   // The translate buttons come with a picked track, as they do with a picked Jimaku file.
-  box.classList.toggle('hidden',!hasTracks);$('#subtitleTrackTranslate').classList.toggle('hidden',!tracks.some(track=>track.url===currentPlaybackContext.selectedSubtitleTrack));$('#subtitleTrackTranslate').nextElementSibling.classList.toggle('hidden',$('#subtitleTrackTranslate').classList.contains('hidden'));if(!hasTracks){list.replaceChildren();return}
+  box.classList.toggle('hidden',!hasTracks);$('#subtitleTrackTranslate').classList.toggle('hidden',!tracks.some(track=>track.url===currentPlaybackContext.selectedSubtitleTrack));if(!hasTracks){list.replaceChildren();return}
   $('#subtitleTrackState').textContent=tracks.length?`${tracks.length}개 트랙`:currentPlaybackContext.resolving||currentPlaybackContext.tracksLoading?'현재 회차의 자막 트랙을 불러오는 중…':'자막 트랙을 불러오지 못했습니다.';$('#reloadSubtitleTracks').classList.toggle('hidden',Boolean(tracks.length||currentPlaybackContext.resolving||currentPlaybackContext.tracksLoading));
   // Korean, English and Japanese first; a label like "Chinese (Chinese (Han, Simplified) - Full Subtitles)" shows the
   // language on top and the rest small underneath.
@@ -549,12 +549,12 @@ const translatedLabel=(result,name)=>`${result.engine||(String(result.model||'')
 // A track's file: the copy saved with the download, else fetched.
 const trackFile=track=>track.localUrl?Promise.resolve({path:track.path,url:track.localUrl,assPath:track.assUrl?track.assPath:null,assUrl:track.assUrl||null,fonts:[]}):window.lilac.remoteSubtitle(track.url,currentPlaybackContext.subtitleReferer);
 const ipcMessage=error=>String(error?.message||error).replace(/^Error invoking remote method '[^']+': (?:Error: )?/,'');
-async function translateSubtitleTrack(provider='cloud',{fresh=false}={}){
+async function translateSubtitleTrack(provider='cloud'){
   const context=currentPlaybackContext,tracks=context.subtitleTracks||[],button=provider==='local'?$('#translateSubtitleLocal'):$('#translateSubtitle');
   const track=tracks.find(item=>item.url===context.selectedSubtitleTrack);
   if(!track){toast(tracks.length?'번역할 자막 트랙을 먼저 선택하세요.':`번역할 ${trackSourceLabel()} 자막 트랙이 없습니다.`);return}
-  if(track.translatedUrl&&!fresh){currentSubtitlePath=track.translatedPath;attachSubtitle(track.translatedUrl,`AI 번역 (${track.label})`,{path:track.translatedPath,source:'gemini'});return}
-  await runTranslation({file:()=>trackFile(track),name:track.label,button,provider,fresh});
+  if(track.translatedUrl){currentSubtitlePath=track.translatedPath;attachSubtitle(track.translatedUrl,`AI 번역 (${track.label})`,{path:track.translatedPath,source:'gemini'});return}
+  await runTranslation({file:()=>trackFile(track),name:track.label,button,provider});
 }
 // Translates a subtitle file (file: a function giving {path}) and applies the result; the button shows the progress
 // and, pressed again, cancels the run (the lines done so far are kept: the next run goes on from them). Only the newest
@@ -562,17 +562,11 @@ async function translateSubtitleTrack(provider='cloud',{fresh=false}={}){
 // that last used it. A run for an episode no longer playing is cancelled when another episode starts.
 const translationButtons=new Map(),translationEpisodes=new Map();let translationRun=0,translating=null;
 const TRANSLATION_CANCELLED=/번역을 취소했습니다/;
-// 새로 번역 (under both pairs of buttons, one setting): the next button press translates again instead of taking a kept
-// translation, then the switch turns itself off (a new translation costs time or API use).
-let freshTranslation=false;
-const syncFreshTranslation=()=>$$('.fresh-translation input').forEach(input=>input.checked=freshTranslation);
-$$('.fresh-translation input').forEach(input=>input.onchange=()=>{freshTranslation=input.checked;syncFreshTranslation()});
-const takeFreshTranslation=()=>{const fresh=freshTranslation;freshTranslation=false;syncFreshTranslation();return fresh};
 function cancelButtonRun(button){const run=Number(button.dataset.run);if(!run||!translationButtons.has(run))return false;window.lilac.cancelTranslation(run).catch(()=>{});return true}
 function cancelOtherEpisodeTranslations(){const episode=subtitleStoreKey();for(const [run,key] of translationEpisodes)if(key!==episode)window.lilac.cancelTranslation(run).catch(()=>{})}
 // A translation for the episode on screen is running: its progress stays in the subtitle state line.
 const translatingNow=()=>translating?.requestId===playbackRequestId;
-async function runTranslation({file,name,button,provider,fresh=false}){
+async function runTranslation({file,name,button,provider}){
   translationSettings=await window.lilac.geminiSettings().catch(()=>translationSettings);
   if(!translationReady('cloud')&&!translationReady('local')){toast(provider==='local'?'설정 > 자막 자동 번역에서 로컬 AI 모델을 먼저 받아 주세요.':`설정 > 자막 자동 번역에서 ${cloudName()} API 키를 넣어 주세요.`);return}
   cancelButtonRun(button); // a run this button was showing gives way (another Jimaku file picked)
@@ -581,7 +575,7 @@ async function runTranslation({file,name,button,provider,fresh=false}){
   translationButtons.set(run,button);translationEpisodes.set(run,subtitleStoreKey());translating={run,requestId,name};button.dataset.run=String(run);button.textContent='번역 준비 중… · 취소';$('#subtitleState').textContent=`${name} 자막을 한국어로 번역하는 중...`;
   try{
     const source=await file();if(!current())return;
-    const result=await window.lilac.translateSubtitle({path:source.path,title,id:run,provider,fresh,anime:subtitleSearchAnime()});if(!current())return;
+    const result=await window.lilac.translateSubtitle({path:source.path,title,id:run,provider,anime:subtitleSearchAnime()});if(!current())return;
     currentSubtitlePath=result.path;attachSubtitle(result.url,translatedLabel(result,name),{path:result.path,source:'gemini'});
     // A Jimaku file the local AI translated: the next episode is made ready meanwhile (see prepareNextEpisode).
     if(name==='Jimaku'&&result.engine==='로컬 AI')prepareNextEpisode();
@@ -615,7 +609,7 @@ async function openJimaku(){
 function renderJimaku(){
   const context=currentPlaybackContext,files=context.jimakuFiles||[];
   $('#jimakuBox').classList.toggle('hidden',!subtitleSearchAnime());
-  $('#jimakuState').textContent=!subtitleSearchAnime()?'작품 정보가 없어 찾을 수 없습니다.':context.jimakuError?context.jimakuError:!context.jimakuFiles?'Jimaku에서 찾는 중…':files.length?`${files.length}개 파일`:'이 회차의 파일이 없습니다.';$('#jimakuTranslate').classList.toggle('hidden',!context.jimakuSubtitle);$('#jimakuTranslate').nextElementSibling.classList.toggle('hidden',!context.jimakuSubtitle);
+  $('#jimakuState').textContent=!subtitleSearchAnime()?'작품 정보가 없어 찾을 수 없습니다.':context.jimakuError?context.jimakuError:!context.jimakuFiles?'Jimaku에서 찾는 중…':files.length?`${files.length}개 파일`:'이 회차의 파일이 없습니다.';$('#jimakuTranslate').classList.toggle('hidden',!context.jimakuSubtitle);
   $('#jimakuList').replaceChildren(...files.map(file=>{const button=document.createElement('button'),selected=context.jimakuFile===file.url;button.type='button';button.className=`track-option${selected?' selected':''}`;button.setAttribute('aria-pressed',String(selected));button.innerHTML=`<span>${escapeHtml(file.name)}</span><small>${escapeHtml(file.name.split('.').pop().toUpperCase())}${file.size?` · ${Math.max(1,Math.round(file.size/1024))}KB`:''}</small>`;button.onclick=()=>applyJimaku(file);return button}));
 }
 async function applyJimaku(file){
@@ -651,9 +645,9 @@ function prepareNextEpisode(){
   const next=typeof siblingEpisode==='function'?siblingEpisode(1):null,anime=subtitleSearchAnime();if(!next||!anime)return;
   window.lilac.prepareEpisodeSubtitle({anime,episode:episodeNumberOf(next)||1,title:currentPlaybackContext.subtitleTitle||$('#skipTitle').value.trim()}).catch(()=>{});
 }
-function translateJimaku(provider='cloud',{fresh=false}={}){const subtitle=currentPlaybackContext.jimakuSubtitle;if(subtitle)runTranslation({file:async()=>subtitle,name:'Jimaku',button:provider==='local'?$('#translateJimakuLocal'):$('#translateJimaku'),provider,fresh})}
-$('#translateJimaku').onclick=event=>cancelButtonRun(event.currentTarget)||translateJimaku('cloud',{fresh:takeFreshTranslation()});$('#translateJimakuLocal').onclick=event=>cancelButtonRun(event.currentTarget)||translateJimaku('local',{fresh:takeFreshTranslation()});
-$('#translateSubtitle').onclick=event=>cancelButtonRun(event.currentTarget)||translateSubtitleTrack('cloud',{fresh:takeFreshTranslation()});$('#translateSubtitleLocal').onclick=event=>cancelButtonRun(event.currentTarget)||translateSubtitleTrack('local',{fresh:takeFreshTranslation()});
+function translateJimaku(provider='cloud'){const subtitle=currentPlaybackContext.jimakuSubtitle;if(subtitle)runTranslation({file:async()=>subtitle,name:'Jimaku',button:provider==='local'?$('#translateJimakuLocal'):$('#translateJimaku'),provider})}
+$('#translateJimaku').onclick=event=>cancelButtonRun(event.currentTarget)||translateJimaku('cloud');$('#translateJimakuLocal').onclick=event=>cancelButtonRun(event.currentTarget)||translateJimaku('local');
+$('#translateSubtitle').onclick=event=>cancelButtonRun(event.currentTarget)||translateSubtitleTrack('cloud');$('#translateSubtitleLocal').onclick=event=>cancelButtonRun(event.currentTarget)||translateSubtitleTrack('local');
 window.lilac.onTranslateProgress(({id,done,total,status})=>{
   const button=translationButtons.get(id),percent=`${Math.round(done/Math.max(1,total)*100)}%`;if(button&&button.dataset.run===String(id))button.textContent=`${status||`번역 중… ${percent}`} · 취소`;
   if(translating?.run===id&&translatingNow())$('#subtitleState').textContent=status?`${status}…`:`${translating.name} 자막을 한국어로 번역하는 중… ${percent}`;
