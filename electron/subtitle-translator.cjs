@@ -11,7 +11,7 @@ const { characterTerms } = require('./anime-glossary.cjs');
 const GEMINI_API = 'https://generativelanguage.googleapis.com/v1beta';
 // A whole episode (a few hundred short lines) fits one request, and the free tier allows only a few requests a minute
 // and a few dozen a day, so episodes go in one batch where possible, two at most at a time.
-const BATCH_LINES = 600, BATCH_CHARS = 30000, PARALLEL = 2, PROMPT_VERSION = 'prompt-3', LOCAL_PROMPT_VERSION = 'local-2';
+const BATCH_LINES = 600, BATCH_CHARS = 30000, PARALLEL = 2, PROMPT_VERSION = 'prompt-3', LOCAL_PROMPT_VERSION = 'local-3';
 
 function createTranslator(userData) {
   const settingsFile = path.join(userData, 'gemini.json'), cacheDir = path.join(userData, 'subtitles', 'translated');
