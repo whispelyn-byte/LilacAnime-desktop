@@ -355,7 +355,7 @@ function createTranslator(userData) {
   const cancelled = () => Object.assign(new Error('번역을 취소했습니다.'), { name: 'AbortError', cancelled: true });
   async function translate({ progress = () => {}, status = () => {}, id = null, ...options }) {
     options.provider = providerOf(options.provider || '');
-    const key = `${options.file}\n${options.provider}\n${options.fresh ? 'fresh' : ''}`;
+    const key = `${options.file}\n${options.provider}`;
     let job = running.get(key);
     // A run being cancelled is not joined: a new one starts (and goes on from the lines it kept).
     if (!job || job.abort.signal.aborted) {
@@ -378,9 +378,7 @@ function createTranslator(userData) {
       if (!job.listeners.size) job.abort.abort();
     }
   }
-  // fresh: translated again even when a translation of it is kept (설정의 API를 바꿔 비교할 때): no finished or
-  // part-done translation is taken, and the new one replaces the asked engine's.
-  async function translateOnce({ file, title = '', provider = '', context = {}, fresh = false, signal = null, progress = () => {}, status = () => {} }) {
+  async function translateOnce({ file, title = '', provider = '', context = {}, signal = null, progress = () => {}, status = () => {} }) {
     const settings = read(), wanted = provider || autoProvider() || 'cloud';
     // The engines in the order they are tried: an API's name, or 'local'.
     const apis = [settings.cloud, ...Object.keys(CLOUDS).filter(api => api !== settings.cloud)].filter(api => keyOf(settings, api));
@@ -396,7 +394,7 @@ function createTranslator(userData) {
     const hashOf = name => crypto.createHash('sha1').update(`${modelOf(name)}\n${name === 'local' ? LOCAL_PROMPT_VERSION + promptVersion(localModel) : PROMPT_VERSION}\n${source}`).digest('hex').slice(0, 20);
     // A finished translation by the first engine that has one (one made when the wanted one could not be used, e.g.
     // Gemini out of quota, is taken too), so a slow local translation is not done again.
-    for (const name of fresh ? [] : order) {
+    for (const name of order) {
       const out = path.join(cacheDir, `${hashOf(name)}.vtt`);
       if (!fs.existsSync(out)) continue;
       progress(1, 1); return { path: out, model: modelOf(name), engine: engineOf(name).name, failed: 0, cached: true };
@@ -410,7 +408,7 @@ function createTranslator(userData) {
     // (lines that failed, the episode or the app closed, the allowance gone) goes on from where it was: only the
     // missing lines are translated again.
     const translated = new Map(), by = new Map(), linesFile = name => path.join(cacheDir, `${hashOf(name)}.lines.json`);
-    for (const name of fresh ? [] : order) {
+    for (const name of order) {
       let kept = {}; try { kept = JSON.parse(fs.readFileSync(linesFile(name), 'utf8')) || {}; } catch { continue; }
       for (const line of unique) if (!translated.has(line.i) && typeof kept[line.text] === 'string') { translated.set(line.i, kept[line.text]); by.set(line.i, name); }
     }
