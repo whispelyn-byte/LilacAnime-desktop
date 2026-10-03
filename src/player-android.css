@@ -155,7 +155,7 @@
 .ps-section .ps-note { line-height: 1.45; }
 .ps-section .ps-note.ps-playing { margin-top: 4px; color: #ffffffa8; }
 .ps-box-note { margin: 4px 0 8px; line-height: 1.45; }
-.ps-body .sheet-tracks > .track-list + .sheet-button-row { margin-top: 10px; }
+.ps-body .sheet-tracks > .sheet-button-row + .track-list { margin-top: 10px; }
 .ps-sources { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; }
 .ps-sources button { display: grid; gap: 2px; padding: 7px 10px; text-align: left; }
 .ps-sources button b { font-size: 12px; font-weight: 600; }

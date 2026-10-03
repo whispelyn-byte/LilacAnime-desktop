@@ -356,7 +356,7 @@ function play(src,name='직접 재생',context={}) {
       if(data.type===Hls.ErrorTypes.MEDIA_ERROR&&recovery.media<3){recovery.media++;if(recovery.media===2)hlsPlayer.swapAudioCodec();$('#downloadStatus').textContent='재생 오류를 복구하는 중...';hlsPlayer.recoverMediaError();return}
       {const detail=data.details||data.type||'unknown',status=data.response?.code||data.response?.status||'',reason=data.reason||data.error?.message||'';const message=[detail,status&&`HTTP ${status}`,reason].filter(Boolean).join(' · ');$('#downloadStatus').textContent=`HLS 오류: ${message}`;toast(`HLS 재생 오류: ${message}`)}});
   }else video.src=src;
-  $('#streamUrl').value=/^https?:/i.test(src)?src:'';$('#playerTitle').textContent=name;updatePlayerTitle();$('#playerMeta').textContent=context.episode?`${episodeNumberOf(context.episode)||1}화`:'LilacAnime';$('#playerEmpty p').textContent='영상을 준비하고 있어요';$('#skipTitle').value=context.subtitleTitle||((name==='직접 재생')?'':name.split(' · ')[0]);if(context.episode)$('#skipEpisode').value=episodeNumberOf(context.episode)||1;video.volume=Math.max(0,Math.min(1,Number(localStorage.getItem('playerVolume')??1)));video.muted=localStorage.getItem('playerMuted')==='true';syncVolumeUI();video.playbackRate=Number($('#speed').value);if(!isHls)video.play().catch(()=>{});
+  $('#streamUrl').value=/^https?:/i.test(src)?src:'';$('#playerTitle').textContent=name;updatePlayerTitle();$('#playerMeta').textContent=context.episode?`${episodeNumberOf(context.episode)||1}화`:'LilacAnime';$('#playerEmpty p').textContent='영상을 준비하고 있어요';$('#skipTitle').value=context.subtitleTitle||((name==='직접 재생')?'':name.split(' · ')[0]);if(context.episode)$('#skipEpisode').value=episodeNumberOf(context.episode)||1;video.volume=Math.max(0,Math.min(1,Number(localStorage.getItem('playerVolume')??1)));video.muted=localStorage.getItem('playerMuted')==='true';syncVolumeUI();video.playbackRate=Number($('#speed').value);if(!isHls)video.play().catch(()=>{});loadJimakuList();
   const historyKey=context.episode?`${context.episode.provider||context.resolveKind||'linkkf'}:${context.episode.url||context.episode.token||context.episode.id||context.episode.number}`:src;if(context.episode||!/^http:\/\/127\.0\.0\.1:\d+\/__flix\//i.test(src)){const previous=state.history.find(x=>(x.key||x.src)===historyKey),savedProgress=Number(context.resumeProgress??previous?.progress??0);pendingResumeProgress=savedProgress>0&&savedProgress<95?savedProgress:0;state.history=state.history.filter(x=>(x.key||x.src)!==historyKey);state.history.unshift({key:historyKey,src:context.episode?'':src,name,episode:context.episode||null,subtitleTitle:context.subtitleTitle||name.split(' · ')[0],image:context.image||previous?.image||'',comparisonEpisodes:context.comparisonEpisodes||previous?.comparisonEpisodes||[],anime:context.anime||previous?.anime||null,resolveKind:context.resolveKind||previous?.resolveKind||null,progress:savedProgress,updated:Date.now()});state.history=state.history.slice(0,30);currentHistoryKey=historyKey;store.set('history',state.history);renderContinue();applyPendingResume()}else{currentHistoryKey=null;pendingResumeProgress=0}
 }
 function escapeHtml(v=''){const d=document.createElement('div');d.textContent=v;return d.innerHTML;}
@@ -461,9 +461,8 @@ async function autoJimaku(superseded){
   const provider=translationSettings?.jimakuTranslate,anime=subtitleSearchAnime();
   if(superseded()||!['gemini','local'].includes(provider)||!anime||!(translationReady('gemini')||translationReady('local')))return false;
   $('#subtitleState').textContent='한국어 자막이 없어 Jimaku 일본어 자막을 찾는 중...';
-  const episode=Number($('#skipEpisode').value)||Number(currentPlaybackContext.episode?.number)||1;
-  const files=await window.lilac.jimakuList(anime,episode).catch(()=>[]);if(superseded()||!files.length)return false;
-  currentPlaybackContext.jimakuFiles=files;$('#jimakuBox').classList.remove('hidden');await applyJimaku(files[0]);return true;
+  const files=await loadJimakuList();if(superseded()||!files.length)return false;
+  await applyJimaku(files[0]);return true;
 }
 function communityLabel(source,result={}){return source==='anissia'?`Anissia${result.maker?` · ${result.maker}`:''} 자막`:`${source==='kairan'?'Kairan':'Csora'} 자막`}
 function subtitleSearchAnime(){const anime=currentPlaybackContext.anime;return anime?{provider:anime.provider,id:anime.id,title:anime.title||anime.title_english||'',anilistId:anime.anilistId||null,malId:anime.malId||null}:null}
@@ -481,7 +480,7 @@ function renderSubtitleTracks(){
   $('#subtitleTracks .sheet-tracks-head b').textContent=`${trackSourceLabel()} 자막 트랙`;$$('[data-source="reanime"]').forEach(button=>(button.querySelector('b')||button).textContent=trackProvider()==='miruro'?'Miruro':'Re:Anime');
   // Only the sources this episode can use: the site's own subtitle (Linkkf) or tracks (Re:Anime / Miruro) when it has them.
   $('#psSubtitleSources [data-source="linkkf"]').classList.toggle('hidden',currentPlaybackContext.resolveKind!=='linkkf');$('#psSubtitleSources [data-source="reanime"]').classList.toggle('hidden',!trackProvider());
-  if(!currentPlaybackContext.jimakuFiles)$('#jimakuBox').classList.add('hidden');
+  $('#jimakuBox').classList.toggle('hidden',!subtitleSearchAnime());
   box.classList.toggle('hidden',!hasTracks);if(!hasTracks){list.replaceChildren();return}
   $('#subtitleTrackState').textContent=tracks.length?`${tracks.length}개 트랙`:currentPlaybackContext.resolving||currentPlaybackContext.tracksLoading?'현재 회차의 자막 트랙을 불러오는 중…':'자막 트랙을 불러오지 못했습니다.';$('#reloadSubtitleTracks').classList.toggle('hidden',Boolean(tracks.length||currentPlaybackContext.resolving||currentPlaybackContext.tracksLoading));
   // Korean, English and Japanese first; a label like "Chinese (Chinese (Han, Simplified) - Full Subtitles)" shows the
@@ -537,17 +536,31 @@ async function runTranslation({file,name,button,provider}){
   finally{translationButtons.delete(run);if(button.dataset.run===String(run)){button.disabled=false;button.textContent=label}}
 }
 // Jimaku (Android JIMAKU_USER_SELECTION_V2): the episode's Japanese subtitle files are listed for the user to pick; the
-// picked one is applied, saved for the episode and, when set up, translated into Korean right away.
+// picked one is applied, saved for the episode and, when set up, translated into Korean right away. Like the Re:Anime /
+// Miruro tracks, the list is in the sheet for every episode the app knows the series of: it is loaded when the episode
+// starts, once (the automatic Jimaku fallback reads the same list).
+function loadJimakuList(){
+  const context=currentPlaybackContext,anime=subtitleSearchAnime();
+  if(!anime){renderJimaku();return Promise.resolve([])}
+  if(!context.jimakuListing){
+    // A server switch copies the context while the list may still be loading, so the result goes to whichever context
+    // holds this listing now.
+    const episode=Number($('#skipEpisode').value)||Number(context.episode?.number)||1,settle=(files,error)=>{for(const target of new Set([context,currentPlaybackContext]))if(target.jimakuListing===listing){target.jimakuFiles=files;target.jimakuError=error}if(currentPlaybackContext.jimakuListing===listing)renderJimaku();return files};
+    const listing=window.lilac.jimakuList(anime,episode).then(files=>settle(files,''),error=>settle(null,ipcMessage(error)));
+    context.jimakuListing=listing;context.jimakuError='';renderJimaku();
+  }
+  return context.jimakuListing.then(files=>files||[]);
+}
+// The Jimaku chip: show the list (loading it if it failed before) and scroll it into view.
 async function openJimaku(){
-  const box=$('#jimakuBox'),anime=subtitleSearchAnime(),episode=Number($('#skipEpisode').value)||Number(currentPlaybackContext.episode?.number)||1,requestId=playbackRequestId;
-  box.classList.remove('hidden');$('#jimakuList').replaceChildren();$('#jimakuState').textContent='Jimaku에서 찾는 중…';$('#jimakuTranslate').classList.toggle('hidden',!currentPlaybackContext.jimakuSubtitle);
-  if(!anime){$('#jimakuState').textContent='작품 정보가 없어 찾을 수 없습니다.';return}
-  try{const files=await window.lilac.jimakuList(anime,episode);if(requestId!==playbackRequestId)return;currentPlaybackContext.jimakuFiles=files;renderJimaku()}
-  catch(error){if(requestId===playbackRequestId)$('#jimakuState').textContent=ipcMessage(error)}
+  const context=currentPlaybackContext;if(!subtitleSearchAnime()){toast('작품 정보가 없어 Jimaku를 찾을 수 없습니다.');return}
+  if(context.jimakuError){context.jimakuListing=null;context.jimakuError=''}
+  $('#jimakuBox').scrollIntoView({block:'nearest'});await loadJimakuList();
 }
 function renderJimaku(){
   const context=currentPlaybackContext,files=context.jimakuFiles||[];
-  $('#jimakuState').textContent=files.length?`${files.length}개 파일`:'이 회차의 파일이 없습니다.';$('#jimakuTranslate').classList.toggle('hidden',!context.jimakuSubtitle);
+  $('#jimakuBox').classList.toggle('hidden',!subtitleSearchAnime());
+  $('#jimakuState').textContent=!subtitleSearchAnime()?'작품 정보가 없어 찾을 수 없습니다.':context.jimakuError?context.jimakuError:!context.jimakuFiles?'Jimaku에서 찾는 중…':files.length?`${files.length}개 파일`:'이 회차의 파일이 없습니다.';$('#jimakuTranslate').classList.toggle('hidden',!context.jimakuSubtitle);
   $('#jimakuList').replaceChildren(...files.map(file=>{const button=document.createElement('button'),selected=context.jimakuFile===file.url;button.type='button';button.className=`track-option${selected?' selected':''}`;button.setAttribute('aria-pressed',String(selected));button.innerHTML=`<span>${escapeHtml(file.name)}</span><small>${escapeHtml(file.name.split('.').pop().toUpperCase())}${file.size?` · ${Math.max(1,Math.round(file.size/1024))}KB`:''}</small>`;button.onclick=()=>applyJimaku(file);return button}));
 }
 async function applyJimaku(file){
