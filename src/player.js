@@ -331,12 +331,15 @@ new MutationObserver(syncWindowButtons).observe($('#immersivePlayer'), { attribu
 new MutationObserver(syncWindowButtons).observe(document.body, { attributes: true, attributeFilter: ['class'] });
 new MutationObserver(syncWindowButtons).observe($('#unlockPlayer'), { attributes: true, attributeFilter: ['class'] });
 // Only a click brings the controls (and with them the window buttons) back; moving the mouse does not. While they are
-// shown, a pointer moving over them (not over the bare video) keeps them from hiding under it. Only real movement
-// counts: some mice report a move without moving.
-let lastPointer = '';
+// shown, a pointer moving over them (not over the bare video) keeps them from hiding under it. The cursor itself shows
+// whenever the mouse moves and hides after two still seconds, controls or not. Only real movement counts: some mice
+// report a move without moving.
+let lastPointer = '', cursorTimer = null;
 $('#immersivePlayer').addEventListener('mousemove', event => {
   const at = `${event.screenX},${event.screenY}`; if (at === lastPointer) return; lastPointer = at;
-  if (!playerLocked && event.target !== $('#video') && $('#immersivePlayer').classList.contains('controls-visible')) showPlayerControls();
+  const player = $('#immersivePlayer');
+  player.classList.add('cursor-visible'); clearTimeout(cursorTimer); cursorTimer = setTimeout(() => player.classList.remove('cursor-visible'), 2000);
+  if (!playerLocked && event.target !== $('#video') && player.classList.contains('controls-visible')) showPlayerControls();
 }, { passive: true });
 
 // --- Picture-in-picture ---------------------------------------------------------------------

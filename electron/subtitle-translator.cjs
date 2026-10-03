@@ -392,9 +392,10 @@ function createTranslator(userData) {
     // The prompt version is part of the cache key, so a better prompt is not hidden behind older results.
     const source = fs.readFileSync(file, 'utf8');
     const hashOf = name => crypto.createHash('sha1').update(`${modelOf(name)}\n${name === 'local' ? LOCAL_PROMPT_VERSION + promptVersion(localModel) : PROMPT_VERSION}\n${source}`).digest('hex').slice(0, 20);
-    // A finished translation by the first engine that has one (one made when the wanted one could not be used, e.g.
-    // Gemini out of quota, is taken too), so a slow local translation is not done again.
-    for (const name of order) {
+    // Kept translations are taken from the side asked for only: the local AI's for the local AI, the APIs' (the picked
+    // one's first, then one another API made when it could not be used) for the API, so the two stay apart.
+    const sameSide = name => (name === 'local') === (wanted === 'local');
+    for (const name of order.filter(sameSide)) {
       const out = path.join(cacheDir, `${hashOf(name)}.vtt`);
       if (!fs.existsSync(out)) continue;
       progress(1, 1); return { path: out, model: modelOf(name), engine: engineOf(name).name, failed: 0, cached: true };
@@ -408,7 +409,7 @@ function createTranslator(userData) {
     // (lines that failed, the episode or the app closed, the allowance gone) goes on from where it was: only the
     // missing lines are translated again.
     const translated = new Map(), by = new Map(), linesFile = name => path.join(cacheDir, `${hashOf(name)}.lines.json`);
-    for (const name of order) {
+    for (const name of order.filter(sameSide)) {
       let kept = {}; try { kept = JSON.parse(fs.readFileSync(linesFile(name), 'utf8')) || {}; } catch { continue; }
       for (const line of unique) if (!translated.has(line.i) && typeof kept[line.text] === 'string') { translated.set(line.i, kept[line.text]); by.set(line.i, name); }
     }
