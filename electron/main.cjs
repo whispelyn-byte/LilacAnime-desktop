@@ -1567,8 +1567,8 @@ app.whenReady().then(async () => {
   const findDownloadSubtitle=async(job,stream)=>{
     const key=downloadSubtitleKey(job),saved=key?subtitleStore.list(key):[],preferred=job.subtitleSource||'reanime';
     const fromSaved=entry=>({source:entry.source,path:entry.path,assPath:entry.assPath,fonts:entry.fonts||[],label:entry.label});
-    // A Gemini translation stands for the Re:Anime subtitle it was made from.
-    const savedPreferred=(preferred==='reanime'&&saved.find(entry=>entry.source==='gemini'))||saved.find(entry=>entry.source===preferred);if(savedPreferred)return fromSaved(savedPreferred);
+    // A machine translation stands for the Re:Anime subtitle it was made from when it was the last one put on.
+    const savedPreferred=(preferred==='reanime'&&saved[0]?.source==='gemini'&&saved[0])||saved.find(entry=>entry.source===preferred);if(savedPreferred)return fromSaved(savedPreferred);
     if(stream?.subtitleUrl)return {stream:true};
     if(saved[0])return fromSaved(saved[0]);
     const search=communitySearch(job);
@@ -1858,7 +1858,7 @@ app.whenReady().then(async () => {
   const preparedEpisodes = new Set(); let preparing = Promise.resolve();
   ipcMain.handle('subtitle:prepare', (_, { anime = null, episode = 1, title = '' } = {}) => {
     const key = `${anime?.provider || ''}:${anime?.id || ''}:${Number(episode) || 1}`;
-    // Only with 설정 > Jimaku 자막 자동 번역 on: otherwise the next episode would not pick the translation up.
+    // Only with 설정 > 자막 자동 번역 on: otherwise the next episode would not pick the translation up.
     if (!anime?.id || preparedEpisodes.has(key) || translator().settings().jimakuTranslate === 'off') return false;
     preparedEpisodes.add(key);
     preparing = preparing.then(async () => {

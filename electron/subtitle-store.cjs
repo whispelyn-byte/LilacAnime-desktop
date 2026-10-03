@@ -32,7 +32,8 @@ class SubtitleStore {
     // older one's place in the list; its file stays for the translation cache until the cache is cleaned.
     const list = (this.data[key] || []).filter(item => !(item.source === source && (item.path === entry.path || source === 'gemini')));
     const saved = { id: `sub_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, source, label: String(entry.label || source), path: entry.path, assPath: entry.assPath || null, fonts: Array.isArray(entry.fonts) ? entry.fonts : [], saved: Date.now() };
-    this.data[key] = [saved, ...list].slice(0, 20);
+    // behind: made in the background beside the subtitle on screen, so it does not come first when the episode opens.
+    this.data[key] = (entry.behind ? [...list.slice(0, 19), saved] : [saved, ...list]).slice(0, 20);
     this.write();
     return this.withUrls(saved);
   }

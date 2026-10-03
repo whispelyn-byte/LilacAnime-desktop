@@ -439,8 +439,9 @@ async function ensureSubtitle(stream,title,episode,{skipSaved=false}={}){
   // Same order as Android: the preferred source's saved file, the stream's own subtitle, any saved file, then online search.
   // Only a subtitle that is not Korean gets the online Korean offer; fansubs and the user's own files are final.
   const offerAfter=(source,korean)=>{if(!korean&&!['kairan','csora','anissia','user','gemini'].includes(source))offerKoreanSubtitle(title,episode,requestId,currentSubtitle)};
-  // A machine translation stands for the Re:Anime / Jimaku subtitle it was made from.
-  const savedPreferred=(['reanime','jimaku'].includes(preferred)&&saved.find(entry=>entry.source==='gemini'))||saved.find(entry=>entry.source===preferred);if(savedPreferred){await applySavedSubtitle(savedPreferred);offerAfter(savedPreferred.source,savedPreferred.source!=='jimaku');return true}
+  // A machine translation stands for the Re:Anime / Jimaku subtitle it was made from when it was the last one put on
+  // (one made in the background beside a Korean subtitle sits at the end of the list and does not take its place).
+  const savedPreferred=(['reanime','jimaku'].includes(preferred)&&saved[0]?.source==='gemini'&&saved[0])||saved.find(entry=>entry.source===preferred);if(savedPreferred){await applySavedSubtitle(savedPreferred);offerAfter(savedPreferred.source,savedPreferred.source!=='jimaku');translateAlongside(savedPreferred.source,requestId);return true}
   // Re:ANIME and Miruro: like Android only a Korean track is applied by itself; any other language is left for the user
   // to pick from the track list while the Korean search runs.
   const reanime=currentPlaybackContext.episode?.provider==='reanime',koreanUrl=url=>/(?:^|[^a-z])(?:kor|korean|ko)(?:[^a-z]|$)|한국/i.test(decodeURIComponent(String(url||'')));
@@ -449,23 +450,57 @@ async function ensureSubtitle(stream,title,episode,{skipSaved=false}={}){
   const track=(stream?.subtitleTracks||[]).find(isKoreanTrack),streamKorean=Boolean(track)||currentPlaybackContext.resolveKind==='linkkf'||(reanime&&koreanUrl(stream?.subtitleUrl))||fromDownload;
   if(stream?.subtitleUrl&&(!reanime||streamKorean)){if(!fromDownload&&(track||stream.subtitleTrack))currentPlaybackContext.selectedSubtitleTrack=track?.url||stream.subtitleTrack;renderSubtitleTracks();const source=track?'reanime':currentPlaybackContext.resolveKind==='linkkf'?'linkkf':reanime?'reanime':'provider';if(!track)currentPlaybackContext.streamSubtitle={src:stream.subtitleUrl,label:stream.subtitleLabel||'제공 자막',options:{path:stream.subtitlePath||null,assUrl:stream.subtitleAss?.url||null,assPath:stream.subtitleAss?.path||null,fonts:stream.subtitleAss?.fonts||[],source:stream.subtitlePath?source:null}};attachSubtitle(stream.subtitleUrl,track&&!fromDownload?`${trackSourceLabel()} ${track.label} 자막`:stream.subtitleLabel||(fromDownload?'다운로드 자막':'제공 자막'),{path:stream.subtitlePath||null,assUrl:stream.subtitleAss?.url||null,assPath:stream.subtitleAss?.path||null,fonts:stream.subtitleAss?.fonts||[],source:stream.subtitlePath?source:null});
     if(!fansub)offerAfter(source,streamKorean);
+    if(streamKorean)translateAlongside(source,requestId);
     return true}
-  if(saved[0]){await applySavedSubtitle(saved[0]);offerAfter(saved[0].source,!['provider','jimaku'].includes(saved[0].source));return true}
+  if(saved[0]){await applySavedSubtitle(saved[0]);offerAfter(saved[0].source,!['provider','jimaku'].includes(saved[0].source));translateAlongside(saved[0].source,requestId);return true}
   // The search gives way to whatever the user picks meanwhile (a track, a Jimaku file, a saved or own subtitle).
   const before=currentSubtitle,superseded=()=>requestId!==playbackRequestId||Boolean(currentPlaybackContext.selectedSubtitleTrack)||currentSubtitle!==before;$('#subtitleState').textContent='온라인 자막을 찾는 중...';
-  const found=await onlineSubtitleFor(title,episode,subtitleSearchAnime());if(superseded())return false;if(found){attachOnlineSubtitle(found);return true}
-  if(await autoJimaku(superseded))return true;
+  const found=await onlineSubtitleFor(title,episode,subtitleSearchAnime());if(superseded())return false;if(found){attachOnlineSubtitle(found);translateAlongside(found.source,requestId);return true}
+  if(await autoTranslate(superseded))return true;
   if(superseded())return false;const needsTmdb=currentPlaybackContext.episode?.provider==='reanime'&&!(await window.lilac.tmdbKey().catch(()=>({})))?.key;if(superseded())return false;$('#subtitleState').textContent=needsTmdb?'Kairan/Csora 자막을 찾지 못했습니다. 설정 > 한국어 제목 검색에서 TMDB API 키를 넣으면 더 많은 작품을 찾을 수 있어요.':trackProvider()&&currentPlaybackContext.subtitleTracks?.length?`한국어 자막이 없습니다. 아래 ${trackSourceLabel()} 트랙에서 다른 언어를 고르거나 내 자막 파일을 열 수 있어요.`:'자동으로 찾은 자막이 없습니다. 내 자막 파일을 열 수 있어요.';return false;
 }
-// No Korean subtitle anywhere (no Korean track, nothing from Kairan / Csora / Anissia): the episode's best Jimaku file,
-// translated as 설정 > 자막 자동 번역 > Jimaku 자막 자동 번역 says (the Japanese file plays until the translation is in).
-async function autoJimaku(superseded){
+// 설정 > 자막 자동 번역 translates from the best source the episode has: its Jimaku file (Japanese, made for the
+// broadcast), else the site's Japanese track, else its English one (the dialogue track: not signs & songs alone, and
+// a written one before an AI dub transcript).
+function translationSourceTrack(){
+  const tracks=currentPlaybackContext.subtitleTracks||[],text=track=>`${track.label} ${track.language||''}`;
+  const japanese=tracks.find(track=>/japanese|日本/i.test(text(track))||/^ja(?:[-_]|$)/i.test(track.language||''));if(japanese)return japanese;
+  const rank=track=>/signs|songs|forced/i.test(track.label)?3:/dubtitle|\(ai\)|\bai\b/i.test(track.label)?2:/dialogue|full/i.test(track.label)?0:1;
+  return tracks.filter(track=>/english/i.test(text(track))||/^en(?:[-_]|$)/i.test(track.language||'')).sort((a,b)=>rank(a)-rank(b))[0]||null;
+}
+// No Korean subtitle anywhere (no Korean track, nothing from Kairan / Csora / Anissia): the best source is put on and
+// translated (it plays until the translation is in).
+async function autoTranslate(superseded){
   translationSettings=await window.lilac.geminiSettings().catch(()=>translationSettings);
   const provider=translationSettings?.jimakuTranslate,anime=subtitleSearchAnime();
-  if(superseded()||!['cloud','local'].includes(provider)||!anime||!(translationReady('cloud')||translationReady('local')))return false;
-  $('#subtitleState').textContent='한국어 자막이 없어 Jimaku 일본어 자막을 찾는 중...';
-  const files=await loadJimakuList();if(superseded()||!files.length)return false;
-  await applyJimaku(files[0]);return true;
+  if(superseded()||!['cloud','local'].includes(provider)||!(translationReady('cloud')||translationReady('local')))return false;
+  $('#subtitleState').textContent='한국어 자막이 없어 번역할 자막을 찾는 중...';
+  const files=anime?await loadJimakuList():[];if(superseded())return false;
+  if(files.length){await applyJimaku(files[0]);return true}
+  const track=translationSourceTrack();if(!track)return false;
+  const requestId=playbackRequestId;if(!await selectSubtitleTrack(track,{auto:true,notice:`${track.label} 자막을 먼저 띄웠어요. 한국어 번역이 끝나면 바로 바뀌어요.`})||requestId!==playbackRequestId)return false;
+  await translateSubtitleTrack(provider);return true;
+}
+// A Korean subtitle is on (a fansub, the site's Korean track): a machine translation is made beside it from the same
+// best source, in the background, and saved for the episode (at the end of its list), for when the Korean one does not
+// fit (another episode's, a wrong season). Once per episode; it stops when the episode changes.
+let backgroundRun=1e6;
+async function translateAlongside(source,requestId){
+  if(['gemini','user','jimaku'].includes(source))return;
+  translationSettings=await window.lilac.geminiSettings().catch(()=>translationSettings);
+  const provider=translationSettings?.jimakuTranslate,key=subtitleStoreKey(),anime=subtitleSearchAnime(),episode=Number($('#skipEpisode').value)||Number(currentPlaybackContext.episode?.number)||1;
+  if(!key||!['cloud','local'].includes(provider)||!(translationReady('cloud')||translationReady('local'))||requestId!==playbackRequestId)return;
+  if((await window.lilac.savedSubtitles(key).catch(()=>[])).some(entry=>entry.source==='gemini'))return;
+  try{
+    const files=anime?await loadJimakuList():[],track=files.length?null:translationSourceTrack();if(requestId!==playbackRequestId||(!files.length&&!track))return;
+    const file=files.length?await window.lilac.jimakuDownload(files[0],anime,episode):await trackFile(track),name=files.length?'Jimaku':track.label;if(requestId!==playbackRequestId)return;
+    const run=++backgroundRun;translationEpisodes.set(run,key);
+    try{
+      const result=await window.lilac.translateSubtitle({path:file.path,title:currentPlaybackContext.subtitleTitle||$('#skipTitle').value.trim(),id:run,provider,anime});
+      await window.lilac.saveSubtitle(key,{source:'gemini',label:translatedLabel(result,name),path:result.path,behind:true});
+      if(key===subtitleStoreKey()){renderSavedSubtitles();toast('번역본도 만들어 뒀어요. 한국어 자막이 맞지 않으면 플레이어 설정 > 자막 > 저장된 자막에서 골라 보세요.')}
+    }finally{translationEpisodes.delete(run)}
+  }catch{/* the Korean subtitle stays; nothing to show */}
 }
 function communityLabel(source,result={}){return source==='anissia'?`Anissia${result.maker?` · ${result.maker}`:''} 자막`:`${source==='kairan'?'Kairan':'Csora'} 자막`}
 function subtitleSearchAnime(){const anime=currentPlaybackContext.anime;return anime?{provider:anime.provider,id:anime.id,title:anime.title||anime.title_english||'',anilistId:anime.anilistId||null,malId:anime.malId||null}:null}
@@ -594,7 +629,7 @@ async function applyJimaku(file){
   }catch(error){if(requestId===playbackRequestId){$('#subtitleState').textContent='Jimaku 자막을 받지 못했습니다.';toast(`Jimaku: ${ipcMessage(error)}`)}}
 }
 const JIMAKU_TRANSLATING='일본어 자막을 먼저 띄웠어요. 한국어 번역이 끝나면 바로 바뀌어요.';
-// 설정 > 자막 자동 번역 > Jimaku 자막 자동 번역: off, the translation API or the local AI (null: off, or neither is set up).
+// 설정 > 자막 자동 번역: off, the translation API or the local AI (null: off, or neither is set up).
 async function jimakuAutoProvider(){
   translationSettings=await window.lilac.geminiSettings().catch(()=>translationSettings);
   const provider=translationSettings?.jimakuTranslate;if(provider!=='cloud'&&provider!=='local')return null;
@@ -623,10 +658,11 @@ window.lilac.onTranslateProgress(({id,done,total,status})=>{
   const button=translationButtons.get(id),percent=`${Math.round(done/Math.max(1,total)*100)}%`;if(button&&button.dataset.run===String(id))button.textContent=`${status||`번역 중… ${percent}`} · 취소`;
   if(translating?.run===id&&translatingNow())$('#subtitleState').textContent=status?`${status}…`:`${translating.name} 자막을 한국어로 번역하는 중… ${percent}`;
 });
-async function selectSubtitleTrack(track){
+// auto: put on by 자막 자동 번역 (to be translated), so the source the user prefers stays as it was.
+async function selectSubtitleTrack(track,{auto=false,notice=''}={}){
   const requestId=playbackRequestId;$('#subtitleState').textContent=`${track.label} 자막을 불러오는 중...`;
-  try{const file=await trackFile(track);if(requestId!==playbackRequestId)return;currentPlaybackContext.selectedSubtitleTrack=track.url;currentSubtitlePath=file.path;localStorage.setItem('subtitleSource','reanime');$('#subtitleSource').value='reanime';syncSettingChoices();renderSubtitleTracks();attachSubtitle(file.url,`${trackSourceLabel()} ${track.label} 자막`,{path:file.path,assUrl:file.assUrl,assPath:file.assPath,fonts:file.fonts,source:'reanime'})}
-  catch(e){$('#subtitleState').textContent='자막을 불러오지 못했습니다.';toast(`자막을 불러오지 못했습니다: ${e.message}`)}
+  try{const file=await trackFile(track);if(requestId!==playbackRequestId)return false;currentPlaybackContext.selectedSubtitleTrack=track.url;currentSubtitlePath=file.path;if(!auto){localStorage.setItem('subtitleSource','reanime');$('#subtitleSource').value='reanime';syncSettingChoices()}renderSubtitleTracks();attachSubtitle(file.url,`${trackSourceLabel()} ${track.label} 자막`,{path:file.path,assUrl:file.assUrl,assPath:file.assPath,fonts:file.fonts,source:'reanime',notice});return true}
+  catch(e){$('#subtitleState').textContent='자막을 불러오지 못했습니다.';toast(`자막을 불러오지 못했습니다: ${e.message}`);return false}
 }
 function formatTime(value){if(!Number.isFinite(value))return '00:00';const seconds=Math.max(0,Math.floor(value)),h=Math.floor(seconds/3600),m=Math.floor(seconds%3600/60),s=seconds%60;return h?`${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`}
 function syncVolumeUI(){const video=$('#video'),control=$('.volume-control'),slider=$('#playerVolume'),muted=video.muted||video.volume===0;control.classList.toggle('muted',muted);slider.value=String(Math.round(video.volume*100));$('#mutePlayer').setAttribute('aria-label',muted?'음소거 해제':'음소거')}
