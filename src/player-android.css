@@ -32,6 +32,8 @@
 /* Locked: only the unlock affordance (and the OP/ED pill) remain. */
 .immersive-player.locked :is(.player-shade, .player-top, .player-center, .player-bottom, .player-lock) { opacity: 0 !important; pointer-events: none !important; }
 .immersive-player.locked { cursor: default; }
+/* The cursor shows while the mouse moves (see player.js), without the controls. */
+.immersive-player.cursor-visible { cursor: default; }
 
 .player-settings {
   position: absolute; z-index: 5; top: 72px; right: 16px;
