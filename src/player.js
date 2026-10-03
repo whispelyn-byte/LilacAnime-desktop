@@ -136,25 +136,36 @@ function vttBaseline() {
   const position = Number(localStorage.getItem('subtitlePosition') || 12);
   return Math.min(97, Math.max(55, Math.round(100 - position))) - 22 / 720 * 100;
 }
-// Every cue sits on the same line (below), so cues overlapping in time were drawn on top of each other (an ASS file's
-// lines turned into VTT, a translation of one). They are flattened once, before any sync offset: each stretch of time
-// gets one cue with all lines active then, the earlier line first.
+// Cues sit on one line (below, or at the top for captions tagged {\an8}), so cues overlapping in time were drawn on
+// top of each other (an ASS file's lines turned into VTT, a translation of one). They are flattened once, before any
+// sync offset: each stretch of time gets one cue with all lines active then, the earlier line first.
 function flattenVttCues(track) {
   const list = [...track.cues].sort((a, b) => a.startTime - b.startTime || a.endTime - b.endTime);
   if (track.lilacFlat || !list.length) return; track.lilacFlat = true;
-  let end = -1, overlapping = false;
-  for (const cue of list) { if (cue.startTime < end - 0.001) { overlapping = true; break; } end = Math.max(end, cue.endTime); }
-  if (!overlapping) return;
-  const times = [...new Set(list.flatMap(cue => [cue.startTime, cue.endTime]))].sort((a, b) => a - b), flat = [];
-  for (let i = 0; i < times.length - 1; i++) {
-    const start = times[i], stop = times[i + 1], lines = [];
-    for (const cue of list) { if (cue.startTime > start + 1e-6) break; if (cue.endTime > start + 1e-6 && !lines.includes(cue.text)) lines.push(cue.text); }
-    if (!lines.length) continue;
-    const text = lines.join('\n'), last = flat[flat.length - 1];
-    if (last && last.text === text && Math.abs(last.end - start) < 1e-6) last.end = stop; else flat.push({ start, end: stop, text });
+  // ASS override tags left in SRT / VTT text (Jimaku files have {\an8} on captions, translations keep them) are not
+  // shown: {\an7} {\an8} {\an9} put the cue at the top of the picture, the others are dropped.
+  for (const cue of list) {
+    if (!cue.text.includes('{\\')) continue;
+    cue.lilacTop = /\{\\an[789]\}/.test(cue.text);
+    cue.text = cue.text.replace(/\{\\[^}]*\}/g, '').replace(/^[ \t]+|[ \t]+$/gm, '').trim();
   }
+  // Cues overlapping in time are merged, the top ones and the bottom ones each among themselves.
+  const merge = group => {
+    const times = [...new Set(group.flatMap(cue => [cue.startTime, cue.endTime]))].sort((a, b) => a - b), flat = [];
+    for (let i = 0; i < times.length - 1; i++) {
+      const start = times[i], stop = times[i + 1], lines = [];
+      for (const cue of group) { if (cue.startTime > start + 1e-6) break; if (cue.endTime > start + 1e-6 && !lines.includes(cue.text)) lines.push(cue.text); }
+      if (!lines.length) continue;
+      const text = lines.join('\n'), last = flat[flat.length - 1];
+      if (last && last.text === text && Math.abs(last.end - start) < 1e-6) last.end = stop; else flat.push({ start, end: stop, text });
+    }
+    return flat;
+  };
+  const overlaps = group => { let end = -1; for (const cue of group) { if (cue.startTime < end - 0.001) return true; end = Math.max(end, cue.endTime); } return false; };
+  const groups = [list.filter(cue => !cue.lilacTop), list.filter(cue => cue.lilacTop)];
+  if (!groups.some(overlaps)) return;
   for (const cue of [...track.cues]) track.removeCue(cue);
-  for (const cue of flat) track.addCue(new VTTCue(cue.start, cue.end, cue.text));
+  groups.forEach((group, top) => { for (const item of merge(group)) { const cue = new VTTCue(item.start, item.end, item.text); cue.lilacTop = Boolean(top); track.addCue(cue); } });
 }
 function applyVttLayout() {
   const track = $('#video').textTracks[0]; if (!track?.cues) return;
@@ -163,7 +174,8 @@ function applyVttLayout() {
   for (const cue of track.cues) {
     if (cue.lilacStart === undefined) { cue.lilacStart = cue.startTime; cue.lilacEnd = cue.endTime; }
     cue.startTime = Math.max(0, cue.lilacStart + offset); cue.endTime = Math.max(0, cue.lilacEnd + offset);
-    cue.snapToLines = false; cue.line = line; cue.lineAlign = 'end';
+    // Top cues (captions, signs) keep a small margin from the top; the rest sit on the subtitle line.
+    cue.snapToLines = false; cue.line = cue.lilacTop ? 5 : line; cue.lineAlign = cue.lilacTop ? 'start' : 'end';
   }
 }
 

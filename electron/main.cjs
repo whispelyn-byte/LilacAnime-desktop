@@ -1583,8 +1583,8 @@ app.whenReady().then(async () => {
     const titles=['reanime','animenosub','miruro'].includes(anime.provider)?koreanTitleCandidates(title,anime).catch(()=>[title]):Promise.resolve([title]),offsets=previousSeasonEpisodes(anime,title).catch(()=>[]);
     return async source=>{const result=await findCommunitySubtitleByTitles(source,await titles,episode,{originalTitle:anime.title||'',offsets:await offsets});return {source,path:result.path,assPath:result.assPath,fonts:result.fonts,label:communitySubtitleLabel(source,result)}};
   };
-  // Unless the stream has its own Korean track: the episode's best Jimaku file (saved for the episode too, so the
-  // player offers it), translated when 설정 > Jimaku 자막 자동 번역 is Gemini or the local AI and one of them is set up.
+  // The episode's best Jimaku file (saved for the episode too, so the player offers it), translated when 설정 > Jimaku
+  // 자막 자동 번역 is the API or the local AI and one of them is set up.
   const jimakuTranslation=()=>{const setting=translator().settings().jimakuTranslate;return setting!=='off'&&translator().ready()?setting:null};
   const findDownloadJimaku=async job=>{
     const anime=job.anime||{},episode=Number(job.episodeNumber)||1,[file]=await jimakuEpisodeFiles(anime,episode).catch(()=>[]);if(!file)return null;
@@ -1595,7 +1595,7 @@ app.whenReady().then(async () => {
   const translateDownloadJimaku=async(job,file)=>{
     const provider=jimakuTranslation();if(!provider)return null;
     const title=job.displayTitles?.ko||job.title||'',result=await translator().translate({file,title,provider,context:await translationContext(job.anime||{},title)});
-    const label=`${String(result.model||'').startsWith('local:')?'로컬 AI':'Gemini'} 번역 (Jimaku)`,key=downloadSubtitleKey(job);
+    const label=`${result.engine||'AI'} 번역 (Jimaku)`,key=downloadSubtitleKey(job);
     if(key&&!result.failed)subtitleStore.save(key,{source:'gemini',label,path:result.path});
     return {path:result.path,label};
   };
@@ -1609,7 +1609,7 @@ app.whenReady().then(async () => {
   const analyzeDownload=async(job,siblings)=>analyzeOfflineOpEd({title:job.title,episode:job.episodeNumber,currentUrl:pathToFileURL(job.filePath).href,duration:job.duration,candidates:siblings.map(item=>({...item.episode,number:item.episodeNumber,localUrl:pathToFileURL(item.filePath).href}))});
   downloadManager=new DownloadManager({app,resolveTitles:anime=>resolveDisplayTitle(anime),
     saveTrack:(url,referer)=>saveRemoteSubtitle(String(url),remoteTrackOptions(url,referer)).then(file=>subtitleResult(file)),
-    translateTrack:async(file,title,anime)=>{const settings=translator().settings();return translator().ready()&&settings.translateDownloads?translator().translate({file,title,context:await translationContext(anime||{},title)}):null},findSubtitle:findDownloadSubtitle,findJimaku:findDownloadJimaku,translateJimaku:translateDownloadJimaku,findSkips:findDownloadSkips,analyzeOpEd:analyzeDownload,// Animenosub and Miruro downloads follow the player: the RAW video when the episode has a Korean subtitle (saved or found
+    translateTrack:async(file,title,anime)=>{const settings=translator().settings();return translator().ready()&&settings.translateDownloads?translator().translate({file,title,context:await translationContext(anime||{},title)}):null},findSubtitle:findDownloadSubtitle,findJimaku:findDownloadJimaku,translateJimaku:translateDownloadJimaku,jimakuTranslates:()=>Boolean(jimakuTranslation()),findSkips:findDownloadSkips,analyzeOpEd:analyzeDownload,// Animenosub and Miruro downloads follow the player: the RAW video when the episode has a Korean subtitle (saved or found
     // by the same search the download attaches afterwards) or a Jimaku file it will translate, else SUB with its
     // burned-in English.
     resolveEpisode:async(episode,job)=>{if(!['animenosub','miruro'].includes(episode?.provider))return resolveProviderEpisode(episode);const korean=await findDownloadSubtitle(job,null).catch(()=>null),jimaku=!korean&&jimakuTranslation()&&(await jimakuEpisodeFiles(job.anime||{},Number(job.episodeNumber)||1).catch(()=>[])).length;return resolveProviderEpisode({...episode,prefer:korean||jimaku?'raw':'sub',download:true})},resolveLinkkf:async episode=>{
@@ -1785,6 +1785,11 @@ app.whenReady().then(async () => {
   ipcMain.handle('subtitle-store:list',(_,key)=>subtitleStore.list(String(key||'')));
   ipcMain.handle('subtitle-store:save',(_,key,entry)=>subtitleStore.save(String(key||''),entry));
   ipcMain.handle('subtitle-store:remove',(_,key,id)=>subtitleStore.remove(String(key||''),String(id||'')));
+  // 설정 > 자막 캐시: the subtitle files no saved subtitle uses (translations, downloads, partial results), removed by
+  // hand, and by themselves a minute after start once a month old.
+  ipcMain.handle('subtitle-cache:usage',()=>subtitleStore.usage());
+  ipcMain.handle('subtitle-cache:clean',()=>({...subtitleStore.clean(),...subtitleStore.usage()}));
+  setTimeout(()=>{try{subtitleStore.clean({olderThan:30*24*60*60*1000})}catch{}},60000).unref?.();
   // The window buttons Windows draws over the page: in the theme's colors, and over the player in a window white on the
   // video, or not drawn at all while the player's controls are hidden (they come back with the controls).
   const windowButtons=new WeakMap();
@@ -1832,12 +1837,37 @@ app.whenReady().then(async () => {
     return saveRemoteSubtitle(String(url), remoteTrackOptions(url, referer)).then(file => subtitleResult(file));
   });
   // The sandboxed preload has no url.pathToFileURL, so file URLs are built here.
-  ipcMain.handle('subtitle:find', async (_, source, title, episode, anime = null, options = {}) => {
+  // The player asks Kairan, Csora and Anissia at once: the titles and season offsets they all need are looked up once.
+  const subtitleSearchTitles = new Map();
+  ipcMain.handle('subtitle:find', (_, source, title, episode, anime = null, options = {}) => findOnlineSubtitle(source, title, episode, anime, options));
+  async function findOnlineSubtitle(source, title, episode, anime = null, options = {}) {
     // Kairan/Csora posts use Korean titles; Re:ANIME titles are resolved to Korean first (TMDB, AniList, Wikidata).
     // Korean subtitle blogs need the Korean title of English-titled sources.
-    const titles = ['reanime', 'animenosub', 'miruro'].includes(anime?.provider) ? await koreanTitleCandidates(title, anime).catch(() => [title]) : [title];
-    const offsets = await previousSeasonEpisodes(anime || {}, title).catch(() => []);
+    const lookupKey = JSON.stringify([title, anime?.provider || '', anime?.id || '']);
+    if (!subtitleSearchTitles.has(lookupKey)) {
+      subtitleSearchTitles.set(lookupKey, Promise.all([['reanime', 'animenosub', 'miruro'].includes(anime?.provider) ? koreanTitleCandidates(title, anime).catch(() => [title]) : [title], previousSeasonEpisodes(anime || {}, title).catch(() => [])]));
+      setTimeout(() => subtitleSearchTitles.delete(lookupKey), 60000).unref?.();
+    }
+    const [titles, offsets] = await subtitleSearchTitles.get(lookupKey);
     return findCommunitySubtitleByTitles(source, titles, Number(episode), { originalTitle: anime?.title || '', offsets, maker: String(options?.maker || '') });
+  }
+  // The next episode made ready while the current one plays (the player asks when the local AI has translated a
+  // Jimaku file): unless that episode has a Korean subtitle online, its best Jimaku file is fetched and translated by
+  // the local AI into the translation cache, so opening it shows Korean at once. One at a time, each episode once; the
+  // player leaving does not stop it (it is for the episode about to be watched).
+  const preparedEpisodes = new Set(); let preparing = Promise.resolve();
+  ipcMain.handle('subtitle:prepare', (_, { anime = null, episode = 1, title = '' } = {}) => {
+    const key = `${anime?.provider || ''}:${anime?.id || ''}:${Number(episode) || 1}`;
+    // Only with 설정 > Jimaku 자막 자동 번역 on: otherwise the next episode would not pick the translation up.
+    if (!anime?.id || preparedEpisodes.has(key) || translator().settings().jimakuTranslate === 'off') return false;
+    preparedEpisodes.add(key);
+    preparing = preparing.then(async () => {
+      for (const source of COMMUNITY_SOURCES) { try { await findOnlineSubtitle(source, title, episode, anime); return; } catch { /* not there */ } }
+      const [file] = await jimakuEpisodeFiles(anime, Number(episode) || 1).catch(() => []); if (!file) return;
+      const result = await jimakuDownload(file, anime, Number(episode) || 1);
+      if (translator().ready('local')) await translator().translate({ file: result.path, title: String(title || ''), provider: 'local', context: await translationContext(anime, String(title || '')) });
+    }).catch(() => {});
+    return true;
   });
   // Anissia makers of the playing anime, for the player menu.
   ipcMain.handle('anissia:makers', async (_, title, anime = null) => {
@@ -1890,16 +1920,19 @@ app.whenReady().then(async () => {
     if(result.canceled||!result.filePaths[0])return null;
     const id=translator().local.addFile(result.filePaths[0]);return translator().saveSettings({localModel:id});
   });
+  ipcMain.handle('localai:cancel-install',(_,id)=>{translator().local.cancelInstall(String(id||''));return true});
   ipcMain.handle('localai:remove',(_,id)=>{translator().local.removeModel(String(id||''));return translator().settings()});
   ipcMain.handle('gemini:set',(_,value={})=>translator().saveSettings(value||{}));
-  ipcMain.handle('subtitle:translate',async(event,{path:file='',title='',id=0,provider='',anime=null}={})=>{
+  // The player's run leaves (its episode changed, or its button was pressed again); downloads keep theirs.
+  ipcMain.handle('subtitle:cancel',(_,id)=>{translator().cancel(Number(id)||null);return true});
+  ipcMain.handle('subtitle:translate',async(event,{path:file='',title='',id=0,provider='',anime=null,fresh=false}={})=>{
     const resolved=path.resolve(String(file||''));
     // App subtitle files and the tracks saved with downloads.
     if(![path.join(app.getPath('userData'),'subtitles'),downloadManager?.root].some(root=>root&&resolved.startsWith(root+path.sep))||!/\.vtt$/i.test(resolved)||!fs.existsSync(resolved))throw new Error('번역할 자막 파일이 없습니다.');
     const send=value=>{if(!event.sender.isDestroyed())event.sender.send('translate:progress',{id,...value})};
     const context=await translationContext(anime||{},String(title||''));
-    const result=await translator().translate({file:resolved,title:String(title||''),provider:['gemini','local'].includes(provider)?provider:'',context,progress:(done,total)=>send({done,total}),status:text=>send({status:text})});
-    return subtitleResult(result.path,{model:result.model,failed:result.failed,cached:result.cached,fallbackFrom:result.fallbackFrom||'',fallbackReason:result.fallbackReason||''});
+    const result=await translator().translate({file:resolved,id:Number(id)||null,fresh:Boolean(fresh),title:String(title||''),provider:['cloud','gemini','local'].includes(provider)?provider:'',context,progress:(done,total)=>send({done,total}),status:text=>send({status:text})});
+    return subtitleResult(result.path,{model:result.model,engine:result.engine||'',failed:result.failed,cached:result.cached,fallbackNote:result.fallbackNote||'',fallbackReason:result.fallbackReason||''});
   });
   // Several lookups at a time (TMDB answers quickly; AniList allows about 90 requests a minute).
   ipcMain.handle('titles:resolve',async(_,list=[])=>{
