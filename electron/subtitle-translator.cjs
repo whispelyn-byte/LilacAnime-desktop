@@ -355,7 +355,10 @@ function createTranslator(userData) {
   const cancelled = () => Object.assign(new Error('번역을 취소했습니다.'), { name: 'AbortError', cancelled: true });
   async function translate({ progress = () => {}, status = () => {}, id = null, ...options }) {
     options.provider = providerOf(options.provider || '');
-    const key = `${options.file}\n${options.provider}`;
+    // A run is known by what it translates, not by where the file is: a site track is saved under a new name each time
+    // it is fetched, so the next episode made ready ahead (main's subtitle:prepare) is joined when it is opened.
+    let content = options.file; try { content = crypto.createHash('sha1').update(fs.readFileSync(options.file)).digest('hex'); } catch { /* reported by the run */ }
+    const key = `${content}\n${options.provider}`;
     let job = running.get(key);
     // A run being cancelled is not joined: a new one starts (and goes on from the lines it kept).
     if (!job || job.abort.signal.aborted) {
@@ -392,9 +395,10 @@ function createTranslator(userData) {
     // The prompt version is part of the cache key, so a better prompt is not hidden behind older results.
     const source = fs.readFileSync(file, 'utf8');
     const hashOf = name => crypto.createHash('sha1').update(`${modelOf(name)}\n${name === 'local' ? LOCAL_PROMPT_VERSION + promptVersion(localModel) : PROMPT_VERSION}\n${source}`).digest('hex').slice(0, 20);
-    // Kept translations are taken from the side asked for only: the local AI's for the local AI, the APIs' (the picked
-    // one's first, then one another API made when it could not be used) for the API, so the two stay apart.
-    const sameSide = name => (name === 'local') === (wanted === 'local');
+    // Kept translations are taken from the side that translates now only: the local AI's for the local AI, the APIs'
+    // (the picked one's first, then one another API made when it could not be used) for the API, so the two stay apart.
+    // The side is the first one set up: the API asked for without any key is the local AI's side.
+    const side = order[0] === 'local', sameSide = name => (name === 'local') === side;
     for (const name of order.filter(sameSide)) {
       const out = path.join(cacheDir, `${hashOf(name)}.vtt`);
       if (!fs.existsSync(out)) continue;

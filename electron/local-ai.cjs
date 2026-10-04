@@ -232,7 +232,7 @@ function createLocalAi(userData) {
     if (!build.checked && !force) { try { fs.writeFileSync(buildFile(target), JSON.stringify({ checked: Date.now() })); } catch {} return Promise.resolve(); }
     if (!updating.has(kind) && (force || Date.now() - build.checked > MONTH)) updating.set(kind, (async () => {
       const latest = await latestRuntime(kind);
-      try { fs.writeFileSync(buildFile(target), JSON.stringify({ ...build, checked: Date.now() })); } catch { /* checked again next time */ }
+      try { fs.writeFileSync(buildFile(target), JSON.stringify({ ...buildOf(kind), checked: Date.now() })); } catch { /* checked again next time */ }
       if (latest.tag !== build.tag) await installRuntime(kind, `${target}.next`, () => {}, latest);
     })().catch(() => {}).finally(() => updating.delete(kind)));
     return updating.get(kind) || Promise.resolve();
@@ -343,7 +343,12 @@ function createLocalAi(userData) {
         };
         child.stdout.on('data', keep); child.stderr.on('data', keep);
         const exited = new Promise(resolve => child.once('exit', code => resolve(code)));
-        const deadline = Date.now() + 180000;
+        // A maker's build turns its code for the card into the card's own the first time it runs (SYCL always, CUDA on
+        // cards before the RTX 30), which the driver keeps for the next times; on a slow card it can take minutes. So
+        // the first run of a build with a driver gets 15 minutes instead of 3 before it is given up (and marked).
+        const driver = kind === 'vulkan' ? '' : String(await cardDriver(kind)), first = kind !== 'vulkan' && buildOf(kind).ran !== driver;
+        const begun = Date.now(), deadline = begun + (first ? 900000 : 180000);
+        let told = false;
         for (;;) {
           const code = await Promise.race([exited, new Promise(resolve => setTimeout(() => resolve(undefined), 500))]);
           if (code !== undefined) {
@@ -357,8 +362,12 @@ function createLocalAi(userData) {
           // device. A maker's build that found none (its library for the card did not load) would run on the CPU alone:
           // it is given up for the next build instead.
           if (ready && kind !== 'vulkan' && !onCard) { child.kill(); throw new Error(`llama.cpp(${RUNTIMES[kind].label})가 그래픽카드를 쓰지 못했습니다.`); }
-          if (ready) return { child, port, device, layers: device ? layers : 0, total };
+          if (ready) {
+            if (first) try { fs.writeFileSync(buildFile(path.join(root, RUNTIMES[kind].dir)), JSON.stringify({ ...buildOf(kind), ran: driver })); } catch {}
+            return { child, port, device, layers: device ? layers : 0, total };
+          }
           if (Date.now() > deadline) { child.kill(); throw new Error('모델을 불러오는 데 너무 오래 걸립니다.'); }
+          if (first && !told && Date.now() - begun > 20000) { told = true; status(`llama.cpp(${RUNTIMES[kind].label})를 처음 실행해 그래픽카드에 맞게 준비하는 중 (몇 분 걸릴 수 있어요)`); }
         }
       };
       status('모델 불러오는 중');

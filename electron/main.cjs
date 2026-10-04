@@ -1851,21 +1851,40 @@ app.whenReady().then(async () => {
     const [titles, offsets] = await subtitleSearchTitles.get(lookupKey);
     return findCommunitySubtitleByTitles(source, titles, Number(episode), { originalTitle: anime?.title || '', offsets, maker: String(options?.maker || '') });
   }
-  // The next episode made ready while the current one plays (the player asks when the local AI has translated a
-  // Jimaku file): unless that episode has a Korean subtitle online, its best Jimaku file is fetched and translated by
-  // the local AI into the translation cache, so opening it shows Korean at once. One at a time, each episode once; the
-  // player leaving does not stop it (it is for the episode about to be watched).
+  // The next episode made ready while the current one plays (the player asks when the local AI has translated an
+  // episode): the source its own playback would translate, its best Jimaku file or else its Re:Anime / Miruro
+  // Japanese track or English dialogue one (the player's translationSourceTrack), is fetched and translated by the
+  // local AI into the translation cache, so opening it shows the translation at once (also with a Korean fansub,
+  // beside which it is made anyway). One at a time, each episode once; the player leaving does not stop it (it is for
+  // the episode about to be watched).
   const preparedEpisodes = new Set(); let preparing = Promise.resolve();
-  ipcMain.handle('subtitle:prepare', (_, { anime = null, episode = 1, title = '' } = {}) => {
+  const sourceTrack = tracks => {
+    const text = track => `${track.label} ${track.language || ''}`, code = (track, lang) => new RegExp(`^${lang}(?:[-_]|$)`, 'i').test(track.language || '');
+    const rank = track => /signs|songs|forced/i.test(track.label) ? 3 : /dubtitle|\(ai\)|\bai\b/i.test(track.label) ? 2 : /dialogue|full/i.test(track.label) ? 0 : 1;
+    return tracks.find(track => /japanese|日本/i.test(text(track)) || code(track, 'ja')) || tracks.filter(track => /english/i.test(text(track)) || code(track, 'en')).sort((a, b) => rank(a) - rank(b))[0] || null;
+  };
+  async function episodeTracks(item) {
+    // Re:Anime's tracks are on its player page; Miruro's come with the stream.
+    if (item?.provider === 'reanime') return reanimeSubtitleTracks(item);
+    if (item?.provider === 'miruro') { const stream = await resolveProviderEpisode(item); return { tracks: stream.subtitleTracks || [], referer: stream.referer || '' }; }
+    return { tracks: [], referer: '' };
+  }
+  ipcMain.handle('subtitle:prepare', (_, { anime = null, episode = 1, item = null, title = '' } = {}) => {
     const key = `${anime?.provider || ''}:${anime?.id || ''}:${Number(episode) || 1}`;
-    // Only with 설정 > 자막 자동 번역 on: otherwise the next episode would not pick the translation up.
-    if (!anime?.id || preparedEpisodes.has(key) || translator().settings().jimakuTranslate === 'off') return false;
+    // Only when the next episode's own translation would be the local AI's (설정 > 자막 자동 번역 on, and the local AI
+    // picked or the API without a key): otherwise it would not pick this one up.
+    const settings = translator().settings(), local = settings.jimakuTranslate === 'local' ? translator().ready('local') : settings.jimakuTranslate === 'cloud' && !settings.cloudReady;
+    if (!anime?.id || preparedEpisodes.has(key) || !local) return false;
     preparedEpisodes.add(key);
     preparing = preparing.then(async () => {
-      for (const source of COMMUNITY_SOURCES) { try { await findOnlineSubtitle(source, title, episode, anime); return; } catch { /* not there */ } }
-      const [file] = await jimakuEpisodeFiles(anime, Number(episode) || 1).catch(() => []); if (!file) return;
-      const result = await jimakuDownload(file, anime, Number(episode) || 1);
-      if (translator().ready('local')) await translator().translate({ file: result.path, title: String(title || ''), provider: 'local', context: await translationContext(anime, String(title || '')) });
+      if (!translator().ready('local')) return;
+      const [file] = await jimakuEpisodeFiles(anime, Number(episode) || 1).catch(() => []);
+      let source = file ? (await jimakuDownload(file, anime, Number(episode) || 1)).path : '';
+      if (!source) {
+        const { tracks, referer } = await episodeTracks(item), track = sourceTrack(tracks || []); if (!track) return;
+        source = subtitleResult(await saveRemoteSubtitle(track.url, remoteTrackOptions(track.url, referer))).path;
+      }
+      await translator().translate({ file: source, title: String(title || ''), provider: 'local', context: await translationContext(anime, String(title || '')) });
     }).catch(() => {});
     return true;
   });
@@ -1996,5 +2015,5 @@ app.whenReady().then(async () => {
   app.on('activate', () => { if (!mainWindow || mainWindow.isDestroyed()) createWindow(); });
 });
 
-app.on('before-quit', () => { closeFlixProxy(); subtitleTranslator?.local?.stop(); });
+app.on('before-quit', () => { closeFlixProxy(); subtitleTranslator?.local?.stop(); updater?.installOnQuit(); });
 app.on('window-all-closed', () => { if (process.env.LILAC_SMOKE_REANIME==='1')return;if (process.platform !== 'darwin') app.quit(); });

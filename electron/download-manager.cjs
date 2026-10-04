@@ -60,7 +60,7 @@ class DownloadManager {
     job.status = 'paused'; job.updated = Date.now(); this.save(); return true;
   }
 
-  resume(id) { const job=this.jobs.find(item=>item.id===id); if(!job)return false; job.status='queued';job.error='';job.updated=Date.now();this.save();this.pump();return true; }
+  resume(id) { const job=this.jobs.find(item=>item.id===id); if(!job)return false; clearTimeout(this.retryTimers?.get(id)); job.status='queued';job.error='';job.retries=0;job.updated=Date.now();this.save();this.pump();return true; }
 
   remove(id) {
     const job = this.jobs.find(item => item.id === id); if (!job) return false;
@@ -99,7 +99,7 @@ class DownloadManager {
       if(job.status==='paused')return;
       await this.runFfmpeg(job,stream,local);
       if(job.status==='paused')return;
-      try{fs.unlinkSync(job.filePath)}catch{}fs.renameSync(job.partialPath,job.filePath);if(local)try{fs.rmSync(local.dir,{recursive:true,force:true})}catch{}job.partialPath='';job.status='completed';job.progress=100;job.completed=Date.now();job.updated=Date.now();
+      try{fs.unlinkSync(job.filePath)}catch{}fs.renameSync(job.partialPath,job.filePath);if(local)try{fs.rmSync(local.dir,{recursive:true,force:true})}catch{}job.partialPath='';job.status='completed';job.retries=0;job.progress=100;job.completed=Date.now();job.updated=Date.now();
       job.stage='subtitle';this.save();await this.attachSubtitle(job,stream);job.stage='';job.updated=Date.now();this.save();
       await this.attachSkips(job);
       await this.attachTitles(job);
@@ -107,7 +107,17 @@ class DownloadManager {
       this.queueTracks(job, stream);
     } catch (error) {
       // A job resumed while this run was stopping stays queued and starts again below.
-      if(!['paused','queued'].includes(job.status)){job.status='failed';job.error=error?.message||String(error);job.updated=Date.now();this.save();}
+      if(!['paused','queued'].includes(job.status)){
+        job.status='failed';job.error=error?.message||String(error);job.updated=Date.now();
+        // A server that did not answer or a dropped connection: tried again by itself twice (after half a minute, then
+        // two minutes), keeping what was downloaded; then it waits for 다시 시작.
+        job.retries=(job.retries||0)+1;
+        if(job.retries<=2){
+          job.error=`${job.error} · ${job.retries===1?'30초':'2분'} 뒤 다시 시도`;
+          (this.retryTimers ||= new Map()).set(job.id,setTimeout(()=>{if(job.status==='failed'&&this.jobs.includes(job)){job.status='queued';job.updated=Date.now();this.save();this.pump()}},job.retries===1?30000:120000));
+        }
+        this.save();
+      }
     } finally { this.active.delete(job.id); setImmediate(()=>this.pump()); }
   }
 
