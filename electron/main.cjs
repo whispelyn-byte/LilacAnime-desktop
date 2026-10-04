@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, session } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, session, net } = require('electron');
 const path = require('path');
 const zlib = require('zlib');
 const cheerio = require('cheerio');
@@ -372,6 +372,7 @@ async function reanimeSubtitleTracks(episode) {
 
 async function resolveProviderEpisode(episode) {
   if(episode.provider==='miruro')return resolveMiruroEpisode(episode);
+  if(episode.provider==='ohli24')return resolveOhliEpisode(episode);
   if(episode.provider==='reanime') {
     const ordered=await reanimeServers(episode);
     if(!ordered.length)throw new Error('이 작품은 현재 RE:Anime에서 재생할 수 없습니다. 다른 콘텐츠 소스를 선택해주세요.');
@@ -547,6 +548,105 @@ async function hlsProbe(url,headers={}){
   const segments=media.split(/\r?\n/).filter(line=>line.trim()&&!line.startsWith('#'));if(!segments.length)throw new Error('빈 재생목록');
   const started=Date.now(),size=(await (await get(new URL(segments[Math.min(3,segments.length-1)].trim(),base).href,15000)).arrayBuffer()).byteLength;
   return {program:variants.length>1?program:null,speed:size/1024/Math.max(.05,(Date.now()-started)/1000)};
+}
+
+// --- Ohli24 (애니24) -------------------------------------------------------------------------------------------------
+// A Korean site whose videos have the Korean subtitle burned in. Its pages are read with Chromium's network stack
+// (Electron's net): the connection Node's own TLS makes to it is cut off on Korean lines, Chromium's is not.
+// Lists: the home page (recommended), /ing (airing, all on one page), /finished/N-1.html (finished, 25 a page), and
+// /search/keyword-…html. A series page has the original (Japanese) title, genres, air date, the story and its episodes
+// (newest first); an episode page embeds the cdndania (FirePlayer) player.
+const OHLI24_WEB='https://www.ohli24.net';
+async function ohliFetch(url){
+  const response=await net.fetch(url,{signal:AbortSignal.timeout(30000),headers:{'User-Agent':LINKKF_UA,Accept:'text/html,application/xhtml+xml','Accept-Language':'ko-KR,ko;q=0.9',Referer:`${OHLI24_WEB}/`}});
+  if(!response.ok)throw new Error(`애니24 HTTP ${response.status}`);
+  return response.text();
+}
+function ohliItems(html){
+  const $=cheerio.load(html),found=new Map();
+  $('.show-item').each((_,node)=>{
+    const el=$(node),link=el.find('a.show-item-img-link').attr('href')||el.find('a[href*=".html"]').attr('href')||'',id=String(link).match(/\/(\d+)\/[^/]+\.html/)?.[1];
+    const img=el.find('img').first(),title=(el.find('.show-item-title').first().text()||img.attr('title')||'').trim();
+    if(!id||!title||found.has(id))return;
+    found.set(id,{provider:'ohli24',id,mal_id:`ohli24:${id}`,title,title_english:'',images:{webp:{large_image_url:absoluteUrl(img.attr('src')||'',OHLI24_WEB)}},score:null,year:'',type:/극장판/.test(title)?'Movie':'TV',
+      episodes:Number(el.find('.show-item-eps').first().text().match(/\d+/)?.[0])||null,status:el.find('.cat-tag').first().text().trim(),synopsis:'',
+      genres:el.find('.top-list-body-genre a').map((_,a)=>({name:$(a).text().trim()})).get().filter(genre=>genre.name),studios:[],url:absoluteUrl(link,OHLI24_WEB)});
+  });
+  return [...found.values()];
+}
+// The AniList entry of a 애니24 series, by its original (Japanese) title and air year: AniSkip finds OP/ED times by it
+// (and MAL id). AniList also matches native titles; an exact match of the same year wins, then the same title, then
+// the same year. Remembered for the session; a lookup that failed (AniList allows only so many requests a minute, and
+// answers 429 past that: waited for once) is not, so playing the episode asks again.
+const ohliAnilistCache=new Map();
+async function ohliAnilist(native,year){
+  const key=`${native}|${year}`;if(!native)return null;if(ohliAnilistCache.has(key))return ohliAnilistCache.get(key);
+  const query='query($search:String){Page(perPage:10){media(search:$search,type:ANIME){id idMal seasonYear startDate{year} title{native}}}}';
+  const ask=()=>fetch('https://graphql.anilist.co',{signal:AbortSignal.timeout(20000),method:'POST',headers:{Accept:'application/json','Content-Type':'application/json','User-Agent':'LilacAnime Android'},body:JSON.stringify({query,variables:{search:native}})});
+  const lookup=(async()=>{
+    let response=await ask();
+    if(response.status===429){await new Promise(resolve=>setTimeout(resolve,Math.min(15,Number(response.headers.get('retry-after'))||5)*1000));response=await ask()}
+    if(!response.ok)throw new Error(`AniList HTTP ${response.status}`);
+    const list=(await response.json())?.data?.Page?.media||[],same=item=>titleCompareKey(item.title?.native||'')===titleCompareKey(native),inYear=item=>Number(year)&&(item.seasonYear||item.startDate?.year)===Number(year);
+    const found=list.find(item=>same(item)&&inYear(item))||list.find(same)||list.find(inYear)||null;
+    return found?{anilistId:found.id,malId:found.idMal||null}:null;
+  })();
+  ohliAnilistCache.set(key,lookup);lookup.catch(()=>ohliAnilistCache.delete(key));
+  return lookup.catch(()=>null);
+}
+async function ohliDetail(anime){
+  const $=cheerio.load(await ohliFetch(anime.url)),meta={};
+  $('.article-box-meta li').each((_,li)=>{const spans=$(li).find('span');meta[$(spans[0]).text().replace(/[:：]\s*$/,'').trim()]=spans.slice(1).map((_,span)=>$(span).text()).get().join('').replace(/\s+/g,' ').trim()});
+  const title=String($('meta[property="og:title"]').attr('content')||'').replace(/\s*자막\s*다시보기\s*$/,'').trim()||anime.title;
+  const poster=$('.article-box-img img').attr('src')||$('meta[property="og:image"]').attr('content')||imageOfMain(anime);
+  const episodes=[];
+  $('.eps-item a[href]').each((_,a)=>{
+    const el=$(a),date=el.find('.eps-date').text().replace(/\s+/g,' ').trim(),label=el.clone().children().remove().end().text().trim(),number=Number(label.match(/(\d+)\s*화/)?.[1]||label.match(/\d+/)?.[0])||null;
+    episodes.push({name:number?String(number):label||'1',number,url:absoluteUrl(el.attr('href'),OHLI24_WEB),dub:false,provider:'ohli24',...(/^\d{4}-\d{2}-\d{2}$/.test(date)?{airedDate:date}:{})});
+  });
+  // Listed newest first; a movie's page has no list and plays itself.
+  episodes.reverse();if(episodes.every(episode=>episode.number))episodes.sort((a,b)=>a.number-b.number);
+  if(!episodes.length)episodes.push({name:'1',number:1,url:anime.url,dub:false,provider:'ohli24'});
+  const native=meta['원제']||anime.title_japanese||'',ids=await ohliAnilist(native,(meta['방영일']||'').match(/\d{4}/)?.[0]);
+  if(ids)for(const episode of episodes)Object.assign(episode,ids);
+  const data={...anime,...(ids||{}),title,title_japanese:native,images:{webp:{large_image_url:absoluteUrl(poster,OHLI24_WEB)}},
+    synopsis:$('.movie-coment').first().text().replace(/\s+/g,' ').trim()||anime.synopsis||'',genres:(meta['장르']||'').split(/[,/·]/).map(name=>name.trim()).filter(Boolean).map(name=>({name})),
+    year:(meta['방영일']||'').match(/\d{4}/)?.[0]||anime.year||'',aired:meta['방영일']||'',episodes:Number((meta['총화수']||'').match(/\d+/)?.[0])||episodes.length};
+  return {data,episodes,unavailable:false};
+}
+// The cdndania player hands its master playlist (master.txt) only to its own page: the request needs the cookie the
+// page sets and the page's own headers (no Referer). The variant playlist and the segments it lists are open, so the
+// player page is opened hidden, its master read in its session, and the best variant is what the app plays.
+async function ohliStream(playerUrl){
+  const win=new BrowserWindow({show:false,width:960,height:640,webPreferences:{partition:'persist:lilac-ohli24',contextIsolation:true,nodeIntegration:false,sandbox:true,autoplayPolicy:'no-user-gesture-required',backgroundThrottling:false}});
+  const ses=win.webContents.session;let master=null,headers=null,media=null;
+  ses.webRequest.onSendHeaders({urls:['*://*/*']},details=>{
+    if(!master&&/\/master\.txt(?:$|\?)|\.m3u8(?:$|\?)/i.test(details.url)){master=details.url;headers=details.requestHeaders}
+    else if(!media&&details.resourceType==='media'&&/\.mp4(?:$|\?)/i.test(details.url))media=details.url;
+  });
+  try{
+    win.loadURL(playerUrl,{httpReferrer:`${OHLI24_WEB}/`,userAgent:LINKKF_UA}).catch(()=>{});
+    for(let i=0;i<60&&!master&&!media;i++){
+      await new Promise(resolve=>setTimeout(resolve,500));
+      if(i%4===3)win.webContents.executeJavaScript(`try{window.jwplayer?.().play?.()}catch{};document.querySelectorAll('video').forEach(v=>{v.muted=true;v.play().catch(()=>{})})`,true).catch(()=>{});
+    }
+    if(!master&&media)return {url:media,headers:{'User-Agent':LINKKF_UA,Referer:playerUrl},referer:playerUrl};
+    if(!master)throw new Error('애니24 영상 주소를 찾지 못했습니다.');
+    const userAgent=headers?.['User-Agent']||LINKKF_UA;
+    const text=await (await ses.fetch(master,{headers:{'User-Agent':userAgent,Accept:'*/*','Accept-Language':headers?.['Accept-Language']||'ko'}})).text();
+    if(!text.startsWith('#EXTM3U'))throw new Error('애니24 영상 재생목록을 받지 못했습니다.');
+    const variants=[...text.matchAll(/#EXT-X-STREAM-INF:([^\r\n]*)\r?\n\s*([^\r\n#][^\r\n]*)/g)].map(match=>({bandwidth:Number(match[1].match(/BANDWIDTH=(\d+)/)?.[1])||0,url:new URL(match[2].trim(),master).href}));
+    if(!variants.length)throw new Error('애니24 영상 화질 목록이 없습니다.');
+    // Its segments come from a different host each (ohli1…7ncloud5-nocdn.xyz), so a download fetches them itself, six at
+    // a time (mirror), as Miruro's: FFmpeg opens a new connection for every one.
+    return {url:variants.sort((a,b)=>b.bandwidth-a.bandwidth)[0].url,headers:{'User-Agent':userAgent},referer:'',hls:true,mirror:true};
+  }finally{ses.webRequest.onSendHeaders(null);if(!win.isDestroyed())win.destroy()}
+}
+async function resolveOhliEpisode(episode){
+  const $=cheerio.load(await ohliFetch(episode.url));
+  const player=absoluteUrl($('iframe#video').attr('src')||$('iframe[src*="cdndania"]').attr('src')||$('iframe[src]').first().attr('src')||'',episode.url);
+  if(!player)throw new Error('이 회차의 영상 플레이어를 찾지 못했습니다.');
+  return {...await ohliStream(player),burnedKorean:true,subtitleTracks:[]};
 }
 
 function openProviderPlayer(episode, title = 'LilacAnime Player') {
@@ -768,7 +868,8 @@ async function tmdbSeasonTitle(id,original){
 async function tmdbKoreanTitles(titles,{light=false}={}){
   const queries=[];
   for(const title of titles){
-    const base=String(title||'').replace(/…/g,'...').replace(/\s*(?:season\s*\d+|\d+(?:st|nd|rd|th)\s*season|part\s*\d+|第\d+期)\s*$/i,'').replace(/[:：]\s*$/,'').trim();
+    // Season words, and OVA / special marks and symbols ("Kamisama Kiss◎ OVA"), are not in TMDB's series names.
+    const base=String(title||'').replace(/…/g,'...').replace(/[◎○●☆★]+/g,' ').replace(/\s*(?:OVA|OAD|ONA|specials?|recap)\s*\d*\s*$/i,'').replace(/\s*(?:season\s*\d+|\d+(?:st|nd|rd|th)\s*season|part\s*\d+|第\d+期)\s*$/i,'').replace(/[:：]\s*$/,'').trim();
     for(const query of [base,base.split(/\s*[:：]\s+|\s+-\s+/)[0]])if(query&&!/[가-힣]/.test(query)&&!queries.includes(query))queries.push(query);
   }
   const found=[];
@@ -863,7 +964,7 @@ async function englishTitleFor(anime){
 }
 async function displayKoreanTitle(title,anime){
   if(tmdbKey()){const found=(await tmdbKoreanTitles([title],{light:true}).catch(()=>[])).find(hasHangul);if(found)return found}
-  const clean=value=>String(value||'').replace(/\((?:애니메이션|TV|애니)[^)]*\)/g,'').replace(/\s+/g,' ').trim();
+  const clean=cleanKoreanTitle;
   const media=await anilistMedia(title,anime).catch(()=>null),synonym=(media?.synonyms||[]).map(clean).find(value=>/[가-힣]{2}/.test(value));if(synonym)return synonym;
   const malId=Number(anime.malId)||media?.idMal||null,anilistId=Number(anime.anilistId)||media?.id||null;
   return (await wikidataKoreanTitles(malId,anilistId).catch(()=>[])).map(clean).find(value=>/[가-힣]{2}/.test(value))||'';
@@ -871,12 +972,15 @@ async function displayKoreanTitle(title,anime){
 async function resolveDisplayTitle(anime={}){
   const key=`${anime.provider||'jikan'}:${anime.id??anime.mal_id}`,store=displayTitleStore(),cached=store[key];
   const title=String(anime.title||'').trim();
-  // Entries saved before a season form was recognised get it here.
-  if(cached&&Date.now()-cached.time<DISPLAY_TITLE_TTL)return {key,ko:withSeason(cached.ko||'',title),en:cached.en||''};
-  const ko=withSeason(hasHangul(title)?title:await displayKoreanTitle(title,anime).catch(()=>''),title);
+  // Names are shown cleaned and with their season (see withSeason). TMDB's name comes first: one filled in from Wikidata
+  // by the catalog index, or kept from before names said where they came from, is looked up again once (with a TMDB key).
+  const stale=cached&&!hasHangul(title)&&tmdbKey()&&(!cached.src||cached.src==='wikidata');
+  if(cached&&!stale&&Date.now()-cached.time<DISPLAY_TITLE_TTL)return {key,ko:withSeason(cached.ko||'',title,anime.type),en:cached.en||''};
+  const ko=hasHangul(title)?title:await displayKoreanTitle(title,anime).catch(()=>'');
   const en=await englishTitleFor(anime).catch(()=>'');
   const merged={ko:ko||cached?.ko||'',en:en||cached?.en||''};
-  store[key]={...merged,time:Date.now()};saveDisplayTitles();
+  store[key]={...merged,src:'lookup',time:Date.now()};saveDisplayTitles();
+  merged.ko=withSeason(merged.ko,title,anime.type);
   return {key,...merged};
 }
 // --- Catalog title indexes (Re:Anime, Animenosub) ----------------------------------------------
@@ -910,15 +1014,16 @@ const indexSaveTimers={};
 function saveCatalogFile(provider,name,value){const key=`${provider}-${name}`;clearTimeout(indexSaveTimers[key]);indexSaveTimers[key]=setTimeout(()=>{try{fs.writeFileSync(path.join(app.getPath('userData'),`${key}.json`),JSON.stringify(value()))}catch{}},2000)}
 function saveCatalogIndex(provider){const index=catalogIndex(provider);saveCatalogFile(provider,'index',()=>({items:index.items,updated:index.updated,wikidata:index.wikidata}))}
 function saveCatalogTried(provider){const index=catalogIndex(provider);saveCatalogFile(provider,'tried',()=>index.tried)}
-const indexKorean=(provider,item)=>withSeason(displayTitleStore()[`${provider}:${item.id}`]?.ko||'',item.title);
+const indexKorean=(provider,item)=>withSeason(displayTitleStore()[`${provider}:${item.id}`]?.ko||'',item.title,item.type);
 function catalogIndexState(){return {tmdb:Boolean(tmdbKey()),sources:Object.entries(CATALOGS).filter(([provider])=>provider===activeCatalogSource).map(([provider,{label,korean}])=>{const index=catalogIndex(provider);return {provider,label,status:index.status,total:index.items.length,korean:korean===false?null:index.items.filter(item=>indexKorean(provider,item)).length}})}}
 function reportCatalogIndex(provider,status){
   catalogIndex(provider).status=status;const state=catalogIndexState();
   BrowserWindow.getAllWindows().forEach(win=>{if(!win.isDestroyed())win.webContents.send('catalog-index:state',state)});
 }
-function storeIndexKorean(provider,item,ko){
-  ko=withSeason(ko,item.title);
-  const key=`${provider}:${item.id}`,store=displayTitleStore();store[key]={ko,en:store[key]?.en||item.title,time:Date.now()};
+// The bare name is kept (cleaned and given its season when shown); src says where it came from.
+function storeIndexKorean(provider,item,ko,src){
+  if(!withSeason(ko,item.title,item.type))return;
+  const key=`${provider}:${item.id}`,store=displayTitleStore();store[key]={ko,en:store[key]?.en||item.title,src,time:Date.now()};
 }
 async function fetchReanimeCatalog(){
   const page=offset=>providerFetch(`${REANIME_WEB}/api/v1/search?limit=100&offset=${offset}`,{json:true,referer:`${REANIME_WEB}/search`});
@@ -974,7 +1079,7 @@ async function refreshCatalogList(provider){
   }
   if(CATALOGS[provider].wikidata&&index.items.length&&Date.now()-index.wikidata>7*DAY){
     reportCatalogIndex(provider,'wikidata');
-    try{const map=await wikidataKoreanByAnilist();for(const item of index.items)if(item.anilistId&&map.has(item.anilistId)&&!indexKorean(provider,item))storeIndexKorean(provider,item,map.get(item.anilistId));saveDisplayTitles();index.wikidata=Date.now();saveCatalogIndex(provider)}catch{/* next run */}
+    try{const map=await wikidataKoreanByAnilist();for(const item of index.items)if(item.anilistId&&map.has(item.anilistId)&&!indexKorean(provider,item))storeIndexKorean(provider,item,map.get(item.anilistId),'wikidata');saveDisplayTitles();index.wikidata=Date.now();saveCatalogIndex(provider)}catch{/* next run */}
   }
   reportCatalogIndex(provider,index.items.length?'waiting':'error');
 }
@@ -989,7 +1094,7 @@ async function lookupCatalogKorean(provider){
       // A title read from the series page (Animenosub) changes the list itself.
       try{if(item.slugTitle){await CATALOGS[provider].title?.(item);titled=true}}catch{/* the slug title still works */}
       const ko=(await tmdbKoreanTitles([item.title],{light:true}).catch(()=>[])).find(hasHangul);
-      index.tried[item.id]=Date.now();if(ko)storeIndexKorean(provider,item,ko);
+      index.tried[item.id]=Date.now();if(ko)storeIndexKorean(provider,item,ko,'tmdb');
     }));
     if(++done%50===0){saveDisplayTitles();saveCatalogTried(provider);if(titled){saveCatalogIndex(provider);titled=false}}
     await new Promise(resolve=>setTimeout(resolve,200));
@@ -1083,12 +1188,29 @@ function communitySeason(text=''){
 // "Part 2" and "Mob Psycho 100" are not seasons.
 function titleSeason(text=''){
   const value=String(text).normalize('NFKC').trim(),season=communitySeason(value);if(season!=null)return season;
-  const digit=value.match(/([a-z]+)[!?'’)]*\s*([2-9])$/i);if(digit&&!/^(?:no|vol|part|cour|lv|level|ep|episode|chapter|act|phase|movie)$/i.test(digit[1]))return Number(digit[2]);
+  const digit=value.match(/([a-z]+)[!?'’)]*\s*([2-9])$/i);if(digit&&!/^(?:no|vol|part|cour|lv|level|ep|episode|chapter|chapters|act|phase|movie|film|special|specials|ova|oad|recap|arc)$/i.test(digit[1]))return Number(digit[2]);
+  if(/◎/.test(value))return 2;
   const roman=value.match(/\s(II|III|IV)$/);return roman?{II:2,III:3,IV:4}[roman[1]]:null;
 }
-// A later season keeps its number when the Korean name has none ("장송의 프리렌" for Season 2 → "… 2기").
-function withSeason(ko,title){
-  const season=titleSeason(title);return ko&&!hasHangul(title)&&season>1&&communitySeason(ko)==null&&!/\d\s*$/.test(ko)?`${ko} ${season}기`:ko;
+// Korean names from Wikidata (and AniList synonyms) often carry the article's disambiguation ("헌터 × 헌터 (2011년
+// 애니메이션)", "봇치 더 록! (애니메이션 1기)", "나 혼자만 레벨업 1화") or belong to another work ("진격의 거인(비디오 게임
+// 시리즈)"): the first is cut off, the second dropped.
+const NOT_ANIME=/\([^()]*(?:게임|드라마|실사|소설|만화|웹툰|영화 시리즈|음반|노래)[^()]*\)/;
+function cleanKoreanTitle(value=''){
+  const text=String(value||'').normalize('NFC').trim();if(NOT_ANIME.test(text))return '';
+  return text.replace(/\s*\([^()]*(?:애니메이션|애니|TV|\d{4}년)[^()]*\)/g,'').replace(/\s*애니메이션(?:\s*1\s*기)?\s*$/,'').replace(/\s+1\s*기\s*$/,'').replace(/\s+\d+\s*화\s*$/,'').replace(/\s+/g,' ').trim();
+}
+// A season the Korean name already shows: "2기", "시즌 2", "2nd Season", a roman numeral ("무직전생 Ⅱ"), a closing number.
+const hasSeasonMark=ko=>communitySeason(ko)!=null||/[ⅡⅢⅣⅤⅥ]|(?:^|[\s~:])(?:II|III|IV|V|VI)(?=$|[\s~:!])|\d\s*$/.test(String(ko).normalize('NFC'));
+// The name shown for a work with an English (provider) title: its Korean name cleaned, a later season's number when the
+// name has none ("장송의 프리렌" for Season 2 → "… 2기"; never "1기"), and OVA / 스페셜 for those when the name is the
+// series' own ("오늘부터 신령님" for its OVA).
+function withSeason(ko,title,type=''){
+  if(!ko||hasHangul(title))return ko||'';
+  ko=cleanKoreanTitle(ko);if(!ko)return '';
+  const season=titleSeason(title);if(season>1&&!hasSeasonMark(ko))ko=`${ko} ${season}기`;
+  if(/^(?:OVA|OAD|SPECIAL)$/i.test(type)&&!/OVA|OAD|스페셜|특별/i.test(ko))ko=`${ko} ${/SPECIAL/i.test(type)?'스페셜':'OVA'}`;
+  return ko;
 }
 // The season a subtitle search asks for: the searched (usually Korean) title's own, else the provider title's. A Korean
 // title ending with that same number ("마크로스 7" for "Macross 7") names the work, not a season.
@@ -1592,17 +1714,21 @@ app.whenReady().then(async () => {
     if(key)subtitleStore.save(key,{source:'jimaku',label:'Jimaku 자막',path:result.path,assPath:result.assPath,fonts:result.fonts});
     return {path:result.path,assPath:result.assPath,fonts:result.fonts,label:'Jimaku 일본어 자막'};
   };
-  const translateDownloadJimaku=async(job,file)=>{
+  // primary: nothing Korean was found; beside a Korean subtitle the translation goes to the end of the episode's list, as
+  // the player's translateAlongside does, so the Korean one is still what the episode opens with.
+  const translateDownloadJimaku=async(job,file,primary=true)=>{
     const provider=jimakuTranslation();if(!provider)return null;
     const title=job.displayTitles?.ko||job.title||'',result=await translator().translate({file,title,provider,context:await translationContext(job.anime||{},title)});
     const label=`${result.engine||'AI'} 번역 (Jimaku)`,key=downloadSubtitleKey(job);
-    if(key&&!result.failed)subtitleStore.save(key,{source:'gemini',label,path:result.path});
+    if(key&&!result.failed)subtitleStore.save(key,{source:'gemini',label,path:result.path,behind:!primary});
     return {path:result.path,label};
   };
   // Android LilacDownloadService: AniSkip timestamps are saved with the download (one retry after 500 ms);
   // without them the local analyzer runs over the anime's other downloaded episodes.
   const findDownloadSkips=async job=>{
-    const anilistId=job.episode?.anilistId||job.anime?.anilistId||null,malId=job.episode?.malId||job.anime?.malId||null,lookup=()=>androidOnlineSkipTimes({episode:job.episodeNumber,anilistId,malId,duration:job.duration||0}).catch(()=>[]);
+    let anilistId=job.episode?.anilistId||job.anime?.anilistId||null,malId=job.episode?.malId||job.anime?.malId||null;
+    if(!anilistId&&!malId&&job.anime?.provider==='ohli24')({anilistId=null,malId=null}=await ohliAnilist(String(job.anime.title_japanese||''),job.anime.year)||{});
+    const lookup=()=>androidOnlineSkipTimes({episode:job.episodeNumber,anilistId,malId,duration:job.duration||0}).catch(()=>[]);
     let segments=await lookup();if(!segments.length){await new Promise(resolve=>setTimeout(resolve,500));segments=await lookup()}
     return segments;
   };
@@ -1745,6 +1871,9 @@ app.whenReady().then(async () => {
         const items=animenosubList(cards.filter((_,node)=>!/upcoming/i.test($(node).find('.ans-status-ribbon').text())).map((_,node)=>$.html(node)).get().join(''));
         const fresh=items.filter(item=>!data.some(known=>known.mal_id===item.mal_id));data.push(...fresh);if(!cards.length)break;
       }
+    } else if (provider === 'ohli24') {
+      // 이번 시즌 신작: the airing list (updated first); it has no separate "airing" rail.
+      if(current)data.push(...ohliItems(await ohliFetch(`${OHLI24_WEB}/ing`)));
     } else throw new Error('지원하지 않는 콘텐츠 소스입니다.');
     return {data,label:current?`${year} ${['겨울','봄','여름','가을'][index]}`:''};
   }
@@ -1757,6 +1886,12 @@ app.whenReady().then(async () => {
     if (provider === 'animenosub') {
       const page=Math.max(1,Number(offset)||1),base=query?`${ANIMENOSUB_WEB}/?s=${encodeURIComponent(query)}`:(page===1?`${ANIMENOSUB_WEB}/`:`${ANIMENOSUB_WEB}/page/${page}/`),url=query&&page>1?`${ANIMENOSUB_WEB}/page/${page}/?s=${encodeURIComponent(query)}`:base;const data=animenosubList(await providerFetch(url,{referer:`${ANIMENOSUB_WEB}/`}),undefined,{onlyResults:Boolean(query)});return {data,offset:page,nextOffset:page+1,done:data.length===0};
     }
+    if (provider === 'ohli24') {
+      // A search is one page; the list is the home page's (recommended), then the finished shows page by page.
+      if(query)return {data:ohliItems(await ohliFetch(`${OHLI24_WEB}/search/keyword-${encodeURIComponent(query)}.html`)),offset:1,nextOffset:null,done:true};
+      const page=Math.max(1,Number(offset)||1),data=ohliItems(await ohliFetch(page===1?`${OHLI24_WEB}/`:`${OHLI24_WEB}/finished/${page-1}-1.html`));
+      return {data,offset:page,nextOffset:page+1,done:page>1&&!data.length};
+    }
     if (provider === 'miruro') {
       // offset is the cursor of the next page (none for the first).
       const root=await miruroApi('anime',query?{q:query,limit:15,sort:'-popularity',cursor:offset||undefined}:{sort:'-popularity',limit:15,cursor:offset||undefined});
@@ -1766,6 +1901,7 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('provider:detail', async (_, anime) => {
     if (anime.provider === 'miruro') return miruroDetail(anime);
+    if (anime.provider === 'ohli24') return ohliDetail(anime);
     const html=await providerFetch(anime.url,{referer:new URL(anime.url).origin+'/'});
     const detail=anime.provider==='animenosub'?animenosubDetail(html,anime):anime.provider==='reanime'?await reanimeDetail(anime,html):{...anime,synopsis:cheerio.load(html)('meta[name=description]').attr('content')||anime.synopsis};
     const episodes=anime.provider==='reanime'?await reanimeEpisodes(detail,html):providerEpisodes(html,anime.provider,detail);
@@ -1776,7 +1912,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('provider:resolve', async (_, episode) => {
     playerStreamHeaders = null;
     const stream = await resolveProviderEpisode(episode);
-    if (episode?.provider === 'miruro') playerStreamHeaders = stream.headers || null;
+    if (['miruro', 'ohli24'].includes(episode?.provider)) playerStreamHeaders = stream.headers || null;
     return stream;
   });
   ipcMain.handle('provider:subtitle-tracks', (_, episode) => reanimeSubtitleTracks(episode));
@@ -1812,7 +1948,9 @@ app.whenReady().then(async () => {
   // Android OpEdSkipResolver: online playback uses AniSkip only; a downloaded episode uses the AniSkip
   // timestamps saved with the download, then the local audio analyzer over other downloaded episodes.
   ipcMain.handle('oped:get', async (event, request = {}) => {
-    const {title='',episode,duration,currentUrl,candidates=[],anilistId=null,malId=null,audioAnalysis=true,offline=false,jobId=null}=request;if(!/^(https?|file):/i.test(currentUrl||'')||!Number.isFinite(Number(duration)))return [];
+    let {title='',episode,duration,currentUrl,candidates=[],anilistId=null,malId=null,nativeTitle='',year='',audioAnalysis=true,offline=false,jobId=null}=request;if(!/^(https?|file):/i.test(currentUrl||'')||!Number.isFinite(Number(duration)))return [];
+    // 애니24 has no AniList id of its own: it is found by the original title (see ohliAnilist).
+    if(!anilistId&&!malId&&nativeTitle)({anilistId=null,malId=null}=await ohliAnilist(String(nativeTitle),year)||{});
     const status=message=>event.sender.send('oped:status',message);
     if(!offline){status('AniSkip 타임스탬프 확인 중');try{return await androidOnlineSkipTimes({episode,anilistId,malId,duration})}catch{return []}}
     const saved=downloadManager.jobs.find(job=>job.id===jobId)?.skipSegments;if(Array.isArray(saved)&&saved.length)return saved;

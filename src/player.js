@@ -41,7 +41,7 @@ function syncPlayerSettingsUI() {
   $('#psAutoSkip').checked = playerFlag('playerAutoSkip', false);
   $('#assEffectsHint').textContent = assEffectsEnabled() ? '노래 가사·간판 번역 등의 위치·색·움직임을 그대로 보여 줍니다' : '효과를 줄여 가볍게 보여 줍니다 (영상이 버벅일 때)';
   const source = localStorage.getItem('subtitleSource') || 'reanime';
-  $$('#psSubtitleSources button').forEach(button => button.classList.toggle('selected', button.dataset.source === source));
+  $$('#psSubtitleSources button').forEach(button => button.classList.toggle('selected', button.dataset.source === activeSubtitleSource()));
   const size = Number(localStorage.getItem('subtitleSize') || 100), position = Number(localStorage.getItem('subtitlePosition') || 12), outline = Number(localStorage.getItem('vttOutline') || 2), sync = Number(localStorage.getItem('subtitleSync') || 0);
   $('#psSubtitleSize').value = String(size); $('#psSizeLabel').textContent = `${size}%`;
   $('#psSubtitlePosition').value = String(position); $('#psPositionLabel').textContent = `${position}%`;
@@ -79,7 +79,7 @@ function renderDiscoveredFonts() {
 // may match the video better. Shown while Anissia is the chosen source or the playing subtitle; loaded once
 // per title. Makers on blogs that cannot be read are shown disabled.
 let anissiaMakerKey = null, anissiaMakerData = null;
-const anissiaChosen = () => localStorage.getItem('subtitleSource') === 'anissia' || currentSubtitle?.source === 'anissia';
+const anissiaChosen = () => openSheet() === 'anissia';
 async function loadAnissiaMakers() {
   const title = $('#skipTitle').value.trim(), box = $('#anissiaMakers');
   if (!title || !anissiaChosen()) { box.classList.add('hidden'); return; }
@@ -179,10 +179,32 @@ function applyVttLayout() {
   }
 }
 
-// Android subtitle source chips: switch to that source's subtitle for this episode.
+// Android subtitle source chips: switch to that source's subtitle for this episode. A chip whose subtitle was not found
+// goes dark again (the one on screen is lit); a chip with a list to pick from (Jimaku, Re:Anime tracks, Anissia makers)
+// stays lit while its list is open.
 async function selectSubtitleSource(source) {
+  await switchSubtitleSource(source);
+  const context = currentPlaybackContext;
+  if (context.pressedSource === source && context.pressedFor === currentSubtitle && !['jimaku', 'reanime', 'anissia'].includes(source)) { context.pressedSource = null; renderSubtitleSheet(); }
+}
+async function switchSubtitleSource(source) {
   // Jimaku is picked by hand per episode (a list of files), so it is not kept as the default source.
   if (source === 'jimaku') { openJimaku(); return; }
+  // AI 번역: the episode's machine translation, else one made now from the best source (Jimaku, then the site's Japanese
+  // and English tracks), with the side 자막 자동 번역 picks or whichever is set up; the series goes on in it. Not kept as
+  // the default source (each episode's translation is looked for first anyway).
+  if (source === 'ai') {
+    const key = subtitleStoreKey(), requestId = playbackRequestId; currentPlaybackContext.sheetSource = null; pressSubtitleSource('ai'); preferAiSubtitle(true); renderSubtitleSheet();
+    const translated = (key ? await window.lilac.savedSubtitles(key).catch(() => []) : []).find(item => item.source === 'gemini');
+    if (translated) { applySavedSubtitle(translated); return; }
+    translationSettings = await window.lilac.geminiSettings().catch(() => translationSettings);
+    const provider = autoTranslateProvider() || autoProvider();
+    if (!provider) { toast('설정 > 자막 자동 번역에서 번역 API 키나 로컬 AI 모델을 먼저 준비해 주세요.'); return; }
+    if (!await autoTranslate(() => requestId !== playbackRequestId, true, provider) && requestId === playbackRequestId) $('#subtitleState').textContent = '번역할 자막(Jimaku, 일본어·영어 트랙)이 없습니다.';
+    return;
+  }
+  // The list of a source with several to pick from opens under the chips.
+  currentPlaybackContext.sheetSource = ['reanime', 'anissia'].includes(source) ? source : null; pressSubtitleSource(source); renderSubtitleSheet();
   if (KOREAN_SOURCES.includes(source)) preferAiSubtitle(false); // back to a Korean subtitle (see prefersAiSubtitle)
   localStorage.setItem('subtitleSource', source);
   if ($('#subtitleSource')) { $('#subtitleSource').value = source; syncSettingChoices(); }

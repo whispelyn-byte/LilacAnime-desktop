@@ -133,6 +133,8 @@ class DownloadManager {
         const headers={...(stream?.headers||{})};if(stream?.referer&&!headers.Referer)headers.Referer=stream.referer;
         if(Object.keys(headers).length)args.push('-headers',Object.entries(headers).map(([k,v])=>`${k}: ${v}`).join('\r\n')+'\r\n');
         args.push('-rw_timeout','180000000'); // Android MpvHlsDownloader read timeout: 180 s
+        // A playlist whose address does not end in .m3u8 (애니24's) is read as HLS only when told.
+        if(stream.hls)args.push('-f','hls','-allowed_extensions','ALL');
         args.push('-i',stream.url,'-map','0:v?','-map','0:a?');
       }
       args.push('-c','copy','-movflags','+faststart','-f','mp4',job.partialPath);
@@ -198,6 +200,8 @@ class DownloadManager {
 
   // Subtitles are fetched right after the video so the episode also plays offline with them.
   async attachSubtitle(job, stream) {
+    // 애니24: the Korean subtitle is in the video itself.
+    if (stream?.burnedKorean || job.episode?.provider === 'ohli24') { job.subtitleChecked = true; return; }
     let found = null;
     try { found = await this.findSubtitle?.(job, stream); } catch { /* fall back to the stream's own subtitle */ }
     job.subtitleChecked = true;
@@ -241,7 +245,8 @@ class DownloadManager {
     if (!this.jobs.includes(job) || !this.translateJimaku) return;
     job.stage = 'translate'; job.translateProgress = 'Jimaku 자막'; this.save();
     try {
-      const result = await this.translateJimaku(job, file.path);
+      // Not beside a Korean subtitle: the episode's own file is the Japanese one, or none (English burned into the video).
+      const result = await this.translateJimaku(job, file.path, primary || !job.subtitlePath);
       if (!primary || !result || !this.jobs.includes(job) || !fs.existsSync(job.filePath || '')) return;
       const out = job.filePath.replace(/\.mp4$/i, '.ko.vtt'); fs.copyFileSync(result.path, out);
       job.subtitleOriginals = [...(job.subtitleOriginals || []), job.subtitlePath, job.subtitleAssPath].filter(item => item && item !== out);
