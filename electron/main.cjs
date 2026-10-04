@@ -2063,7 +2063,13 @@ app.whenReady().then(async () => {
       properties: ['openFile'],
       filters: [{ name: 'Subtitle', extensions: ['vtt', 'srt', 'ass', 'ssa', 'smi', 'sami'] }]
     });
-    if(result.canceled)return null;return subtitleResult(result.filePaths[0]);
+    if(result.canceled)return null;
+    // Copied into the app's subtitles (with the fonts beside an ASS file), so its VTT copy is made there rather than in the
+    // user's folder and it can be translated like any other subtitle.
+    const source=result.filePaths[0],dir=path.join(app.getPath('userData'),'subtitles','user',String(Date.now())),copy=path.join(dir,path.basename(source));
+    fs.mkdirSync(dir,{recursive:true});fs.copyFileSync(source,copy);
+    if(/\.(ass|ssa)$/i.test(source))for(const name of fs.readdirSync(path.dirname(source)).filter(name=>/\.(ttf|otf|ttc|woff2?)$/i.test(name)).slice(0,60))try{fs.copyFileSync(path.join(path.dirname(source),name),path.join(dir,name))}catch{/* the ASS file still shows */}
+    return subtitleResult(copy);
   });
   // Default ASS font: the user's choice (설정 > 기본 자막 폰트) or a Korean system font,
   // since libass' bundled fallback font has no Hangul glyphs.
@@ -2092,7 +2098,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('subtitle:translate',async(event,{path:file='',title='',id=0,provider='',anime=null}={})=>{
     const resolved=path.resolve(String(file||''));
     // App subtitle files and the tracks saved with downloads.
-    if(![path.join(app.getPath('userData'),'subtitles'),downloadManager?.root].some(root=>root&&resolved.startsWith(root+path.sep))||!/\.vtt$/i.test(resolved)||!fs.existsSync(resolved))throw new Error('번역할 자막 파일이 없습니다.');
+    const savedByUser=Object.values(subtitleStore.data).some(items=>items.some(item=>item.source==='user'&&path.resolve(item.path)===resolved));
+    if(!savedByUser&&![path.join(app.getPath('userData'),'subtitles'),downloadManager?.root].some(root=>root&&resolved.startsWith(root+path.sep))||!/\.vtt$/i.test(resolved)||!fs.existsSync(resolved))throw new Error('번역할 자막 파일이 없습니다.');
     const send=value=>{if(!event.sender.isDestroyed())event.sender.send('translate:progress',{id,...value})};
     const context=await translationContext(anime||{},String(title||''));
     const result=await translator().translate({file:resolved,id:Number(id)||null,title:String(title||''),provider:['cloud','gemini','local'].includes(provider)?provider:'',context,progress:(done,total)=>send({done,total}),status:text=>send({status:text})});
