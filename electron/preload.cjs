@@ -49,6 +49,7 @@ contextBridge.exposeInMainWorld('lilac', {
   removeSavedSubtitle: (key, id) => ipcRenderer.invoke('subtitle-store:remove', key, id),
   subtitleCacheUsage: () => ipcRenderer.invoke('subtitle-cache:usage'),
   cleanSubtitleCache: () => ipcRenderer.invoke('subtitle-cache:clean'),
+  clearSubtitleCache: () => ipcRenderer.invoke('subtitle-cache:clear-all'),
   mpvStatus: () => ipcRenderer.invoke('mpv:status'),
   mpvPlay: (url, subtitlePath, title) => ipcRenderer.invoke('mpv:play', url, subtitlePath, title),
   setPlayerFullscreen: enabled => ipcRenderer.invoke('player:fullscreen', Boolean(enabled)),

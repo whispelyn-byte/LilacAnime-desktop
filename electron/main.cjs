@@ -1925,6 +1925,7 @@ app.whenReady().then(async () => {
   // hand, and by themselves a minute after start once a month old.
   ipcMain.handle('subtitle-cache:usage',()=>subtitleStore.usage());
   ipcMain.handle('subtitle-cache:clean',()=>({...subtitleStore.clean(),...subtitleStore.usage()}));
+  ipcMain.handle('subtitle-cache:clear-all',()=>({...subtitleStore.clearAll(),...subtitleStore.usage()}));
   setTimeout(()=>{try{subtitleStore.clean({olderThan:30*24*60*60*1000})}catch{}},60000).unref?.();
   // The window buttons Windows draws over the page: in the theme's colors, and over the player in a window white on the
   // video, or not drawn at all while the player's controls are hidden (they come back with the controls).

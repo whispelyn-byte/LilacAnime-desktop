@@ -57,20 +57,23 @@ class SubtitleStore {
   // The files under subtitles/ that no saved subtitle uses: translations and their kept lines, Jimaku and blog
   // downloads, partial results. A saved ASS subtitle keeps its whole folder (its fonts sit next to it); a file changed
   // within the hour may belong to a translation still running.
-  unused({ olderThan = 0 } = {}) {
+  // all: every file, the saved ones too (모든 자막 지우기), except what changed in the last ten minutes.
+  unused({ olderThan = 0, all = false } = {}) {
     const used = new Set(), folders = new Set(), now = Date.now(), files = [];
-    for (const items of Object.values(this.data)) for (const item of items) for (const file of [item.path, item.assPath]) if (file) { used.add(path.resolve(file)); if (/\.(ass|ssa)$/i.test(file)) folders.add(path.dirname(path.resolve(file))); }
+    if (!all) for (const items of Object.values(this.data)) for (const item of items) for (const file of [item.path, item.assPath]) if (file) { used.add(path.resolve(file)); if (/\.(ass|ssa)$/i.test(file)) folders.add(path.dirname(path.resolve(file))); }
     const walk = dir => { let entries = []; try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
       for (const entry of entries) {
         const file = path.join(dir, entry.name);
         if (entry.isDirectory()) { walk(file); continue; }
         let stat; try { stat = fs.statSync(file); } catch { continue; }
         const age = now - stat.mtimeMs;
-        files.push({ file, size: stat.size, unused: !used.has(file) && !folders.has(dir) && age > Math.max(olderThan, 60 * 60 * 1000) });
+        files.push({ file, size: stat.size, unused: !used.has(file) && !folders.has(dir) && age > Math.max(olderThan, all ? 10 * 60 * 1000 : 60 * 60 * 1000) });
       } };
     walk(path.resolve(this.managedRoot));
     return files;
   }
+  // 모든 자막 지우기: the saved subtitles of every episode are forgotten and their files removed with the rest.
+  clearAll() { this.data = {}; this.write(); return this.clean({ all: true }); }
   usage() { const files = this.unused(); return { total: files.reduce((sum, item) => sum + item.size, 0), removable: files.filter(item => item.unused).reduce((sum, item) => sum + item.size, 0) }; }
   clean(options = {}) {
     let removed = 0, bytes = 0;

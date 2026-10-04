@@ -955,6 +955,8 @@ $('#geminiDownloads').onchange=()=>saveTranslation({translateDownloads:$('#gemin
 const megabytes=bytes=>bytes>=1e9?`${(bytes/1e9).toFixed(1)}GB`:`${Math.max(bytes?0.1:0,bytes/1e6).toFixed(1)}MB`;
 async function renderSubtitleCache(message){try{const usage=await window.lilac.subtitleCacheUsage();$('#subtitleCacheState').textContent=`${message?`${message} `:''}자막 파일 ${megabytes(usage.total)} 중 ${megabytes(usage.removable)}를 지울 수 있어요.`;$('#cleanSubtitleCache').disabled=!usage.removable}catch{$('#subtitleCacheState').textContent='자막 파일 용량을 확인하지 못했습니다.'}}
 $('#cleanSubtitleCache').onclick=async()=>{const button=$('#cleanSubtitleCache');button.disabled=true;try{const result=await window.lilac.cleanSubtitleCache();renderSubtitleCache(`파일 ${result.removed}개(${megabytes(result.bytes)})를 지웠어요.`)}catch(error){toast(`지우지 못했습니다: ${ipcMessage(error)}`);button.disabled=false}};
+// 모든 자막 지우기: the saved subtitles and translations of every episode too (fetched and translated again when watched).
+$('#clearSubtitleCache').onclick=async()=>{if(!confirm('회차마다 저장된 자막과 번역본까지 모든 자막 파일을 지울까요?\n다음에 볼 때 자막을 다시 받고, 번역도 다시 해야 해요.'))return;const button=$('#clearSubtitleCache');button.disabled=true;try{const result=await window.lilac.clearSubtitleCache();renderSubtitleCache(`파일 ${result.removed}개(${megabytes(result.bytes)})를 지웠어요.`)}catch(error){toast(`지우지 못했습니다: ${ipcMessage(error)}`)}finally{button.disabled=false}};
 // 번역 방식 (번역 API / 로컬 AI) and the local models: presets downloaded with progress, or a GGUF file added from disk.
 const localModelProgress={};
 async function saveTranslation(change){try{renderTranslationSettings(await window.lilac.setGeminiSettings(change))}catch(error){toast(`저장하지 못했습니다: ${ipcMessage(error)}`)}}
