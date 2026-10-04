@@ -42,7 +42,7 @@ function createTranslator(userData) {
       openaiKey: text('openaiKey'), openaiModel: text('openaiModel'), openaiModels: list('openaiModels'),
       deeplKey: text('deeplKey'),
       qwenKey: text('qwenKey'), qwenModel: text('qwenModel'), qwenModels: list('qwenModels'), qwenRegion: value.qwenRegion === 'china' ? 'china' : 'international',
-      localModel: installedModel(String(value.localModel || 'hy-mt2-1.8b')),
+      localModel: installedModel(String(value.localModel || 'gemma-4-e4b')),
       // How a picked Jimaku file is translated by itself: 'off', 'cloud' or 'local' ('gemini' before the other APIs came;
       // older settings still: on = whichever is set up).
       jimakuTranslate: value.jimakuTranslate === 'gemini' ? 'cloud' : ['off', 'cloud', 'local'].includes(value.jimakuTranslate) ? value.jimakuTranslate : value.autoJimaku === false ? 'off' : 'cloud' };

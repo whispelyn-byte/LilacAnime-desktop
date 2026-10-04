@@ -11,16 +11,22 @@ const { spawn } = require('child_process');
 const AdmZip = require('adm-zip');
 const { characterTerms, termsFor } = require('./anime-glossary.cjs');
 
-// Best translation first (Horimiya episode 1 on a GTX 1050 Ti: Hy-MT2 30B-A3B got the meaning and the names right
-// most often, ja-ko-vn next; the 1.8B model is the quickest; Hy-MT2's paper puts its 7B close to the 30B-A3B). Android's
-// choices were HY-MT1.5 (its default) and the Japanese -> Korean VN model it used before; Hy-MT2 (May 2026) replaced
-// HY-MT1.5, which stays listed only where it was downloaded (legacy), so a PC using it keeps working.
+// Best translation first, by Horimiya episode 1 on a GTX 1050 Ti + Ryzen 5 5600 + 32 GB (16 lines spread over the
+// episode, against Gemini): Gemma 4 26B-A4B made no mistake there (12 min); Hy-MT2 7B (10 min) and Gemma 4 E4B (5 min)
+// a few slips; Hy-MT2 30B-A3B (7 min) dropped names and used 존댓말 between friends; the 1.8B model (2 min) got about a
+// third of the lines wrong. Gemma 4 E4B is the default: good and quick on a small card. Android's choices were HY-MT1.5
+// (its default) and the Japanese -> Korean VN model it used before; Hy-MT2 (May 2026) replaced HY-MT1.5, which stays
+// listed only where it was downloaded (legacy), so a PC using it keeps working.
 const MODELS = [
-  // A mixture of experts: 30B in all but about 3B worked per word, so it runs from memory on the processor.
-  { id: 'hy-mt2-30b-a3b', label: 'Hy-MT2 30B-A3B', note: '18GB · 가장 정확함 · 램 24GB 이상', repo: 'tencent/Hy-MT2-30B-A3B-GGUF', file: 'Hy-MT2-30B-A3B-Q4_K_M.gguf', size: 18240e6, ram: 24 },
+  // Google's general models in its own 4-bit (QAT) files. The 26B mixture of experts works about 4B per word, so it runs
+  // from memory on the processor; E4B fits a 4 GB card nearly whole (42 of 43 layers).
+  { id: 'gemma-4-26b-a4b', label: 'Gemma 4 26B-A4B', note: '14.4GB · 가장 정확함 · 램 24GB 이상', repo: 'google/gemma-4-26B-A4B-it-qat-q4_0-gguf', file: 'gemma-4-26B_q4_0-it.gguf', size: 14440e6, ram: 24 },
   { id: 'hy-mt2-7b', label: 'Hy-MT2 7B', note: '4.6GB · 정확함 · 그래픽카드 메모리 6GB 이상이면 빠름', repo: 'tencent/Hy-MT2-7B-GGUF', file: 'Hy-MT2-7B-Q4_K_M.gguf', size: 4620e6 },
+  { id: 'gemma-4-e4b', label: 'Gemma 4 E4B', note: '기본 · 5.2GB · 빠르고 정확함', repo: 'google/gemma-4-E4B-it-qat-q4_0-gguf', file: 'gemma-4-E4B_q4_0-it.gguf', size: 5150e6 },
+  // A mixture of experts: 30B in all but about 3B worked per word, so it runs from memory on the processor.
+  { id: 'hy-mt2-30b-a3b', label: 'Hy-MT2 30B-A3B', note: '18GB · 램 24GB 이상', repo: 'tencent/Hy-MT2-30B-A3B-GGUF', file: 'Hy-MT2-30B-A3B-Q4_K_M.gguf', size: 18240e6, ram: 24 },
   { id: 'ja-ko-vn-7b', label: 'ja-ko-vn 7B', note: '4.6GB · 일본어 → 한국어 특화', repo: 'hell0ks/ja-ko-vn-7b-v1-gguf', file: 'model-Q4_K_M.gguf', size: 4630e6 },
-  { id: 'hy-mt2-1.8b', label: 'Hy-MT2 1.8B', note: '기본 · 1.1GB · 빠름', repo: 'tencent/Hy-MT2-1.8B-GGUF', file: 'Hy-MT2-1.8B-Q4_K_M.gguf', size: 1133e6 },
+  { id: 'hy-mt2-1.8b', label: 'Hy-MT2 1.8B', note: '1.1GB · 가장 빠름 · 가끔 뜻을 틀림', repo: 'tencent/Hy-MT2-1.8B-GGUF', file: 'Hy-MT2-1.8B-Q4_K_M.gguf', size: 1133e6 },
   { id: 'hy-mt-7b', label: 'HY-MT1.5 7B', note: '이전 버전 · Hy-MT2 7B를 권장', repo: 'tencent/HY-MT1.5-7B-GGUF', file: 'HY-MT1.5-7B-Q4_K_M.gguf', size: 4620e6, legacy: true },
   { id: 'hy-mt-1.8b', label: 'HY-MT1.5 1.8B', note: '이전 버전 · Hy-MT2 1.8B를 권장', repo: 'tencent/HY-MT1.5-1.8B-GGUF', file: 'HY-MT1.5-1.8B-Q4_K_M.gguf', size: 1133e6, legacy: true }
 ];
@@ -59,10 +65,14 @@ const PARALLEL = 4, IDLE_STOP = 30 * 1000;
 //   it, only got slower (67 → 123 s), so it has none.
 // - ja-ko-vn: trained on the Japanese line alone (no instruction: its chat template adds one), names as a system
 //   message "岡部倫太郎=오카베 린타로,…" (the template turns it into a terminology turn), temperature 0.1, top-p 0.9.
+// - Gemma 4: a general model, told what it does in a system message, with the terminology list and the two lines
+//   before (as context only); its model card's sampling (temperature 1, top-p 0.95, top-k 64) and its thinking off
+//   (Gemma 4's template turns it on with enable_thinking; Android's adapter keeps it off too).
 // - Anything else (Qwen3 Instruct and other chat models): the instruction with the list in English, Qwen's sampling.
 const INSTRUCTION = 'Translate the following segment into Korean, without additional explanation.';
 const HY_MT2_INSTRUCTION = 'Translate the following text into Korean. Note that you should only output the translated result without any additional explanation:';
-function request(source, terms, kind, before = []) {
+// cast: the work's main characters ("堀京子 = 호리 쿄코 (female)"), for Gemma, which can tell from them who says 형 or 오빠.
+function request(source, terms, kind, before = [], cast = []) {
   const user = content => [{ role: 'user', content }];
   if (kind === 'jako') return { messages: [...(terms.length ? [{ role: 'system', content: terms.map(term => `${term.ja}=${term.ko}`).join(',') }] : []), { role: 'user', content: source }], temperature: 0.1, top_p: 0.9, repeat_penalty: 1.05 };
   if (kind === 'hy-mt2' || kind === 'hy-mt2-moe') {
@@ -70,6 +80,17 @@ function request(source, terms, kind, before = []) {
     const reference = terms.length ? `Reference the following translations:\n${terms.map(term => `${term.ja} translates to ${term.ko}`).join('\n')}\n\n` : '';
     if (kind === 'hy-mt2' && before.length) return { messages: user(`[Background Information]\n${before.join('\n')}\n\n${reference}Please translate the following text into Korean, taking the provided background information into consideration.\n\n[Source Text]\n${source}`), ...sampling };
     return { messages: user(`${reference}${HY_MT2_INSTRUCTION}\n\n${source}`), ...sampling };
+  }
+  if (kind === 'gemma') {
+    const parts = [...(terms.length ? [`Names and terms (use these Korean spellings):\n${terms.map(term => `${term.ja} = ${term.ko}`).join('\n')}`] : []), ...(before.length ? [`Previous lines (context only, do not translate them):\n${before.join('\n')}`] : []), `Translate this line:\n${source}`];
+    const system = [
+      'You translate Japanese anime subtitles into natural spoken Korean, keeping each speaker\'s tone (반말 or 존댓말 as the scene calls for).',
+      'Words for family follow the speaker: お兄ちゃん / 兄さん → 형 from a boy, 오빠 from a girl; お姉ちゃん / 姉さん → 누나 from a boy, 언니 from a girl.',
+      'A speaker\'s name or a sound in brackets at the start stays in brackets, translated: （創太） → (소타), （ため息） → (한숨). Keep the line breaks.',
+      ...(cast.length ? [`Main characters (Japanese name = Korean spelling, gender):\n${cast.join('\n')}`] : []),
+      'Answer with the Korean line only: no notes, quotes or romanization.'
+    ].join('\n');
+    return { messages: [{ role: 'system', content: system }, { role: 'user', content: parts.join('\n\n') }], temperature: 0.3, top_p: 0.95, top_k: 64, chat_template_kwargs: { enable_thinking: false } };
   }
   if (kind === 'hy-mt') return { messages: user(terms.length ? `参考下面的翻译：\n${terms.map(term => `${term.ja} 翻译成 ${term.ko}`).join('\n')}\n\n${INSTRUCTION}\n\n${source}` : `${INSTRUCTION}\n\n${source}`), temperature: 0.7, top_p: 0.6, top_k: 20, repeat_penalty: 1.05 };
   return { messages: user(terms.length ? `This is a line from a Japanese anime. Use these Korean translations:\n${terms.map(term => `${term.ja} = ${term.ko}`).join('\n')}\n\n${INSTRUCTION}\n\n${source}` : `${INSTRUCTION}\n\n${source}`), temperature: 0.7, top_p: 0.8, top_k: 20, repeat_penalty: 1.05 };
@@ -79,6 +100,7 @@ function request(source, terms, kind, before = []) {
 function modelKind(model, template = '') {
   const name = `${model.id} ${model.file || ''} ${model.label}`;
   if (/ja-ko-vn|jako/i.test(name) || /일한 번역가|고유명사 및 용어 규칙/.test(template)) return 'jako';
+  if (/gemma-?4/i.test(name) || /<\|turn>/.test(template)) return 'gemma';
   if (/hy-mt2/i.test(name)) return /a3b|30b/i.test(name) ? 'hy-mt2-moe' : 'hy-mt2';
   return /hy-mt/i.test(name) ? 'hy-mt' : 'chat';
 }
@@ -429,6 +451,7 @@ function createLocalAi(userData) {
     if (!model) throw new Error('로컬 AI 모델이 없습니다. 설정 > 자막 자동 번역에서 모델을 받아 주세요.');
     const { port, template } = await start(model, status);
     const names = characterTerms(context.characters || []), kind = modelKind(model, template);
+    const cast = (context.characters || []).slice(0, 15).map(character => { const full = names.find(term => term.ja === String(character.native || '').trim()); return full ? `${full.ja} = ${full.ko}${/^(?:male|female)$/i.test(character.gender) ? ` (${character.gender.toLowerCase()})` : ''}` : ''; }).filter(Boolean);
     // An answer is cut off at a few times the line's length (a subtitle line never needs more), so a model stuck
     // repeating a word gives up its slot in seconds instead of writing 512 tokens.
     const ask = async (body, source) => {
@@ -444,7 +467,7 @@ function createLocalAi(userData) {
     await Promise.all(Array.from({ length: PARALLEL }, async () => {
       // A cancelled run takes no new line; the four being written finish (a few seconds).
       while (next < texts.length && !fatal && !signal?.aborted) {
-        const index = next++, source = texts[index], body = request(source, termsFor(source, names), kind, texts.slice(Math.max(0, index - 2), index));
+        const index = next++, source = texts[index], body = request(source, termsFor(source, names), kind, texts.slice(Math.max(0, index - 2), index), cast);
         try {
           // A Japanese word left in the answer (えっ, 先輩) is asked again, twice at most. ja-ko-vn's temperature of 0.1
           // would give the same answer again, so its second and third tries are less certain.
@@ -464,6 +487,6 @@ function createLocalAi(userData) {
 
 // The prompt a model is asked with, as part of the translation cache key (a changed prompt is not hidden behind
 // translations made with the old one).
-const promptVersion = model => model && modelKind(model) === 'hy-mt2' ? '+context-1' : '';
+const promptVersion = model => !model ? '' : modelKind(model) === 'hy-mt2' ? '+context-1' : modelKind(model) === 'gemma' ? '+gemma-3' : '';
 
 module.exports = { createLocalAi, LOCAL_AI_MODELS: MODELS, promptVersion };

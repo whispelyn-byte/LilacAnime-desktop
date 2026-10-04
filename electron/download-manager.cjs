@@ -18,7 +18,11 @@ const HLS_USER_AGENT = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/53
 
 class DownloadManager {
   constructor({ app, resolveEpisode, resolveLinkkf, findSubtitle, findJimaku, translateJimaku, jimakuTranslates, findSkips, analyzeOpEd, resolveTitles, saveTrack, translateTrack, broadcast }) {
-    this.root = path.join(app.getPath('videos'), 'LilacAnime');
+    // The folder new episodes go to: Videos\LilacAnime, or the one picked in 내 목록 > 다운로드 (an external drive).
+    this.defaultRoot = path.join(app.getPath('videos'), 'LilacAnime');
+    this.settingsFile = path.join(app.getPath('userData'), 'download-settings.json');
+    let saved = ''; try { saved = String(JSON.parse(fs.readFileSync(this.settingsFile, 'utf8')).root || ''); } catch { /* the default */ }
+    this.root = saved && fs.existsSync(saved) ? saved : this.defaultRoot;
     this.stateFile = path.join(app.getPath('userData'), 'downloads.json');
     this.resolveEpisode = resolveEpisode;
     this.resolveLinkkf = resolveLinkkf;
@@ -35,13 +39,48 @@ class DownloadManager {
     this.active = new Map(); // job id -> {job, process}; Android runs up to 2 downloads at once.
     this.jobs = this.read().map(job => ['downloading', 'resolving'].includes(job.status) ? {...job, status:'queued'} : job.stage ? {...job, stage:''} : job);
     fs.mkdirSync(this.root, { recursive: true });
+    this.relink();
     this.save();
     setImmediate(() => { this.pump(); this.backfillSubtitles(); });
   }
 
   read() { try { const value = JSON.parse(fs.readFileSync(this.stateFile, 'utf8')); return Array.isArray(value) ? value : []; } catch { return []; } }
   save() { fs.mkdirSync(path.dirname(this.stateFile), { recursive: true }); fs.writeFileSync(this.stateFile, JSON.stringify(this.jobs, null, 2)); this.broadcast('downloads:changed', this.list()); }
-  list() { return this.jobs.slice().sort((a,b) => (b.updated || 0) - (a.updated || 0)); }
+  // missing: a finished episode whose video is not where it was saved (the folder moved, the drive not plugged in).
+  list() { return this.jobs.slice().sort((a,b) => (b.updated || 0) - (a.updated || 0)).map(job => job.status === 'completed' && !fs.existsSync(job.filePath || '') ? { ...job, missing: true } : job); }
+
+  // Episodes whose files were moved (the series folders copied to an external drive, say) are found again under the
+  // download folder by their series folder and file name; every file of the episode (subtitles, tracks, fonts, poster)
+  // moves with its video. Returns how many were found again.
+  relink() {
+    let found = 0;
+    for (const job of this.jobs) {
+      if (job.status !== 'completed' || !job.filePath || fs.existsSync(job.filePath)) continue;
+      const parts = job.filePath.split(/[\\/]/), candidate = path.join(this.root, ...parts.slice(-2));
+      if (!fs.existsSync(candidate)) continue;
+      const from = path.dirname(job.filePath), to = path.dirname(candidate), move = file => typeof file === 'string' && file.startsWith(from) ? to + file.slice(from.length) : file;
+      for (const key of ['filePath', 'subtitlePath', 'subtitleAssPath', 'posterPath', 'partialPath']) if (job[key]) job[key] = move(job[key]);
+      for (const key of ['subtitleFonts', 'subtitleOriginals']) if (Array.isArray(job[key])) job[key] = job[key].map(move);
+      for (const track of job.subtitleTracks || []) for (const key of ['path', 'assPath', 'translatedPath']) if (track[key]) track[key] = move(track[key]);
+      if (job.posterPath) job.posterUrl = pathToFileURL(job.posterPath).href;
+      found++;
+    }
+    return found;
+  }
+  // A new download folder: kept for the next start, and the episodes moved into it are found again.
+  setRoot(dir) {
+    if (!dir || !fs.existsSync(dir)) throw new Error('폴더를 찾을 수 없습니다.');
+    this.root = dir;
+    fs.writeFileSync(this.settingsFile, JSON.stringify({ root: dir === this.defaultRoot ? '' : dir }));
+    const found = this.relink(); this.save();
+    return { root: this.root, found, missing: this.list().filter(job => job.missing).length };
+  }
+  // 목록 비우기: every entry not downloading now leaves the list; its files stay on disk.
+  clear() {
+    const done = this.jobs.filter(job => !['queued', 'resolving', 'downloading'].includes(job.status));
+    this.jobs = this.jobs.filter(job => !done.includes(job)); this.save();
+    return done.length;
+  }
   key(request) { return `${request.anime?.mal_id || request.anime?.id || request.title}:${request.episode?.provider || request.resolveKind}:${request.episode?.url || request.episode?.token || request.episode?.id || request.episodeNumber}`; }
 
   enqueue(request) {

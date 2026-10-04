@@ -1945,6 +1945,12 @@ app.whenReady().then(async () => {
   ipcMain.handle('downloads:remove',(_,id)=>downloadManager.remove(id));
   ipcMain.handle('downloads:play',(_,id)=>downloadManager.localPlayback(id));
   ipcMain.handle('downloads:open-folder',()=>shell.openPath(downloadManager.root));
+  ipcMain.handle('downloads:root',()=>downloadManager.root);
+  ipcMain.handle('downloads:choose-root',async event=>{
+    const result=await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender),{title:'다운로드 저장 폴더 선택',defaultPath:downloadManager.root,properties:['openDirectory','createDirectory']});
+    return result.canceled||!result.filePaths[0]?null:downloadManager.setRoot(result.filePaths[0]);
+  });
+  ipcMain.handle('downloads:clear',()=>downloadManager.clear());
   // Android OpEdSkipResolver: online playback uses AniSkip only; a downloaded episode uses the AniSkip
   // timestamps saved with the download, then the local audio analyzer over other downloaded episodes.
   ipcMain.handle('oped:get', async (event, request = {}) => {
