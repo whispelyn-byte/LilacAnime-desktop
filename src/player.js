@@ -183,10 +183,24 @@ function applyVttLayout() {
 async function selectSubtitleSource(source) {
   // Jimaku is picked by hand per episode (a list of files), so it is not kept as the default source.
   if (source === 'jimaku') { openJimaku(); return; }
+  if (KOREAN_SOURCES.includes(source)) preferAiSubtitle(false); // back to a Korean subtitle (see prefersAiSubtitle)
   localStorage.setItem('subtitleSource', source);
   if ($('#subtitleSource')) { $('#subtitleSource').value = source; syncSettingChoices(); }
   syncPlayerSettingsUI();
-  const key = subtitleStoreKey(), saved = key ? await window.lilac.savedSubtitles(key).catch(() => []) : [];
+  const key = subtitleStoreKey(), saved = key ? await window.lilac.savedSubtitles(key).catch(() => []) : [], requestId = playbackRequestId;
+  // Re:Anime / Miruro: the site's Korean track; without one the episode's machine translation, the one already made
+  // (from whichever source) or one made now from the best source as the automatic translation picks it (Jimaku, then
+  // the site's Japanese and English tracks); with 자막 자동 번역 off or not set up, the track that would be translated.
+  if (source === 'reanime') {
+    const tracks = currentPlaybackContext.subtitleTracks || [], korean = tracks.find(isKoreanTrack);
+    if (korean) { selectSubtitleTrack(korean); return; }
+    const translated = saved.find(item => item.source === 'gemini');
+    if (translated) { applySavedSubtitle(translated); return; }
+    if (await autoTranslate(() => requestId !== playbackRequestId, true) || requestId !== playbackRequestId) return;
+    const track = translationSourceTrack() || tracks[0];
+    if (track) selectSubtitleTrack(track); else $('#subtitleState').textContent = `${trackSourceLabel()} 자막 트랙이 없습니다.`;
+    return;
+  }
   const entry = saved.find(item => item.source === source);
   if (entry) { applySavedSubtitle(entry); return; }
   if (source === 'kairan' || source === 'csora' || source === 'anissia') {
@@ -194,11 +208,6 @@ async function selectSubtitleSource(source) {
     $('#subtitleState').textContent = `${SUBTITLE_SOURCE_LABELS[source]} 자막을 찾는 중...`;
     try { const result = await window.lilac.findSubtitle(source, title, episode, subtitleSearchAnime()); if (requestId !== playbackRequestId) return; currentSubtitlePath = result.path; attachSubtitle(result.url, communityLabel(source, result), { path: result.path, assUrl: result.assUrl, assPath: result.assPath, fonts: result.fonts, source }); }
     catch { if (requestId === playbackRequestId) $('#subtitleState').textContent = `${SUBTITLE_SOURCE_LABELS[source]} 자막을 찾지 못했습니다.`; }
-    return;
-  }
-  if (source === 'reanime') {
-    const track = (currentPlaybackContext.subtitleTracks || []).find(isKoreanTrack) || (currentPlaybackContext.subtitleTracks || [])[0];
-    if (track) selectSubtitleTrack(track); else $('#subtitleState').textContent = `${trackSourceLabel()} 자막 트랙이 없습니다.`;
     return;
   }
   const own = currentPlaybackContext.streamSubtitle;

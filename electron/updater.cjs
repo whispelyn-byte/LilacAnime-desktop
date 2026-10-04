@@ -92,16 +92,19 @@ class Updater {
 
   get notesFile() { return path.join(this.app.getPath('userData'), 'update-notes.json'); }
 
-  install() {
+  install(relaunch = true) {
     if (!this.installer || !fs.existsSync(this.installer)) throw new Error('다운로드된 설치 파일이 없습니다.');
+    if (this.installing) return true; this.installing = true;
     // The new version shows these notes on its first start, even offline.
     try { fs.writeFileSync(this.notesFile, JSON.stringify({ version: this.state.latest, notes: this.state.notes || '', url: this.state.url || '' })); } catch { /* fetched by tag instead */ }
     // NSIS assisted installer: /S installs silently into the existing directory, --updated relaunches.
-    const child = spawn(this.installer, ['/S', '--updated', '--force-run'], { detached: true, stdio: 'ignore' });
+    const child = spawn(this.installer, relaunch ? ['/S', '--updated', '--force-run'] : ['/S', '--updated'], { detached: true, stdio: 'ignore' });
     child.unref();
-    setTimeout(() => this.app.quit(), 300);
+    if (relaunch) setTimeout(() => this.app.quit(), 300);
     return true;
   }
+  // A downloaded update the user did not install is put in when the app is closed (silently, without opening it again).
+  installOnQuit() { if (this.state.status === 'ready' && !this.installing) try { this.install(false); } catch { /* next start */ } }
 }
 
 // Release notes of this build: the ones saved when it was installed, else the GitHub release of its tag.
