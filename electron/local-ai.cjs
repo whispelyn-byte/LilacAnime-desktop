@@ -13,8 +13,8 @@ const { characterTerms, termsFor } = require('./anime-glossary.cjs');
 
 // Best translation first, by Horimiya episode 1 on a GTX 1050 Ti + Ryzen 5 5600 + 32 GB (16 lines spread over the
 // episode, against Gemini): Gemma 4 26B-A4B made no mistake there (12 min); Hy-MT2 7B (10 min) and Gemma 4 E4B (5 min)
-// a few slips; Hy-MT2 30B-A3B (7 min) dropped names and used 존댓말 between friends; the 1.8B model (2 min) got about a
-// third of the lines wrong. Gemma 4 E4B is the default: good and quick on a small card. Android's choices were HY-MT1.5
+// a few slips; Hy-MT2 30B-A3B (7 min) dropped names and used 존댓말 between friends; Gemma 4 E2B (3 min) got two lines
+// wrong; the 1.8B model (2 min) about a third. Gemma 4 E4B is the default: good and quick on a small card. Android's choices were HY-MT1.5
 // (its default) and the Japanese -> Korean VN model it used before; Hy-MT2 (May 2026) replaced HY-MT1.5, which stays
 // listed only where it was downloaded (legacy), so a PC using it keeps working.
 const MODELS = [
@@ -25,6 +25,7 @@ const MODELS = [
   { id: 'gemma-4-e4b', label: 'Gemma 4 E4B', note: '기본 · 5.2GB · 빠르고 정확함', repo: 'google/gemma-4-E4B-it-qat-q4_0-gguf', file: 'gemma-4-E4B_q4_0-it.gguf', size: 5150e6 },
   // A mixture of experts: 30B in all but about 3B worked per word, so it runs from memory on the processor.
   { id: 'hy-mt2-30b-a3b', label: 'Hy-MT2 30B-A3B', note: '18GB · 램 24GB 이상', repo: 'tencent/Hy-MT2-30B-A3B-GGUF', file: 'Hy-MT2-30B-A3B-Q4_K_M.gguf', size: 18240e6, ram: 24 },
+  { id: 'gemma-4-e2b', label: 'Gemma 4 E2B', note: '3.4GB · 가볍고 빠름', repo: 'google/gemma-4-E2B-it-qat-q4_0-gguf', file: 'gemma-4-E2B_q4_0-it.gguf', size: 3350e6 },
   { id: 'ja-ko-vn-7b', label: 'ja-ko-vn 7B', note: '4.6GB · 일본어 → 한국어 특화', repo: 'hell0ks/ja-ko-vn-7b-v1-gguf', file: 'model-Q4_K_M.gguf', size: 4630e6 },
   { id: 'hy-mt2-1.8b', label: 'Hy-MT2 1.8B', note: '1.1GB · 가장 빠름 · 가끔 뜻을 틀림', repo: 'tencent/Hy-MT2-1.8B-GGUF', file: 'Hy-MT2-1.8B-Q4_K_M.gguf', size: 1133e6 },
   { id: 'hy-mt-7b', label: 'HY-MT1.5 7B', note: '이전 버전 · Hy-MT2 7B를 권장', repo: 'tencent/HY-MT1.5-7B-GGUF', file: 'HY-MT1.5-7B-Q4_K_M.gguf', size: 4620e6, legacy: true },

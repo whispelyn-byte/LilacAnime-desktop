@@ -1,11 +1,39 @@
-# LilacAnime Desktop
+<p align="center">
+  <img src="build/icon.png" width="96" alt="">
+</p>
 
-[![최신 버전](https://img.shields.io/github/v/release/whispelyn-byte/LilacAnime-desktop?label=%EC%B5%9C%EC%8B%A0%20%EB%B2%84%EC%A0%84&color=b98fd6)](https://github.com/whispelyn-byte/LilacAnime-desktop/releases/latest)
-![Windows 10 / 11](https://img.shields.io/badge/Windows-10%20%2F%2011-0078d4)
+<h1 align="center">LilacAnime Desktop</h1>
 
-[LilacAnime](https://github.com/dream150/LilacAnime) Android 앱을 Windows에서 쓸 수 있게 옮긴 데스크톱 앱입니다.
-여러 사이트의 애니를 한 화면에서 찾아 보고, 한국어 자막을 자동으로 찾아 입히고, 없으면 일본어·영어 자막을 한국어로 번역해 줍니다.
-회차를 내려받아 오프라인에서도 자막과 함께 볼 수 있습니다.
+<p align="center">
+  <a href="https://github.com/whispelyn-byte/LilacAnime-desktop/releases/latest"><img src="https://img.shields.io/github/v/release/whispelyn-byte/LilacAnime-desktop?label=%EC%B5%9C%EC%8B%A0%20%EB%B2%84%EC%A0%84&color=b98fd6" alt="최신 버전"></a>
+  <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078d4" alt="Windows 10 / 11">
+  <a href="https://github.com/whispelyn-byte/LilacAnime-desktop/releases/latest/download/LilacAnime-Setup.exe"><img src="https://img.shields.io/badge/%EB%B0%9B%EA%B8%B0-LilacAnime--Setup.exe-c8a2c8" alt="받기"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/dream150/LilacAnime">LilacAnime</a> Android 앱을 Windows에서 쓸 수 있게 옮긴 데스크톱 앱입니다.<br>
+  여러 사이트의 애니를 한 화면에서 찾아 보고, 한국어 자막을 자동으로 찾아 입히고,<br>
+  없으면 일본어·영어 자막을 한국어로 번역해 줍니다. 회차를 내려받아 오프라인에서도 볼 수 있습니다.
+</p>
+
+![홈](docs/screenshots/home.jpg)
+
+### 주요 기능
+
+- 🔎 **여러 사이트를 한 곳에서**: RE:Anime · Miruro · Animenosub · 애니24 · Linkkf. 영어 제목 사이트도 한국어 제목으로 보여 주고 한국어로 검색합니다.
+- 💬 **한국어 자막 자동**: 사이트의 한국어 트랙, Kairan · Csora · Anissia 블로그 자막을 알아서 찾아 입힙니다.
+- 🤖 **없으면 AI 번역**: Jimaku 일본어 자막이나 사이트의 일본어·영어 트랙을 번역 API(Gemini · OpenAI · DeepL · Qwen)나 내 PC의 로컬 AI(Gemma 4 · Hy-MT2)로 번역합니다. 다음 화는 보는 동안 미리 번역해 둡니다.
+- ⏭️ **OP/ED 건너뛰기 · 이어보기 · 다음 화 자동 재생**
+- 📥 **다운로드**: 자막·OP/ED 구간까지 함께 저장해 오프라인에서도 그대로 봅니다. 외장하드로 옮겨도 저장 폴더만 바꾸면 다시 이어집니다.
+
+| | |
+|---|---|
+| ![작품 상세](docs/screenshots/detail.jpg) | ![AI 번역 자막으로 재생](docs/screenshots/player.jpg) |
+| **작품 상세** · 회차 목록, 이어보기, 전체 저장 | **재생** · 한국어 자막이 없는 회차를 Gemini로 번역한 자막 |
+| ![플레이어 설정 > 자막](docs/screenshots/subtitle-sheet.jpg) | ![로컬 AI 모델](docs/screenshots/settings-translate.jpg) |
+| **플레이어 설정 > 자막** · 자막 가져올 곳과 Jimaku 파일 | **설정 > 자막 자동 번역** · 로컬 AI 모델과 마지막 실행 위치 |
+| ![다운로드](docs/screenshots/downloads.jpg) | |
+| **내 목록 > 다운로드** · 작품별로 묶인 회차, 저장 폴더 바꾸기 | |
 
 ## 설치
 
@@ -16,7 +44,7 @@
 
 ## 처음 쓸 때
 
-1. **설정 > 콘텐츠 / 영상 소스**에서 볼 사이트를 고릅니다. 바꾸면 앱을 다시 시작할 때 적용됩니다.
+1. **설정 > 콘텐츠 / 영상 소스**에서 볼 사이트를 고릅니다. 바꾸면 바로 목록을 다시 불러옵니다.
 2. **설정 > 작품 제목 표시**에서 한국어 / 영어를 고릅니다.
 3. (선택) **설정 > 한국어 제목 검색**에 TMDB API 키를 넣으면 한국어 제목과 한국어 자막을 더 많이 찾습니다. → [TMDB API 키](#tmdb-api-키-선택)
 4. (선택) 자막 번역을 쓰려면 **설정 > 자막 자동 번역**에서 번역 API(Gemini · OpenAI · DeepL · Qwen) 키를 넣거나 로컬 AI 모델을 받습니다. → [자막 번역](#자막-번역)
@@ -120,6 +148,7 @@
 | Hy-MT2 7B | 4.6GB | 정확함. 그래픽카드 메모리 6GB 이상이면 빠름 | CUDA 10분 |
 | Gemma 4 E4B (기본) | 5.2GB | 빠르고 정확함 | CUDA 5분 |
 | Hy-MT2 30B-A3B | 18GB | 램으로 돌아감 (램 24GB 이상). 이름·존댓말을 가끔 틀림 | CUDA 7분 |
+| Gemma 4 E2B | 3.4GB | 가볍고 빠름. 가끔 직역 실수 | CUDA 3분 |
 | ja-ko-vn 7B | 4.6GB | 일본어 → 한국어 특화 | Vulkan 16분 |
 | Hy-MT2 1.8B | 1.1GB | 가장 빠름. 뜻을 가끔 틀림 | CUDA 2분 20초 |
 
@@ -139,7 +168,10 @@
 - 회차 옆 다운로드 버튼이나 **전체 저장**으로 내려받습니다. 두 회차씩 동시에 받습니다.
 - 자막·폰트·자막 트랙·OP/ED 구간을 함께 저장해 오프라인에서도 그대로 재생합니다.
 - 한국어 번역본도 하나 만들어 둡니다: Jimaku 자막(자막 자동 번역이 켜져 있을 때), 없으면 일본어 트랙, 그것도 없으면 영어 트랙. 한국어 자막이 있어도 만들어 둡니다 (설정 > 다운로드할 때 자막 트랙 번역).
-- Miruro는 빠른 서버를 골라 최고 화질만 여러 조각씩 동시에 받습니다 (1080p 한 화가 보통 1~4분). 멈췄다가 다시 받으면 받아 둔 조각부터 이어서 받습니다.
+- Miruro · 애니24는 최고 화질을 여러 조각씩 동시에 받습니다 (1080p 한 화가 보통 1~7분). 멈췄다가 다시 받으면 받아 둔 조각부터 이어서 받고, 실패하면 30초 · 2분 뒤 두 번 저절로 다시 시도합니다.
+- **내 목록 > 다운로드**에서 같은 작품의 회차는 카드 하나로 묶이고, 누르면 받은 회차가 펼쳐집니다.
+- **저장 폴더 바꾸기:** 새로 받는 회차를 저장할 폴더를 고릅니다. 받은 회차를 작품 폴더째 외장하드 등으로 옮겼다면 그 폴더를 고르면 자막·자막 트랙·포스터까지 다시 이어집니다. 영상 파일을 찾을 수 없는 회차는 흐리게 표시되고, 열면 온라인으로 재생합니다.
+- **목록 비우기:** 다운로드 목록을 한 번에 비웁니다. 영상 파일은 폴더에 남습니다.
 
 ## TMDB API 키 (선택)
 
@@ -153,12 +185,12 @@ RE:Anime·Animenosub·Miruro는 제목이 영어라서, 한국어 자막을 찾�
 
 | 내용 | 위치 |
 |---|---|
-| 다운로드한 회차 | `동영상\LilacAnime\작품 이름\` |
+| 다운로드한 회차 | `동영상\LilacAnime\작품 이름\` (내 목록 > 다운로드 > 저장 폴더 바꾸기로 바꿀 수 있음) |
 | 설정, API 키, 자막·번역, 로컬 AI 모델 | `%APPDATA%\lilacanime-desktop\` |
 
 API 키는 이 PC에만 저장되고 다른 곳으로 보내지 않습니다 (각 키는 그 서비스 요청에만 씁니다).
 
-받아 둔 자막과 번역 중 저장된 자막 목록에 없는 파일은 **설정 > 자막 자동 번역 > 자막 캐시**에서 지울 수 있고, 30일 넘게 쓰지 않은 파일은 앱이 알아서 지웁니다.
+받아 둔 자막과 번역 중 어느 회차에도 쓰이지 않는 파일은 **설정 > 자막 자동 번역 > 자막 캐시**에서 지울 수 있고, 30일 넘게 쓰지 않은 파일은 앱이 알아서 지웁니다.
 
 ## 개발
 
