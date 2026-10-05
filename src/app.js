@@ -548,12 +548,13 @@ async function autoTranslate(superseded,manual=false,provider=null){
   const requestId=playbackRequestId;if(!await selectSubtitleTrack(track,{auto:true,notice:`${track.label} 자막을 먼저 띄웠어요. 번역되는 대로 한국어로 바뀌어요.`})||requestId!==playbackRequestId)return false;
   await translateSubtitleTrack(provider,manual);return true;
 }
-// A Korean subtitle is on (a fansub, the site's Korean track): a machine translation is made beside it from the same
-// best source, in the background, and saved for the episode (at the end of its list), for when the Korean one does not
-// fit (another episode's, a wrong season). Once per episode; it stops when the episode changes.
+// A Kairan / Csora / Anissia subtitle is on: a machine translation is made beside it from the same best source, in the
+// background, and saved for the episode (at the end of its list), for when the fansub does not fit (another episode's,
+// a wrong season). Not beside the site's own Korean subtitle (a RE:Anime / Miruro Korean track, Linkkf's), which is the
+// episode's, as downloads do. Once per episode; it stops when the episode changes.
 let backgroundRun=1e6;const alongsideNoted=new Set();
 async function translateAlongside(source,requestId){
-  if(['gemini','user','jimaku'].includes(source))return;
+  if(['gemini','user','jimaku'].includes(source)||currentPlaybackContext.siteKorean)return;
   translationSettings=await window.lilac.geminiSettings().catch(()=>translationSettings);
   const provider=autoTranslateProvider(),key=subtitleStoreKey(),anime=subtitleSearchAnime(),episode=Number($('#skipEpisode').value)||Number(currentPlaybackContext.episode?.number)||1;
   if(!key||!provider||requestId!==playbackRequestId)return;
