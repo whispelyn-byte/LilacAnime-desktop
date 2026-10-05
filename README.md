@@ -142,23 +142,14 @@
 3. 그래픽카드가 있으면 그래픽카드로, 없으면 CPU로 번역합니다. 번역할 때만 실행되고 30초 동안 쓰지 않으면 꺼집니다.
 4. 설정의 모델 목록에 마지막으로 어디서 돌았는지 표시됩니다 (예: `NVIDIA GeForce GTX 1050 Ti · CUDA · 33/33층`). 그래픽카드 메모리에 다 안 들어가는 모델은 일부가 CPU에서 돌아 느립니다.
 
-| 모델 | 크기 | 점수 (16점) | 평가 | 형·누나 (7줄) | 한 화 번역 시간 | 앱 목록 |
-|---|---|---|---|---|---|---|
-| **Gemma 4 E4B (기본)** | 5.2GB | **13.5** | 가장 정확함. 2줄 틀림 | 6/7 | 6분 | 있음 |
-| Qwen3.5 9B | 5.7GB | 11.5 | 2줄 틀림, 5줄 어색함. 일본어가 남은 줄 14줄 | 5/7 | 12분 | 넣지 않음 |
-| **Aya Expanse 8B** | 5.1GB | **11** | 3줄 틀림. 형·누나를 다 맞춤, 일본어가 남은 줄 없음 | 7/7 | 9분 | 있음 |
-| Hy-MT2 7B | 4.6GB | 11 | 4줄 틀림. 형·누나를 오빠·언니로 옮김 | 1/7 | 10분 | 받은 PC에만 |
-| Gemma 4 26B-A4B | 14.4GB | 11 | 4줄 틀림. 형·누나를 오빠·언니로 옮김. 램 24GB 이상 | 0/7 | 12분 | 받은 PC에만 |
-| Qwen3.6 35B-A3B | 17.7GB | 10.5 | 4줄 틀림. 일본어가 남은 줄 12줄 | 3/7 | 13분 | 넣지 않음 |
-| ja-ko-vn 7B | 4.6GB | 10 | 5줄 틀림. 이름을 틀린 줄이 21줄 | 1/7 | 6분 | 받은 PC에만 |
-| Hy-MT2 30B-A3B | 18GB | 8.5 | 3줄 틀림, 9줄 어색함 (친구끼리 존댓말, 틀린 어미). 램 24GB 이상 | 1/7 | 7분 | 받은 PC에만 |
-| **Gemma 4 E2B** | 3.4GB | **7.5** | 6줄 틀림. 가볍고 빠름 | 3/7 | 3분 | 있음 |
-| Tower+ 9B | 5.8GB | 7 | 7줄 틀림. 한자가 남음 | 2/7 | 12분 | 넣지 않음 |
-| EXAONE 3.5 7.8B | 4.8GB | 6.5 | 8줄 틀림. 화자 이름을 호칭으로 옮김 | 2/7 | 8분 | 넣지 않음 |
-| **Hy-MT2 1.8B** | 1.1GB | **5.5** | 8줄 틀림. 존댓말이 섞임. 가장 가벼움 | 0/7 | 2분 | 있음 |
-| Seed-X PPO 7B | 4.6GB | 0.5 | 15줄 틀림. 이름·맥락을 줄 수 없음 | 2/7 | 9분 | 넣지 않음 |
+| 모델 | 크기 | 점수 (16점) | 평가 | 형·누나 (7줄) | 한 화 번역 시간 |
+|---|---|---|---|---|---|
+| Gemma 4 E4B (기본) | 5.2GB | 13.5 | 가장 정확함. 2줄 틀림 | 6/7 | 6분 |
+| Aya Expanse 8B | 5.1GB | 11 | 3줄 틀림. 형·누나를 다 맞춤, 일본어가 남은 줄 없음 | 7/7 | 9분 |
+| Gemma 4 E2B | 3.4GB | 7.5 | 6줄 틀림. 가볍고 빠름 | 3/7 | 3분 |
+| Hy-MT2 1.8B | 1.1GB | 5.5 | 8줄 틀림. 존댓말이 섞임. 가장 가벼움 | 0/7 | 2분 |
 
-설정의 모델 목록도 이 점수 순서입니다. E4B보다 나은 모델이 없어서, 앱 목록에는 E4B · Aya와 작은 PC용 E2B · Hy-MT2 1.8B만 남겼습니다. "받은 PC에만"인 모델은 새로 받을 수는 없고, 이미 받은 PC에서는 계속 보이고 쓸 수 있습니다.
+설정의 모델 목록도 이 순서입니다. 예전 목록에 있던 모델(Hy-MT2 7B · 30B-A3B, Gemma 4 26B-A4B, ja-ko-vn 7B)은 E4B보다 낫지 않아 뺐고, 이미 받은 PC에서는 계속 보이고 쓸 수 있습니다.
 
 Horimiya 1화(Jimaku SubsPlease 일본어 자막, 같은 대사를 빼면 425줄)를 앱과 같은 방식으로 모두 번역해, 장면 16개를 원문과 비교하고(맞은 줄 1점, 어색한 줄 0.5점) 소타가 부르는 お姉ちゃん · お兄ちゃん 7줄이 누나 · 형으로 옮겨졌는지 셌습니다. 시간은 GTX 1050 Ti(4GB) · Ryzen 5 5600 · 램 32GB PC에서 CUDA판으로 잰 것입니다. 같은 화를 번역 API로는 Gemini(gemini-3.6-flash)가 약 2분 30초에 번역했습니다. 다른 GGUF 모델 파일을 **GGUF 파일 추가**로 넣어 쓸 수도 있습니다.
 
@@ -227,6 +218,6 @@ npm run dist
 
 - 원작: [dream150/LilacAnime](https://github.com/dream150/LilacAnime) (Android). 원작자의 허락을 받아 Windows 데스크톱(Electron)용으로 포팅한 프로젝트입니다.
 - 자막: Kairan, Csora, [Anissia](https://anissia.net)에 등록된 자막 제작자분들, [Jimaku](https://jimaku.cc)
-- 로컬 번역: [llama.cpp](https://github.com/ggml-org/llama.cpp), [Tencent Hy-MT2](https://github.com/Tencent-Hunyuan/Hy-MT2), [Gemma 4](https://huggingface.co/google/gemma-4-E4B-it-qat-q4_0-gguf), [Aya Expanse](https://huggingface.co/CohereLabs/aya-expanse-8b), [ja-ko-vn](https://huggingface.co/hell0ks/ja-ko-vn-7b-v1-gguf)
+- 로컬 번역: [llama.cpp](https://github.com/ggml-org/llama.cpp), [Tencent Hy-MT2](https://github.com/Tencent-Hunyuan/Hy-MT2), [Gemma 4](https://huggingface.co/google/gemma-4-E4B-it-qat-q4_0-gguf), [Aya Expanse](https://huggingface.co/CohereLabs/aya-expanse-8b)
 - OP/ED 타임스탬프: [AniSkip](https://aniskip.com)
 - This product uses the TMDB API but is not endorsed or certified by TMDB.
