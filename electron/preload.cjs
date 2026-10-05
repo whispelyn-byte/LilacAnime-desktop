@@ -83,6 +83,7 @@ contextBridge.exposeInMainWorld('lilac', {
   removeLocalModel: id => ipcRenderer.invoke('localai:remove', id),
   onLocalModelProgress: callback => ipcRenderer.on('localai:progress', (_, value) => callback(value)),
   cancelTranslation: id => ipcRenderer.invoke('subtitle:cancel', id),
+  jumpTranslation: (id, seconds) => ipcRenderer.invoke('subtitle:jump', id, seconds),
   prepareEpisodeSubtitle: options => ipcRenderer.invoke('subtitle:prepare', options),
   onTranslateProgress: callback => ipcRenderer.on('translate:progress', (_, value) => callback(value)),
   defaultSubtitleFont: (choice, customPath) => ipcRenderer.invoke('font:default', choice, customPath),

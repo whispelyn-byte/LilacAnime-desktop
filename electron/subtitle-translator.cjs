@@ -10,7 +10,7 @@ const { createLocalAi, promptVersion } = require('./local-ai.cjs');
 const { characterTerms } = require('./anime-glossary.cjs');
 
 const GEMINI_API = 'https://generativelanguage.googleapis.com/v1beta';
-const PROMPT_VERSION = 'prompt-3', LOCAL_PROMPT_VERSION = 'local-3';
+const PROMPT_VERSION = 'prompt-3', LOCAL_PROMPT_VERSION = 'local-4';
 // The translation APIs (with the Korean particles their names take) and how each is fed: Gemini gets a whole episode
 // (a few hundred short lines) in one request where possible, since its free tier allows only a few requests a minute
 // and a few dozen a day; OpenAI and Qwen answer shorter batches faster and stay within their output limits; DeepL takes
@@ -188,16 +188,17 @@ function createTranslator(userData) {
           last = new Error(`Gemini가 빈 응답을 보냈습니다 (${root.candidates?.[0]?.finishReason || root.promptFeedback?.blockReason || 'unknown'}).`); break;
         } catch (error) {
           last = error;
-          if (error.name === 'AbortError' || error.status === 401 || error.status === 403 || /api key/i.test(error.message)) throw error;
+          if (error.name === 'AbortError' || error.status === 401 || error.status === 403 || error.status === 404 || /api key/i.test(error.message)) throw error;
           if (error.status === 429) {
             // The daily allowance is gone: no retry helps until it resets. A per-minute limit says how long to wait.
             const quotas = (error.details || []).flatMap(detail => detail.violations || []).map(item => String(item.quotaId || ''));
-            if (quotas.some(id => /PerDay/i.test(id))) { const daily = new Error('Gemini 무료 사용량을 오늘 다 썼습니다. 내일 다시 번역하거나 로컬 AI 번역을 쓰세요.'); daily.status = 429; throw daily; }
+            if (quotas.some(id => /PerDay/i.test(id))) throw Object.assign(new Error(`Gemini 무료 사용량을 오늘 다 썼습니다 (${model}). 내일 다시 번역하거나 로컬 AI 번역을 쓰세요.`), { status: 429, daily: true });
             const wait = Number(String((error.details || []).find(detail => detail.retryDelay)?.retryDelay || '').replace(/s$/, '')) || Number(error.message.match(/retry in ([\d.]+)\s*s/i)?.[1]) || 2.5 * 2 ** attempt;
             if (wait > 120) throw error;
             await new Promise(resolve => setTimeout(resolve, (wait + 1) * 1000)); continue;
           }
-          if (error.status >= 500 || error.name === 'TimeoutError') { await new Promise(resolve => setTimeout(resolve, Math.min(30000, 2500 * 2 ** attempt))); continue; }
+          // Busy (503 "high demand"): asked once more, then another Flash model takes over (translateCloud).
+          if (error.status >= 500 || error.name === 'TimeoutError') { if (attempt) throw error; await new Promise(resolve => setTimeout(resolve, 2500)); continue; }
           break;
         }
       }
@@ -221,16 +222,6 @@ function createTranslator(userData) {
   const untagged = text => text.replace(/\{\\[^}]*\}/g, '').replace(/^[ \t]+|[ \t]+$/gm, '').trim();
   const positionTag = text => text.match(/\{\\an[1-9]\}/)?.[0] || '';
   const escapeCue = text => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n{2,}/g, '\n').replace(/-->/g, '→');
-
-  function batches(lines, limits) {
-    const list = []; let current = [], size = 0;
-    for (const line of lines) {
-      if (current.length && (current.length >= limits.lines || size + line.text.length > limits.chars)) { list.push(current); current = []; size = 0; }
-      current.push(line); size += line.text.length;
-    }
-    if (current.length) list.push(current);
-    return list;
-  }
 
   // Written like a Korean fansub team's style guide: the work, what the answer must look like, then how to translate.
   // context: {title (as shown in the app, usually Korean), originalTitle, genres, synopsis, characters: [{name, native,
@@ -306,37 +297,117 @@ function createTranslator(userData) {
     return list.map(item => String(item.text || '').trim());
   }
 
+  // A model whose allowance is used up (or that the API no longer has) hands over to the API's other models of the same
+  // kind, as Gemini's free tier counts each model apart, and OpenAI's daily token limits and Qwen's free quota are per
+  // model too. Only models of the picked one's price class, so a paid key is not moved to a dearer model: Gemini's Flash
+  // and Flash-Lite, OpenAI's mini and nano, Qwen's plus, flash and turbo. An OpenAI key out of credit (billing) has no
+  // model left, so the next API or the local AI takes over as before. A used-up model is passed over until Gemini's
+  // allowance resets (midnight Pacific time; a per-minute limit that asks for a long wait, five minutes), or for an hour
+  // on the others. A model the API is too busy to answer (503, "high demand", seen on Gemini's free tier) hands over too,
+  // and is passed over for five minutes.
+  const spent = new Map(); // `${api}:${model}` -> until
+  const usedUp = (api, error) => error.status === 404 || (error.status === 429 && !(api === 'openai' && /insufficient_quota|billing|exceeded your current quota/i.test(error.message))) || (api === 'qwen' && error.status === 403 && /quota|free ?tier/i.test(error.message));
+  const busy = error => error.status >= 500 || error.name === 'TimeoutError';
+  const spentUntil = (api, error) => {
+    if (busy(error) || (api === 'gemini' && error.status === 429 && !error.daily)) return Date.now() + 300000;
+    if (api !== 'gemini') return Date.now() + 3600000;
+    const pacific = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
+    return Date.now() + (86400 - (pacific.getHours() * 3600 + pacific.getMinutes() * 60 + pacific.getSeconds())) * 1000;
+  };
+  const isSpent = (api, model) => (spent.get(`${api}:${model}`) || 0) > Date.now();
+  function modelChain(settings, api, model) {
+    const ranked = (list, rank) => list.map((name, index) => ({ name, index, rank: rank(name) })).filter(item => item.rank >= 0).sort((a, b) => a.rank - b.rank || a.index - b.index).map(item => item.name);
+    const others = api === 'gemini' ? ranked(settings.models, name => !/flash/.test(name) || /transcribe|customtools|image|tts|live|audio/.test(name) ? -1 : (/lite/.test(name) ? 2 : 0) + (/preview/.test(name) ? 1 : 0))
+      : api === 'openai' ? ranked(settings.openaiModels, name => /mini/.test(name) ? 0 : /nano/.test(name) ? 1 : -1)
+      : api === 'qwen' ? ranked(settings.qwenModels, name => { const kind = /plus/.test(name) ? 0 : /flash/.test(name) ? 2 : /turbo/.test(name) ? 4 : -1; return kind < 0 ? -1 : kind + (/\d{4}-?\d{2}-?\d{2}|\d{4}$/.test(name) ? 1 : 0); })
+      : [];
+    const chain = [model, ...others.filter(name => name !== model)].filter(name => !isSpent(api, name));
+    return chain.length ? chain : [model];
+  }
+
   // The picked API, batch by batch, into translated (by line id). Stops at an error every batch would hit (a bad key,
-  // the allowance used up) and throws it, keeping what was translated before.
-  async function translateCloud(settings, api, model, lines, translated, context, progress, saved = () => {}, signal = null) {
-    const cloud = CLOUDS[api], groups = batches(lines, cloud);
-    const ask = async group => {
+  // the allowance of every model used up) and throws it, keeping what was translated before. saved(model, ids) hears
+  // which model answered which lines after each batch, onSwitch(from, to, busy) when another of the API's models takes
+  // over. A batch is made when it is sent, of the lines left in order(lines) (from where the episode is playing): the
+  // first small (40 lines, about two minutes of an episode), so those come back in seconds and are on screen while the
+  // rest goes in as few batches as the API takes (Gemini's free tier allows 20 requests a model a day, so an episode
+  // takes two). control.jump() (the episode jumped elsewhere) makes the next one small again and sends it at once beside
+  // the batches on their way, so the new place does not wait for them.
+  async function translateCloud(settings, api, model, lines, translated, context, { progress = () => {}, saved = () => {}, signal = null, onSwitch = () => {}, order = list => list, near = () => true, control = {} } = {}) {
+    // left: lines not sent yet; sent: lines on their way (batch: the size of the batch each went in). rush: a jump landed
+    // in a big batch on its way, so the next batch is made of the lines on their way from the new place (the batch
+    // answering first is the one used).
+    const cloud = CLOUDS[api], chain = modelChain(settings, api, model), left = new Set(lines), sent = new Set(), batch = new Map();
+    let at = 0, small = 0, rush = false;
+    const take = () => {
+      const pool = rush ? [...sent].filter(line => !translated.has(line.i)) : [...left];
+      const group = []; let size = 0; const most = Math.min(cloud.lines, small ? Infinity : 40);
+      for (const line of order(pool)) { if (group.length && (group.length >= most || size + line.text.length > cloud.chars)) break; group.push(line); size += line.text.length; }
+      for (const line of group) { left.delete(line); sent.add(line); batch.set(line, group.length); }
+      if (group.length) small++;
+      rush = false;
+      return group;
+    };
+    // (Said after a tick: a run that starts on another model gets here before translate() has added its caller.)
+    if (chain[0] !== model) { await null; onSwitch(model, chain[0]); }
+    const ask = async (group, model) => {
       if (api === 'deepl') { const texts = await askDeepl(settings, group.map(line => line.text), context, signal); return group.map((line, index) => ({ i: line.i, t: texts[index] })); }
       if (api === 'gemini') return answerItems(await generate(settings.key, model, system(context), JSON.stringify(group.map(line => ({ i: line.i, t: line.text }))), signal));
       const input = JSON.stringify({ lines: group.map(line => ({ i: line.i, t: line.text })) }), instructions = system(context, true);
       return answerItems(api === 'openai' ? await askOpenai(settings, model, instructions, input, signal) : await askQwen(settings, model, instructions, input, signal));
     };
-    let done = 0, next = 0, fatal = null;
-    progress(0, groups.length);
-    await Promise.all(Array.from({ length: Math.min(cloud.parallel, groups.length) }, async () => {
-      while (next < groups.length && !fatal && !signal?.aborted) {
-        const group = groups[next++], ids = new Set(group.map(line => line.i));
-        for (let attempt = 0; attempt < 2; attempt++) {
+    let fatal = null, active = 0;
+    progress(0, lines.length);
+    const worker = async () => {
+      active++;
+      try { await work(); } finally { active--; }
+    };
+    const work = async () => {
+      while ((left.size || rush) && !fatal && !signal?.aborted) {
+        const group = take(), ids = new Set(group.map(line => line.i));
+        if (!group.length) break;
+        for (let attempt = 0; attempt < 2 && !fatal;) {
+          const asked = chain[at];
           try {
-            const answer = await ask(group);
-            // Only this batch's lines: a stray id must not overwrite another batch's translation.
-            for (const item of answer) if (ids.has(item?.i) && typeof item.t === 'string' && item.t.trim()) translated.set(item.i, item.t.trim());
-            saved();
+            const answer = await ask(group, asked);
+            // Only this batch's lines, and only lines not translated yet (a line sent twice after a jump keeps the first
+            // answer, the one on screen): a stray id must not overwrite another batch's translation.
+            const got = [];
+            for (const item of answer) if (ids.has(item?.i) && !translated.has(item.i) && typeof item.t === 'string' && item.t.trim()) { translated.set(item.i, item.t.trim()); got.push(item.i); }
+            saved(asked, got);
             if (group.every(line => translated.has(line.i)) || attempt) break;
+            attempt++;
           } catch (error) {
-            // A bad key or an exhausted quota fails every batch the same way; a cancel stops them all.
+            // The model's allowance used up: the next model asks for this batch again (another batch may have moved on
+            // already). With none left, or a bad key, every batch would fail the same way; a cancel stops them all.
+            if (error.name !== 'AbortError' && api !== 'deepl' && (usedUp(api, error) || busy(error))) {
+              spent.set(`${api}:${asked}`, spentUntil(api, error));
+              if (chain[at] === asked && at + 1 < chain.length) { at++; onSwitch(asked, chain[at], busy(error)); }
+              if (chain[at] !== asked) continue;
+            }
             if (error.name === 'AbortError' || error.status === 400 || error.status === 401 || error.status === 403 || error.status === 404 || error.status === 429) { fatal = error; break; }
             if (attempt) break;
+            attempt++;
           }
         }
-        progress(++done, groups.length);
+        for (const line of group) sent.delete(line);
+        progress(lines.filter(line => translated.has(line.i)).length, lines.length);
       }
-    }));
+    };
+    const workers = Array.from({ length: cloud.parallel }, () => worker());
+    // A jump asks for more only when the new place would wait: its first line not translated yet comes within a minute
+    // (near) and is still to be sent (a small batch from there goes at once) or on its way in a big batch (a small one
+    // goes beside it). A jump the app makes by itself (skipping the opening, the resume point) to lines done or on their
+    // way in a small batch costs no request.
+    control.jump = () => {
+      if (fatal) return;
+      const first = order(lines.filter(line => !translated.has(line.i)))[0];
+      if (!first || !near(first) || !(left.has(first) || (sent.has(first) && batch.get(first) > 40))) return;
+      small = 0; rush = !left.has(first);
+      if (active <= cloud.parallel) workers.push(worker());
+    };
+    for (let count = 0; count !== workers.length;) { count = workers.length; await Promise.all(workers); }
+    control.jump = () => {};
     if (fatal) throw fatal;
     if (signal?.aborted) throw cancelled();
     if (!lines.some(line => translated.has(line.i))) throw new Error(`${cloud.name} 번역 결과를 받지 못했습니다.`);
@@ -353,27 +424,36 @@ function createTranslator(userData) {
   // stops once nobody waits for it any more, keeping the lines it had (the next run goes on from them).
   const running = new Map();
   const cancelled = () => Object.assign(new Error('번역을 취소했습니다.'), { name: 'AbortError', cancelled: true });
-  async function translate({ progress = () => {}, status = () => {}, id = null, ...options }) {
+  async function translate({ progress = () => {}, status = () => {}, lines = () => {}, id = null, ...options }) {
     options.provider = providerOf(options.provider || '');
     // A run is known by what it translates, not by where the file is: a site track is saved under a new name each time
     // it is fetched, so the next episode made ready ahead (main's subtitle:prepare) is joined when it is opened.
     let content = options.file; try { content = crypto.createHash('sha1').update(fs.readFileSync(options.file)).digest('hex'); } catch { /* reported by the run */ }
     const key = `${content}\n${options.provider}`;
-    let job = running.get(key);
+    let job = running.get(key), joined = true;
     // A run being cancelled is not joined: a new one starts (and goes on from the lines it kept).
     if (!job || job.abort.signal.aborted) {
-      const abort = new AbortController(), created = { listeners: new Set(), abort };
+      const abort = new AbortController(), created = { listeners: new Set(), abort, control: {} }; joined = false;
       job = created;
-      job.promise = translateOnce({ ...options, signal: abort.signal, progress: (...args) => created.listeners.forEach(listener => listener.progress(...args)), status: text => created.listeners.forEach(listener => listener.status(text)) })
+      job.promise = translateOnce({ ...options, control: created.control, signal: abort.signal, progress: (...args) => created.listeners.forEach(listener => listener.progress(...args)), status: text => created.listeners.forEach(listener => listener.status(text)), onLines: items => created.listeners.forEach(listener => listener.lines(items)) })
         .finally(() => { if (running.get(key) === created) running.delete(key); });
       job.promise.catch(() => { /* every caller may have left: the end of a cancelled run goes unheard */ });
       running.set(key, job);
     }
     let leave;
-    const listener = { id, progress, status, left: new Promise((_, reject) => { leave = () => reject(cancelled()); }) };
+    const listener = { id, progress, status, lines, left: new Promise((_, reject) => { leave = () => reject(cancelled()); }) };
     listener.leave = leave; listener.left.catch(() => {});
     job.listeners.add(listener);
+    // One who joins a run (the next episode opened while it is made ready) gets the lines done so far at once, and the
+    // run goes on from where this one is playing.
+    const done = job.control.done?.() || [];
+    if (done.length) lines(done);
+    if (joined && options.playing) job.control.jump?.(options.playing);
     try { return await Promise.race([job.promise, listener.left]); } finally { job.listeners.delete(listener); }
+  }
+  // The player jumped (seconds): its run translates from there next.
+  function jump(id, seconds) {
+    for (const job of running.values()) if ([...job.listeners].some(listener => listener.id !== null && listener.id === id)) job.control.jump?.(seconds);
   }
   function cancel(id) {
     for (const job of running.values()) for (const listener of job.listeners) if (listener.id !== null && listener.id === id) {
@@ -381,7 +461,11 @@ function createTranslator(userData) {
       if (!job.listeners.size) job.abort.abort();
     }
   }
-  async function translateOnce({ file, title = '', provider = '', context = {}, signal = null, progress = () => {}, status = () => {} }) {
+  // playing: the time (seconds) the episode is at: the lines from there are translated first, the ones before it
+  // last; control.jump(seconds) moves it while the run goes on. onLines([{raw, text}]) hears the lines translated so far
+  // (the cue's text in the file, the translated cue's), a few at a time, so the player can show them before the rest is
+  // done; control.done() gives all of them.
+  async function translateOnce({ file, title = '', provider = '', context = {}, signal = null, progress = () => {}, status = () => {}, playing = 0, onLines = () => {}, control = {} }) {
     const settings = read(), wanted = provider || autoProvider() || 'cloud';
     // The engines in the order they are tried: an API's name, or 'local'.
     const apis = [settings.cloud, ...Object.keys(CLOUDS).filter(api => api !== settings.cloud)].filter(api => keyOf(settings, api));
@@ -402,21 +486,56 @@ function createTranslator(userData) {
     for (const name of order.filter(sameSide)) {
       const out = path.join(cacheDir, `${hashOf(name)}.vtt`);
       if (!fs.existsSync(out)) continue;
-      progress(1, 1); return { path: out, model: modelOf(name), engine: engineOf(name).name, failed: 0, cached: true };
+      const models = modelsIn(out);
+      progress(1, 1); return { path: out, model: Object.keys(models)[0] || modelOf(name), models, engine: engineOf(name).name, failed: 0, cached: true };
     }
 
-    const cues = parseVtt(source);
-    if (!cues.length) throw new Error('번역할 자막 줄이 없습니다.');
+    const parsed = parseVtt(source);
+    if (!parsed.length) throw new Error('번역할 자막 줄이 없습니다.');
+    const seconds = timing => { const parts = timing.trim().split(/\s/)[0].replace(',', '.').split(':').map(Number); return parts.reduce((sum, part) => sum * 60 + part, 0); };
+    // A bilingual file (Jimaku's CHS+JPN ASS files: a Chinese line beside each Japanese one) is translated from its
+    // Japanese lines, or every line came out twice in Korean: a line of Chinese characters without kana that is on screen
+    // with a line with kana is left out of the translation and of the translated file (and hidden while it runs), when the
+    // file has many such pairs (a Japanese line of kanji alone, 先生, is not taken for Chinese elsewhere).
+    const kana = /[぀-ヿ]/, chinese = text => /[一-鿿]/.test(text) && !kana.test(text);
+    const spans = parsed.map(cue => { const [from, to] = cue.timing.split('-->'); return { cue, from: seconds(from), to: seconds(to), text: plain(cue.text) }; });
+    const japanese = spans.filter(span => kana.test(span.text));
+    const paired = spans.filter(span => chinese(span.text) && japanese.some(other => other.from < span.to && span.from < other.to));
+    const bilingual = paired.length >= 20 && paired.length >= japanese.length / 3, dropped = new Set(bilingual ? paired.map(span => span.cue) : []);
+    const cues = parsed.filter(cue => !dropped.has(cue));
+    const blanks = [...new Set(paired.filter(span => dropped.has(span.cue)).map(span => span.text))].filter(raw => !cues.some(cue => plain(cue.text) === raw)).map(raw => ({ raw, text: '' }));
     // Identical lines (repeated cues, karaoke layers) are translated once. raw: the cue's text as it is (with its tags).
     const unique = [...new Set(cues.map(cue => plain(cue.text)).filter(text => /\p{L}/u.test(untagged(text))))].map((raw, i) => ({ i, raw, text: untagged(raw) }));
+    // Where each line is first heard, and the order to translate them in: from a few seconds before where the episode is
+    // playing to the end, then the beginning (in time order). A jump moves that place for the lines still left.
+    const start = new Map(); for (const cue of cues) { const raw = plain(cue.text); if (!start.has(raw)) start.set(raw, seconds(cue.timing)); }
+    let playFrom = Math.max(0, Number(playing) || 0) - 5;
+    const passed = line => (start.get(line.raw) ?? 0) < playFrom;
+    const playingFirst = lines => [...lines.filter(line => !passed(line)), ...lines.filter(passed)];
+    const near = line => !passed(line) && (start.get(line.raw) ?? 0) < playFrom + 65;
+    // The local AI asks for one line at a time: the first one left from where the episode is.
+    const sooner = (a, b) => passed(a) !== passed(b) ? !passed(a) : (start.get(a.raw) ?? 0) < (start.get(b.raw) ?? 0);
+    const nextLine = left => { let best = null; for (const line of left) if (!best || sooner(line, best)) best = line; return best; };
+    const engine = {};
+    control.jump = seconds => { playFrom = Math.max(0, Number(seconds) || 0) - 5; engine.jump?.(); };
     // Lines are also kept one by one per engine as they come in (every few seconds), so a run that stopped part-way
     // (lines that failed, the episode or the app closed, the allowance gone) goes on from where it was: only the
     // missing lines are translated again.
-    const translated = new Map(), by = new Map(), linesFile = name => path.join(cacheDir, `${hashOf(name)}.lines.json`);
+    // by: the engine of each line; lineModel: the model that translated it (kept lines: the engine's picked model).
+    const translated = new Map(), by = new Map(), lineModel = new Map(), linesFile = name => path.join(cacheDir, `${hashOf(name)}.lines.json`);
     for (const name of order.filter(sameSide)) {
       let kept = {}; try { kept = JSON.parse(fs.readFileSync(linesFile(name), 'utf8')) || {}; } catch { continue; }
-      for (const line of unique) if (!translated.has(line.i) && typeof kept[line.text] === 'string') { translated.set(line.i, kept[line.text]); by.set(line.i, name); }
+      for (const line of unique) if (!translated.has(line.i) && typeof kept[line.text] === 'string') { translated.set(line.i, kept[line.text]); by.set(line.i, name); lineModel.set(line.i, modelOf(name)); }
     }
+    // The translated lines go to the player together every 0.7 s (the local AI writes a few a second).
+    const pending = new Set(); let flushTimer = null;
+    const item = i => ({ raw: unique[i].raw, text: escapeCue(positionTag(unique[i].raw) + translated.get(i)) });
+    // The Chinese lines of a bilingual file go with the first ones, as blanks (the player leaves them out).
+    let blanksSent = !blanks.length;
+    const flush = () => { clearTimeout(flushTimer); flushTimer = null; if (!pending.size) return; onLines([...(blanksSent ? [] : blanks), ...[...pending].map(item)]); blanksSent = true; pending.clear(); };
+    control.done = () => [...blanks, ...[...translated.keys()].map(item)];
+    const shown = ids => { for (const i of ids) pending.add(i); flushTimer ||= setTimeout(flush, 700); };
+    shown(translated.keys());
     let saveTimer = null;
     const keep = name => {
       for (const i of translated.keys()) if (!by.has(i)) by.set(i, name);
@@ -425,18 +544,26 @@ function createTranslator(userData) {
       try { fs.mkdirSync(cacheDir, { recursive: true }); fs.writeFileSync(linesFile(name), JSON.stringify(lines), 'utf8'); } catch { /* kept in memory for this run */ }
     };
     const keepSoon = name => { if (!saveTimer) saveTimer = setTimeout(() => { saveTimer = null; keep(name); }, 5000); };
-    let lastError = null, fallbackReason = '', tried = null;
+    let lastError = null, fallbackReason = '', tried = null, switched = null;
+    // Another of the API's models taking over (the picked one's allowance used up): said while it runs and at the end.
+    const onSwitch = (from, to, busy = false) => { const why = busy ? '서버가 바빠' : '사용량을 다 써서'; switched = { from: switched?.from || from, to, why: switched?.why || why }; status(`${from} ${why} ${to} 모델로 번역하는 중`); };
     for (const name of order) {
       const lines = unique.filter(line => !translated.has(line.i));
       if (!lines.length || signal?.aborted) break;
       if (tried) { fallbackReason = lastError?.message || ''; status(`${engineOf(tried).name}${engineOf(tried).eul} 쓸 수 없어 ${engineOf(name).name}${engineOf(name).ro} 번역하는 중`); }
       tried = name;
       try {
-        if (name === 'local') await local.translateLines(lines.map(line => line.text), { modelId: localModel.id, progress, status, context, signal, onLine: (index, text) => { translated.set(lines[index].i, text); keepSoon(name); } });
-        else await translateCloud(settings, name, modelFor(name), lines, translated, { title, ...context }, progress, () => keepSoon(name), signal);
+        // The local AI gets the lines in time order (each with the ones before it) and takes the next one from where the
+        // episode is each time a slot frees up; the API's batches are made the same way as they are sent.
+        if (name === 'local') {
+          const position = new Map(lines.map((line, index) => [line, index])), left = new Set(lines);
+          const pick = () => { const line = nextLine(left); if (!line) return undefined; left.delete(line); return position.get(line); };
+          engine.jump = null;
+          await local.translateLines(lines.map(line => line.text), { modelId: localModel.id, progress, status, context, signal, pick, onLine: (index, text) => { translated.set(lines[index].i, text); lineModel.set(lines[index].i, modelOf(name)); shown([lines[index].i]); keepSoon(name); } });
+        } else await translateCloud(settings, name, modelFor(name), lines, translated, { title, ...context }, { progress, signal, onSwitch, order: playingFirst, near, control: engine, saved: (model, ids) => { for (const i of ids) lineModel.set(i, name === 'gemini' ? model : `${name}${model ? `:${model}` : ''}`); shown(ids); keepSoon(name); } });
         lastError = null;
       } catch (error) { lastError = error; }
-      clearTimeout(saveTimer); saveTimer = null; keep(name);
+      clearTimeout(saveTimer); saveTimer = null; keep(name); flush();
       if (signal?.aborted) throw cancelled();
       if (!lastError && unique.every(line => translated.has(line.i))) break;
     }
@@ -445,17 +572,28 @@ function createTranslator(userData) {
     // again whichever engine is asked first) and its kept lines go; an unfinished one is kept only for this time.
     const count = name => [...by.values()].filter(value => value === name).length;
     const used = order.filter(name => count(name)), main = [...used].sort((a, b) => count(b) - count(a))[0];
-    const written = writeResult(cues, unique, translated, hashOf(main), modelOf(main));
+    // The models that did the lines, most first, are written into the file (the cache is named by the picked model, so
+    // the file says which one it really was) and given with the result.
+    const models = {};
+    for (const i of translated.keys()) { const model = lineModel.get(i) || modelOf(by.get(i) || main); models[model] = (models[model] || 0) + 1; }
+    const ranked = Object.fromEntries(Object.entries(models).sort((a, b) => b[1] - a[1]));
+    const written = writeResult(cues, unique, translated, hashOf(main), ranked);
     if (!written.failed) for (const name of used) try { fs.unlinkSync(linesFile(name)); } catch { /* none kept */ }
     const result = { ...written, engine: engineOf(main).name };
     // Said when the one asked for (the button's API or the local AI) did not do it all.
     const intended = wanted === 'local' ? 'local' : settings.cloud, from = engineOf(intended), others = used.filter(name => name !== intended);
-    if (!others.length) return result;
+    if (!others.length) return switched ? { ...result, fallbackNote: `${switched.from} ${switched.why} ${switched.to} 모델로 번역했습니다` } : result;
     if (used.includes(intended)) return { ...result, fallbackNote: `${others.reduce((sum, name) => sum + count(name), 0)}줄은 ${engineOf(others[others.length - 1]).name}${engineOf(others[others.length - 1]).ro} 번역했습니다`, fallbackReason: fallbackReason || '' };
     const to = engineOf(others[others.length - 1]);
     return { ...result, fallbackNote: `${from.name}${from.eul} 쓸 수 없어 ${to.name}${to.ro} 번역했습니다`, fallbackReason: fallbackReason || (!order.includes(intended) ? (intended === 'local' ? '로컬 AI 모델이 없습니다.' : `${from.name} API 키가 없습니다.`) : '') };
   }
-  function writeResult(cues, unique, translated, hash, model) {
+  // NOTE: a WebVTT comment, which players skip ("translated-by: gemini-3.6-flash=1290; gemini-3.8-flash=10").
+  const modelsIn = file => {
+    let head = ''; try { const fd = fs.openSync(file, 'r'), buffer = Buffer.alloc(1024); head = buffer.subarray(0, fs.readSync(fd, buffer, 0, 1024, 0)).toString('utf8'); fs.closeSync(fd); } catch { /* no models then */ }
+    const list = head.match(/^translated-by: (.+)$/m)?.[1] || '';
+    return Object.fromEntries(list.split('; ').map(item => item.match(/^(.+)=(\d+)$/)).filter(Boolean).map(match => [match[1], Number(match[2])]));
+  };
+  function writeResult(cues, unique, translated, hash, models) {
     if (!translated.size) throw new Error('번역 결과를 받지 못했습니다.');
     const out = path.join(cacheDir, `${hash}.vtt`), failed = unique.length - translated.size;
     const byText = new Map(unique.filter(line => translated.has(line.i)).map(line => [line.raw, positionTag(line.raw) + translated.get(line.i)]));
@@ -467,11 +605,12 @@ function createTranslator(userData) {
     fs.mkdirSync(cacheDir, { recursive: true });
     // Unfinished results are not cached, so a later try can fill the gaps.
     const target = failed ? path.join(cacheDir, `${hash}-partial-${Date.now()}.vtt`) : out;
-    fs.writeFileSync(target, `WEBVTT\n\n${body}\n`, 'utf8');
-    return { path: target, model, failed, cached: false };
+    const note = Object.entries(models).map(([model, lines]) => `${model}=${lines}`).join('; ');
+    fs.writeFileSync(target, `WEBVTT\n\n${note ? `NOTE\ntranslated-by: ${note}\n\n` : ''}${body}\n`, 'utf8');
+    return { path: target, model: Object.keys(models)[0] || '', models, failed, cached: false };
   }
 
-  return { settings, saveSettings, translate, cancel, ready, local, clouds: CLOUDS };
+  return { settings, saveSettings, translate, cancel, jump, ready, local, clouds: CLOUDS };
 }
 
 module.exports = { createTranslator };

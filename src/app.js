@@ -413,7 +413,7 @@ async function renderAssSubtitle(){
 function attachSubtitle(src,label='자막',options={}){
   const video=$('#video');clearSubtitle();const subtitle={src,label,...options,assRendering:false};currentSubtitle=subtitle;if(KOREAN_SOURCES.includes(options.source))currentPlaybackContext.koreanFound=true;
   const track=document.createElement('track');track.kind='subtitles';track.label=label;track.srclang='ko';track.src=src;track.default=true;video.append(track);
-  track.addEventListener('load',()=>{if(currentSubtitle!==subtitle)return;applyVttLayout();setVttVisible();if(!translatingNow())$('#subtitleState').textContent=`${label} 적용됨${subtitle.assUrl&&assEffectsEnabled()?' · ASS 효과':''}`;toast(options.notice||`${label}을 적용했습니다.`)});
+  track.addEventListener('load',()=>{if(currentSubtitle!==subtitle)return;applyVttLayout();setVttVisible();if(translating?.lines&&translating.path===subtitle.path)showTranslatedLines([]);if(!translatingNow())$('#subtitleState').textContent=`${label} 적용됨${subtitle.assUrl&&assEffectsEnabled()?' · ASS 효과':''}`;toast(options.notice||`${label}을 적용했습니다.`)});
   track.addEventListener('error',()=>{if(currentSubtitle===subtitle)$('#subtitleState').textContent='자막 파일을 불러오지 못했습니다.'});
   renderAssSubtitle();
   if(options.source==='user')fetch(src).then(response=>response.text()).then(text=>{const body=text.replace(/^WEBVTT.*$/m,'').replace(/\d{2}:\d{2}[:.,\d]* --> [^\n]*/g,''),count=pattern=>(body.match(pattern)||[]).length,hangul=count(/[가-힣]/g);subtitle.korean=hangul>count(/[぀-ヿ一-龯a-zA-Z]/g);if(currentSubtitle===subtitle)renderSubtitleSheet()}).catch(()=>{});
@@ -535,7 +535,7 @@ async function autoTranslate(superseded,manual=false,provider=null){
   const files=anime?await loadJimakuList():[];if(superseded())return false;
   if(files.length){await applyJimaku(files[0],manual);return true}
   const track=translationSourceTrack();if(!track)return false;
-  const requestId=playbackRequestId;if(!await selectSubtitleTrack(track,{auto:true,notice:`${track.label} 자막을 먼저 띄웠어요. 한국어 번역이 끝나면 바로 바뀌어요.`})||requestId!==playbackRequestId)return false;
+  const requestId=playbackRequestId;if(!await selectSubtitleTrack(track,{auto:true,notice:`${track.label} 자막을 먼저 띄웠어요. 번역되는 대로 한국어로 바뀌어요.`})||requestId!==playbackRequestId)return false;
   await translateSubtitleTrack(provider,manual);return true;
 }
 // A Korean subtitle is on (a fansub, the site's Korean track): a machine translation is made beside it from the same
@@ -614,7 +614,10 @@ async function translateSubtitleTrack(provider='cloud',manual=false){
   const track=tracks.find(item=>item.url===context.selectedSubtitleTrack);
   if(!track){toast(tracks.length?'번역할 자막 트랙을 먼저 선택하세요.':`번역할 ${trackSourceLabel()} 자막 트랙이 없습니다.`);return}
   if(track.translatedUrl){currentSubtitlePath=track.translatedPath;attachSubtitle(track.translatedUrl,`AI 번역 (${track.label})`,{path:track.translatedPath,source:'gemini'});return}
-  await runTranslation({file:()=>trackFile(track),name:track.label,button,provider,manual});
+  // The track on screen is translated from its file there (fetched again it would be saved under another name, and its
+  // lines could not be shown as they are translated).
+  const shown=currentSubtitle?.source==='reanime'&&currentSubtitle.path&&currentSubtitle.path===currentSubtitlePath?currentSubtitle.path:'';
+  await runTranslation({file:()=>shown?Promise.resolve({path:shown}):trackFile(track),name:track.label,button,provider,manual});
 }
 // Translates a subtitle file (file: a function giving {path}) and applies the result; the button shows the progress
 // and, pressed again, cancels the run (the lines done so far are kept: the next run goes on from them). Only the newest
@@ -635,7 +638,8 @@ async function runTranslation({file,name,button,provider,manual=false}){
   translationButtons.set(run,button);translationEpisodes.set(run,subtitleStoreKey());translating={run,requestId,name};button.dataset.run=String(run);button.textContent='번역 준비 중… · 취소';$('#subtitleState').textContent=`${name} 자막을 한국어로 번역하는 중...`;renderSubtitleSheet();
   try{
     const source=await file();if(!current())return;
-    const result=await window.lilac.translateSubtitle({path:source.path,title,id:run,provider,anime:subtitleSearchAnime()});if(!current())return;
+    if(translating?.run===run)translating.path=source.path;
+    const result=await window.lilac.translateSubtitle({path:source.path,title,id:run,provider,anime:subtitleSearchAnime(),playing:$('#video').currentTime||0});if(!current())return;
     currentSubtitlePath=result.path;attachSubtitle(result.url,translatedLabel(result,name),{path:result.path,source:'gemini'});
     // The local AI translated this episode: the next one is made ready meanwhile (see prepareNextEpisode).
     // Pressed with a Korean subtitle there: the series goes on in machine translation.
@@ -645,6 +649,28 @@ async function runTranslation({file,name,button,provider,manual=false}){
     if(result.failed)toast(`${result.failed}줄은 번역하지 못해 원문으로 남겼습니다.`);
   }catch(error){if(current()){if(TRANSLATION_CANCELLED.test(ipcMessage(error)))$('#subtitleState').textContent='번역을 멈췄어요. 다시 누르면 멈춘 곳부터 이어서 번역해요.';else{$('#subtitleState').textContent='자동 번역에 실패했습니다.';toast(`자동 번역 실패: ${ipcMessage(error)}`)}}}
   finally{translationButtons.delete(run);translationEpisodes.delete(run);if(translating?.run===run)translating=null;if(button.dataset.run===String(run)){delete button.dataset.run;button.textContent=label}renderSubtitleSheet()}
+}
+// The lines translated so far are on screen while the rest is translated (the run starts where the episode is): the
+// subtitle being translated gets its cues again from its file, with those lines in Korean, and is laid out as when it
+// was loaded (an ASS file drawn with its effects is shown as plain cues meanwhile, as its translation will be).
+// raw: a cue's text as the translator reads it (tags off), text: the translated cue.
+const plainCueText=text=>text.replace(/<[^>]*>/g,'').replace(/&nbsp;/g,' ').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&').trim();
+function vttCueList(text){
+  const seconds=value=>value.trim().split(/\s/)[0].replace(',','.').split(':').map(Number).reduce((sum,part)=>sum*60+part,0),cues=[];
+  for(const block of text.replace(/^﻿/,'').replace(/\r/g,'').split(/\n{2,}/)){const lines=block.split('\n'),at=lines.findIndex(line=>line.includes('-->'));if(at<0)continue;const [start,end]=lines[at].split('-->');const body=lines.slice(at+1).join('\n');cues.push({start:seconds(start),end:seconds(end),text:body,raw:plainCueText(body)})}
+  return cues;
+}
+async function showTranslatedLines(items){
+  const run=translating;if(!run?.path||currentSubtitle?.path!==run.path)return;
+  run.lines??=new Map();for(const item of items)run.lines.set(item.raw,item.text);
+  run.cues??=fetch(currentSubtitle.src).then(response=>response.text()).then(vttCueList).catch(()=>null);
+  const cues=await run.cues,track=$('#video').textTracks[0];
+  if(!cues?.length||!track?.cues||translating!==run||currentSubtitle?.path!==run.path)return;
+  if(currentSubtitle.assRendering){currentSubtitle.assRendering=false;window.LilacAss?.destroy();setVttVisible()}
+  for(const cue of [...track.cues])track.removeCue(cue);
+  // (A blank: a bilingual file's Chinese line, left out of its translation.)
+  for(const cue of cues){const text=run.lines.get(cue.raw)??cue.text;if(text)track.addCue(new VTTCue(cue.start,cue.end,text))}
+  track.lilacFlat=false;applyVttLayout();
 }
 // Jimaku (Android JIMAKU_USER_SELECTION_V2): the episode's Japanese subtitle files are listed for the user to pick; the
 // picked one is applied, saved for the episode and, when set up, translated into Korean right away. Like the Re:Anime /
@@ -684,7 +710,7 @@ async function applyJimaku(file,manual=false){
     if(provider)translateJimaku(provider,manual);
   }catch(error){if(requestId===playbackRequestId){$('#subtitleState').textContent='Jimaku 자막을 받지 못했습니다.';toast(`Jimaku: ${ipcMessage(error)}`)}}
 }
-const JIMAKU_TRANSLATING='일본어 자막을 먼저 띄웠어요. 한국어 번역이 끝나면 바로 바뀌어요.';
+const JIMAKU_TRANSLATING='일본어 자막을 먼저 띄웠어요. 번역되는 대로 한국어로 바뀌어요.';
 // 설정 > 자막 자동 번역: off, the translation API or the local AI (null: off, or neither is set up).
 async function jimakuAutoProvider(){
   translationSettings=await window.lilac.geminiSettings().catch(()=>translationSettings);
@@ -714,7 +740,10 @@ function translateJimaku(provider='cloud',manual=false){const subtitle=currentPl
 // The one 번역 row translates the subtitle on screen: the picked Jimaku file, or the picked track.
 const translateShown=provider=>{const kind=translatableSubtitle(),button=provider==='local'?$('#translateNowLocal'):$('#translateNow');if(kind==='jimaku')return translateJimaku(provider,true);if(kind==='user'){const path=currentSubtitle.path;return runTranslation({file:async()=>({path}),name:'내 자막',button,provider,manual:true})}return translateSubtitleTrack(provider,true)};
 $('#translateNow').onclick=event=>cancelButtonRun(event.currentTarget)||translateShown('cloud');$('#translateNowLocal').onclick=event=>cancelButtonRun(event.currentTarget)||translateShown('local');
-window.lilac.onTranslateProgress(({id,done,total,status})=>{
+// A jump while the subtitle on screen is translated: its run translates from there next.
+$('#video').addEventListener('seeked',()=>{if(translating?.path&&translatingNow())window.lilac.jumpTranslation(translating.run,$('#video').currentTime||0).catch(()=>{})});
+window.lilac.onTranslateProgress(({id,done,total,status,lines})=>{
+  if(lines){if(translating?.run===id&&translatingNow())showTranslatedLines(lines);return}
   const button=translationButtons.get(id),percent=`${Math.round(done/Math.max(1,total)*100)}%`;if(button&&button.dataset.run===String(id))button.textContent=`${status||`번역 중… ${percent}`} · 취소`;
   if(translating?.run===id&&translatingNow())$('#subtitleState').textContent=status?`${status}…`:`${translating.name} 자막을 한국어로 번역하는 중… ${percent}`;
 });

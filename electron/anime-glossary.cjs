@@ -102,4 +102,36 @@ function termsFor(line, terms) {
   return hits.filter(term => !hits.some(other => other !== term && other.ja.length > term.ja.length && other.ja.includes(term.ja)));
 }
 
-module.exports = { romaji, characterTerms, termsFor };
+// Words for an older brother or sister, which Korean says by the speaker's sex: 형 / 누나 from a boy, 오빠 / 언니 from a
+// girl. Small and large local models alike took Sota's お姉ちゃん as 언니 though told the rule and the cast's sexes, so a
+// line with a speaker tag of the cast ((創太), (堀 創太)) gets the Korean word itself as a term. Lines without a tag are
+// left to the model: the line before is no guide (Kyoko quoting Sota's お兄ちゃん is still 형).
+const SIBLINGS = [
+  ...['お兄ちゃん', 'おにいちゃん', 'おにーちゃん', 'お兄さん', 'おにいさん', '兄ちゃん', '兄さん', '兄貴'].map(ja => ({ ja, male: '형', female: '오빠' })),
+  ...['お姉ちゃん', 'おねえちゃん', 'おねーちゃん', 'おね～ちゃん', 'お姉さん', 'おねえさん', '姉ちゃん', '姉さん', '姉貴'].map(ja => ({ ja, male: '누나', female: '언니' }))
+];
+// The cast member a tag names, by full name or a part of it that only one of them has (堀 is both Kyoko and Sota).
+function castMember(tag, characters) {
+  const name = tag.replace(/\([^)]*\)|（[^）]*）/g, '').replace(/[\s　]/g, '');
+  if (!name || /[･・、,]/.test(name)) return null;
+  const parts = character => { const native = String(character.native || '').replace(/[\s　]/g, ''); const split = splitNative(String(character.native || '').trim(), String(character.last || ''), String(character.first || '')); return [native, ...(split || [])]; };
+  const full = characters.find(character => parts(character)[0] === name);
+  if (full) return full;
+  const matches = characters.filter(character => parts(character).slice(1).includes(name));
+  return matches.length === 1 ? matches[0] : null;
+}
+// Terms for the sibling words in a subtitle (a cue's lines; a tag starts a speaker's line and holds for the lines after
+// it in the cue), for the speaker's sex from AniList.
+function speakerTerms(text, characters = []) {
+  const terms = []; let speaker = null;
+  for (const line of String(text).split('\n')) {
+    const tag = line.match(/^\s*[（(]((?:[^（）()]|\([^)]*\))+)[）)]/);
+    if (tag) speaker = castMember(tag[1], characters);
+    const sex = /^(male|female)$/i.test(speaker?.gender || '') ? speaker.gender.toLowerCase() : '';
+    if (!sex) continue;
+    for (const word of SIBLINGS) if (line.includes(word.ja) && !terms.some(term => term.ja === word.ja)) terms.push({ ja: word.ja, ko: word[sex] });
+  }
+  return terms.filter(term => !terms.some(other => other !== term && other.ja.length > term.ja.length && other.ja.includes(term.ja)));
+}
+
+module.exports = { romaji, characterTerms, termsFor, speakerTerms };

@@ -9,7 +9,7 @@ const net = require('net');
 const os = require('os');
 const { spawn } = require('child_process');
 const AdmZip = require('adm-zip');
-const { characterTerms, termsFor } = require('./anime-glossary.cjs');
+const { characterTerms, termsFor, speakerTerms } = require('./anime-glossary.cjs');
 
 // Best first (the settings list them in this order), by Horimiya episode 1 (October 2026) on a GTX 1050 Ti + Ryzen 5
 // 5600 + 32 GB: all 425 lines translated the way the app does, 16 scenes graded (a slip half a point), then the faster
@@ -114,7 +114,7 @@ function modelKind(model, template = '') {
   if (/gemma-?4/i.test(name) || /<\|turn>/.test(template)) return 'gemma';
   // Other general chat models asked like Gemma 4 (the system message with the cast, the word list and the lines before;
   // thinking off for Qwen3.5 and later): Aya Expanse, and EXAONE or Qwen files the user added.
-  if (/exaone|qwen3\.[5-9]|aya/i.test(name)) return 'general';
+  if (/exaone|qwen3\.[5-9]|aya[-_ ]?(?:expanse|\d)/i.test(name)) return 'general';
   if (/hy-mt2/i.test(name)) return /a3b|30b/i.test(name) ? 'hy-mt2-moe' : 'hy-mt2';
   return /hy-mt/i.test(name) ? 'hy-mt' : 'chat';
 }
@@ -383,7 +383,7 @@ function createLocalAi(userData) {
         // hangs (in its warm-up run) is short of card memory, most often because another program is using the card (a
         // second llama.cpp did it on a 4 GB card), unless its code does not fit the card. So it is loaded again with more
         // room, then on the CPU, and not given up on for the next build.
-        const placed = () => onCard && total > 0 && !/no kernel image|invalid device function|unsupported/i.test(log);
+        const placed = () => onCard && total > 0 && !/no kernel image|invalid device function/i.test(log);
         const short = () => Object.assign(new Error('그래픽카드 메모리가 부족해 모델을 불러오지 못했습니다. 그래픽카드를 쓰는 다른 프로그램을 닫거나 더 작은 모델(Hy-MT2 1.8B)을 써 보세요.'), { memory: true });
         child.stdout.on('data', keep); child.stderr.on('data', keep);
         const exited = new Promise(resolve => child.once('exit', code => resolve(code)));
@@ -461,8 +461,9 @@ function createLocalAi(userData) {
   // Android LocalAiTranslationRuntime.parseSingleOutput: the model's answer without wrappers. Small models sometimes
   // translate the context too, so only the last lines (as many as the source has) are kept.
   function clean(output, original) {
-    // A chat model's own end mark written out as text (Aya Expanse's <|END_OF_TURN_TOKEN|>) is left out.
-    let value = String(output || '').replace(/<\|[A-Z_]+\|>/g, '').replace(/\r\n?/g, '\n').trim().replace(/^<target>|<\/target>$/g, '').trim();
+    // A chat model's own end mark written out as text (Aya Expanse's <|END_OF_TURN_TOKEN|>, <|im_end|> in a file the
+    // user added) is left out.
+    let value = String(output || '').replace(/<\|[a-z_]+\|>/gi, '').replace(/\r\n?/g, '\n').trim().replace(/^<target>|<\/target>$/g, '').trim();
     value = value.replace(/^```(?:text|plaintext|korean|ko)?\s*/i, '').replace(/\s*```$/, '').trim();
     const labelled = value.match(/<target>([\s\S]*?)<\/target>/i)?.[1]?.trim(); if (labelled) value = labelled;
     const lines = value.split('\n').map(line => line.trimEnd()).filter(Boolean), wanted = Math.max(1, original.split('\n').filter(Boolean).length);
@@ -470,8 +471,10 @@ function createLocalAi(userData) {
   }
   // Every line once, four at a time. Returns translations by index (failed
   // lines are left out, so the caller keeps the original text); onLine(index, text) hears each one as it is done.
-  // context: the work's {characters} from AniList, for the names in the terminology list.
-  async function translateLines(texts, { modelId, progress = () => {}, status = () => {}, onLine = () => {}, context = {}, signal = null } = {}) {
+  // context: the work's {characters} from AniList, for the names in the terminology list. pick(): the index of the line
+  // to translate next (undefined when none is left), asked as each slot frees up, so the lines follow where the episode
+  // is playing (and where it jumps to); the lines before a line are still its neighbours. Without it, in order.
+  async function translateLines(texts, { modelId, progress = () => {}, status = () => {}, onLine = () => {}, context = {}, signal = null, pick = null } = {}) {
     const model = models().find(item => item.id === modelId) || models().find(item => item.installed);
     if (!model) throw new Error('로컬 AI 모델이 없습니다. 설정 > 자막 자동 번역에서 모델을 받아 주세요.');
     const { port, template } = await start(model, status);
@@ -491,8 +494,10 @@ function createLocalAi(userData) {
     progress(0, texts.length);
     await Promise.all(Array.from({ length: PARALLEL }, async () => {
       // A cancelled run takes no new line; the four being written finish (a few seconds).
-      while (next < texts.length && !fatal && !signal?.aborted) {
-        const index = next++, source = texts[index], body = request(source, termsFor(source, names), kind, texts.slice(Math.max(0, index - 2), index), cast);
+      while (!fatal && !signal?.aborted) {
+        const index = pick ? pick() : next < texts.length ? next++ : undefined;
+        if (index === undefined) break;
+        const source = texts[index], body = request(source, [...termsFor(source, names), ...speakerTerms(source, context.characters)], kind, texts.slice(Math.max(0, index - 2), index), cast);
         try {
           // A Japanese word left in the answer (えっ, 先輩) is asked again, twice at most. ja-ko-vn's temperature of 0.1
           // would give the same answer again, so its second and third tries are less certain.
