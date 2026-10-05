@@ -244,16 +244,18 @@ class DownloadManager {
     let found = null;
     try { found = await this.findSubtitle?.(job, stream); } catch { /* fall back to the stream's own subtitle */ }
     job.subtitleChecked = true;
-    // The Jimaku file (and its translation) always comes too: as the subtitle when nothing Korean was found, else next
-    // to the Korean one (a fansub, or RE:Anime's / Miruro's own Korean track), saved for the episode so the player
-    // offers it.
+    // The Jimaku file (and its translation) comes too: as the subtitle when nothing Korean was found, else next to a
+    // Kairan / Csora / Anissia one (a fansub can be another episode's), saved for the episode so the player offers it.
+    // Not when the site has its own Korean subtitle (a RE:Anime / Miruro Korean track, Linkkf's), which is the
+    // episode's: no Jimaku file and no translation beside it (see attachTracks too).
+    job.siteKorean = Boolean(stream?.subtitleUrl) && (job.resolveKind === 'linkkf' || ['reanime', 'miruro'].includes(job.episode?.provider));
     if (!found || found.stream) {
       await this.saveSubtitle(job, stream?.subtitleUrl); this.saveAssSubtitle(job, stream?.subtitleAss?.path);
-      await this.attachJimaku(job, stream, !found && !job.subtitlePath);
+      if (!job.siteKorean) await this.attachJimaku(job, stream, !found && !job.subtitlePath);
       return;
     }
     this.copySubtitle(job, found);
-    await this.attachJimaku(job, stream, false);
+    if (!job.siteKorean) await this.attachJimaku(job, stream, false);
   }
   copySubtitle(job, found) {
     const base = job.filePath.replace(/\.mp4$/i, '');
@@ -335,12 +337,13 @@ class DownloadManager {
     }
     if (!saved.length || !this.jobs.includes(job)) return;
     job.subtitleTracks = saved; job.updated = Date.now(); this.save();
-    // One machine translation is enough, made from the best source even beside a Korean subtitle (it may be another
-    // episode's): none from the tracks when the episode's Jimaku file is translated (설정 > 자막 자동 번역); otherwise the
+    // One machine translation is enough, made from the best source even beside a Kairan / Csora / Anissia subtitle (it
+    // may be another episode's): none from the tracks when the episode's Jimaku file is translated (설정 > 자막 자동 번역); otherwise the
     // Japanese track (the original dialogue, translated once) or else the English dialogue one (not signs & songs alone,
     // a written one before an AI dub transcript). Translating every track took one run per language, hours with the
     // local AI.
-    if (job.jimakuFound && this.jimakuTranslates?.()) return;
+    // None either beside the site's own Korean track (attachSubtitle): the episode has its Korean subtitle.
+    if (job.siteKorean || (job.jimakuFound && this.jimakuTranslates?.())) return;
     const text = track => `${track.label} ${track.language}`, code = (track, lang) => new RegExp(`^${lang}(?:[-_]|$)`, 'i').test(track.language || '');
     const rank = track => /signs|songs|forced/i.test(track.label) ? 3 : /dubtitle|\(ai\)|\bai\b/i.test(track.label) ? 2 : /dialogue|full/i.test(track.label) ? 0 : 1;
     const track = saved.find(item => /japanese|日本/i.test(text(item)) || code(item, 'ja')) || saved.filter(item => /english/i.test(text(item)) || code(item, 'en')).sort((a, b) => rank(a) - rank(b))[0];
