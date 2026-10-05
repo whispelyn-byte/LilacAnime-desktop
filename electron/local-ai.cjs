@@ -11,24 +11,34 @@ const { spawn } = require('child_process');
 const AdmZip = require('adm-zip');
 const { characterTerms, termsFor } = require('./anime-glossary.cjs');
 
-// Best translation first, by Horimiya episode 1 on a GTX 1050 Ti + Ryzen 5 5600 + 32 GB (16 lines spread over the
-// episode, against Gemini): Gemma 4 26B-A4B made no mistake there (12 min); Hy-MT2 7B (10 min) and Gemma 4 E4B (5 min)
-// a few slips; Hy-MT2 30B-A3B (7 min) dropped names and used 존댓말 between friends; Gemma 4 E2B (3 min) got two lines
-// wrong; the 1.8B model (2 min) and ja-ko-vn (7 min, half of it on a 4 GB card) about a third. Gemma 4 E4B is the default: good and quick on a small card. Android's choices were HY-MT1.5
-// (its default) and the Japanese -> Korean VN model it used before; Hy-MT2 (May 2026) replaced HY-MT1.5, which stays
-// listed only where it was downloaded (legacy), so a PC using it keeps working.
+// Best first (the settings list them in this order), by Horimiya episode 1 (October 2026) on a GTX 1050 Ti + Ryzen 5
+// 5600 + 32 GB: all 425 lines translated the way the app does, 16 scenes graded (a slip half a point), then the faster
+// one; also counted over the whole episode, Sota's お姉ちゃん / お兄ちゃん (a boy: 누나 / 형, 7 lines) and the lines left
+// with Japanese in them. Gemma 4 E4B (13.5 of 16, 6/7, 6 min) is the default: the best of 13 models and among the
+// quickest. Gemma 4 E2B and Hy-MT2 1.8B are for small PCs. Listed only where they were downloaded (legacy), so a PC
+// using one keeps working, as none did better than E4B here: Hy-MT2 7B, Gemma 4 26B-A4B, ja-ko-vn, Hy-MT2 30B-A3B
+// (존댓말 between friends and broken endings), and HY-MT1.5, which Hy-MT2 (May 2026) replaced. Tried and left out: Qwen3.5
+// 9B (11.5 but 14 lines with Japanese, 12 min), Qwen3.6 35B-A3B (10.5, 13 min), Tower+ 9B (7, kanji left in), EXAONE 3.5
+// 7.8B (6.5, speaker names turned into 호칭) and Seed-X PPO 7B (0.5: it takes no names or context).
 const MODELS = [
-  // Google's general models in its own 4-bit (QAT) files. The 26B mixture of experts works about 4B per word, so it runs
-  // from memory on the processor; E4B fits a 4 GB card nearly whole (42 of 43 layers).
-  { id: 'gemma-4-26b-a4b', label: 'Gemma 4 26B-A4B', note: '14.4GB · 가장 정확함 · 램 24GB 이상', repo: 'google/gemma-4-26B-A4B-it-qat-q4_0-gguf', file: 'gemma-4-26B_q4_0-it.gguf', size: 14440e6, ram: 24 },
-  { id: 'hy-mt2-7b', label: 'Hy-MT2 7B', note: '4.6GB · 정확함 · 그래픽카드 메모리 6GB 이상이면 빠름', repo: 'tencent/Hy-MT2-7B-GGUF', file: 'Hy-MT2-7B-Q4_K_M.gguf', size: 4620e6 },
-  { id: 'gemma-4-e4b', label: 'Gemma 4 E4B', note: '기본 · 5.2GB · 빠르고 정확함', repo: 'google/gemma-4-E4B-it-qat-q4_0-gguf', file: 'gemma-4-E4B_q4_0-it.gguf', size: 5150e6 },
-  // A mixture of experts: 30B in all but about 3B worked per word, so it runs from memory on the processor.
-  { id: 'hy-mt2-30b-a3b', label: 'Hy-MT2 30B-A3B', note: '18GB · 램 24GB 이상', repo: 'tencent/Hy-MT2-30B-A3B-GGUF', file: 'Hy-MT2-30B-A3B-Q4_K_M.gguf', size: 18240e6, ram: 24 },
-  { id: 'gemma-4-e2b', label: 'Gemma 4 E2B', note: '3.4GB · 가볍고 빠름', repo: 'google/gemma-4-E2B-it-qat-q4_0-gguf', file: 'gemma-4-E2B_q4_0-it.gguf', size: 3350e6 },
-  { id: 'hy-mt2-1.8b', label: 'Hy-MT2 1.8B', note: '1.1GB · 가장 빠름 · 가끔 뜻을 틀림', repo: 'tencent/Hy-MT2-1.8B-GGUF', file: 'Hy-MT2-1.8B-Q4_K_M.gguf', size: 1133e6 },
-  { id: 'ja-ko-vn-7b', label: 'ja-ko-vn 7B', note: '4.6GB · 이전 추천 모델 · 품질은 Hy-MT2 1.8B와 비슷', repo: 'hell0ks/ja-ko-vn-7b-v1-gguf', file: 'model-Q4_K_M.gguf', size: 4630e6 },
-  { id: 'hy-mt-7b', label: 'HY-MT1.5 7B', note: '이전 버전 · Hy-MT2 7B를 권장', repo: 'tencent/HY-MT1.5-7B-GGUF', file: 'HY-MT1.5-7B-Q4_K_M.gguf', size: 4620e6, legacy: true },
+  // Google's general models in its own 4-bit (QAT) files. E4B fits a 4 GB card nearly whole (42 of 43 layers).
+  { id: 'gemma-4-e4b', label: 'Gemma 4 E4B', note: '기본 · 5.2GB · 가장 정확하고 빠름', repo: 'google/gemma-4-E4B-it-qat-q4_0-gguf', file: 'gemma-4-E4B_q4_0-it.gguf', size: 5150e6 },
+  // Cohere's multilingual model (11, 7/7, no Japanese left, 9 min), half of it on the CPU of a 4 GB card.
+  { id: 'aya-expanse-8b', label: 'Aya Expanse 8B', note: '5.1GB · 정확함 · 형/누나를 잘 맞춤 · 그래픽카드 메모리 6GB 이상이면 빠름', repo: 'bartowski/aya-expanse-8b-GGUF', file: 'aya-expanse-8b-Q4_K_M.gguf', size: 5057e6 },
+  // 11, 1/7, 10 min.
+  { id: 'hy-mt2-7b', label: 'Hy-MT2 7B', note: '4.6GB · 목록에서 빠짐 · 형/누나를 자주 틀림', repo: 'tencent/Hy-MT2-7B-GGUF', file: 'Hy-MT2-7B-Q4_K_M.gguf', size: 4620e6, legacy: true },
+  // The 26B and 30B mixtures of experts work about 4B and 3B per word, so they run from memory on the processor.
+  // 11, 0/7, 12 min.
+  { id: 'gemma-4-26b-a4b', label: 'Gemma 4 26B-A4B', note: '14.4GB · 목록에서 빠짐 · E4B보다 느리고 형/누나를 틀림', repo: 'google/gemma-4-26B-A4B-it-qat-q4_0-gguf', file: 'gemma-4-26B_q4_0-it.gguf', size: 14440e6, ram: 24, legacy: true },
+  // 10, 1/7, names wrong in 21 lines, 6 min.
+  { id: 'ja-ko-vn-7b', label: 'ja-ko-vn 7B', note: '4.6GB · 목록에서 빠짐 · 이름을 자주 틀림', repo: 'hell0ks/ja-ko-vn-7b-v1-gguf', file: 'model-Q4_K_M.gguf', size: 4630e6, legacy: true },
+  // 8.5, 1/7, 7 min.
+  { id: 'hy-mt2-30b-a3b', label: 'Hy-MT2 30B-A3B', note: '18GB · 목록에서 빠짐 · 존댓말이 섞임', repo: 'tencent/Hy-MT2-30B-A3B-GGUF', file: 'Hy-MT2-30B-A3B-Q4_K_M.gguf', size: 18240e6, ram: 24, legacy: true },
+  // 7.5, 3/7, 3 min.
+  { id: 'gemma-4-e2b', label: 'Gemma 4 E2B', note: '3.4GB · 가볍고 빠름 · 가끔 뜻을 틀림', repo: 'google/gemma-4-E2B-it-qat-q4_0-gguf', file: 'gemma-4-E2B_q4_0-it.gguf', size: 3350e6 },
+  // 5.5, 0/7, 2 min.
+  { id: 'hy-mt2-1.8b', label: 'Hy-MT2 1.8B', note: '1.1GB · 가장 가볍고 빠름 · 존댓말이 섞이고 자주 틀림', repo: 'tencent/Hy-MT2-1.8B-GGUF', file: 'Hy-MT2-1.8B-Q4_K_M.gguf', size: 1133e6 },
+  { id: 'hy-mt-7b', label: 'HY-MT1.5 7B', note: '이전 버전 · Gemma 4 E4B를 권장', repo: 'tencent/HY-MT1.5-7B-GGUF', file: 'HY-MT1.5-7B-Q4_K_M.gguf', size: 4620e6, legacy: true },
   { id: 'hy-mt-1.8b', label: 'HY-MT1.5 1.8B', note: '이전 버전 · Hy-MT2 1.8B를 권장', repo: 'tencent/HY-MT1.5-1.8B-GGUF', file: 'HY-MT1.5-1.8B-Q4_K_M.gguf', size: 1133e6, legacy: true }
 ];
 // llama.cpp builds: Vulkan runs on any graphics card (and falls back to the CPU); the others are made for one maker's
@@ -82,7 +92,7 @@ function request(source, terms, kind, before = [], cast = []) {
     if (kind === 'hy-mt2' && before.length) return { messages: user(`[Background Information]\n${before.join('\n')}\n\n${reference}Please translate the following text into Korean, taking the provided background information into consideration.\n\n[Source Text]\n${source}`), ...sampling };
     return { messages: user(`${reference}${HY_MT2_INSTRUCTION}\n\n${source}`), ...sampling };
   }
-  if (kind === 'gemma') {
+  if (kind === 'gemma' || kind === 'general') {
     const parts = [...(terms.length ? [`Names and terms (use these Korean spellings):\n${terms.map(term => `${term.ja} = ${term.ko}`).join('\n')}`] : []), ...(before.length ? [`Previous lines (context only, do not translate them):\n${before.join('\n')}`] : []), `Translate this line:\n${source}`];
     const system = [
       'You translate Japanese anime subtitles into natural spoken Korean, keeping each speaker\'s tone (반말 or 존댓말 as the scene calls for).',
@@ -102,6 +112,9 @@ function modelKind(model, template = '') {
   const name = `${model.id} ${model.file || ''} ${model.label}`;
   if (/ja-ko-vn|jako/i.test(name) || /일한 번역가|고유명사 및 용어 규칙/.test(template)) return 'jako';
   if (/gemma-?4/i.test(name) || /<\|turn>/.test(template)) return 'gemma';
+  // Other general chat models asked like Gemma 4 (the system message with the cast, the word list and the lines before;
+  // thinking off for Qwen3.5 and later): Aya Expanse, and EXAONE or Qwen files the user added.
+  if (/exaone|qwen3\.[5-9]|aya/i.test(name)) return 'general';
   if (/hy-mt2/i.test(name)) return /a3b|30b/i.test(name) ? 'hy-mt2-moe' : 'hy-mt2';
   return /hy-mt/i.test(name) ? 'hy-mt' : 'chat';
 }
@@ -169,8 +182,9 @@ function createLocalAi(userData) {
       const cards = await videoCards(), amd = cards.find(card => /radeon/i.test(card.name) && !/\brx\s*[45]\d0\b|vega|radeon vii|\br[579]\b|\bhd\s*\d/i.test(card.name)), arc = cards.find(card => /intel/i.test(card.name) && /\barc\b/i.test(card.name));
       if (amd) { list.push('rocm'); driver = amd.driver; } else if (arc) { list.push('sycl', 'openvino'); driver = arc.driver; }
     }
-    // (A mark from before checks were counted (check 2) may be a CUDA build wrongly given up on a large model: not kept.)
-    return [...list.filter(kind => kind && !(off[kind] && off[kind].driver === driver && off[kind].check === 2)), 'vulkan'];
+    // (A mark from before check 3 may be a build wrongly given up on: on a large model before checks were counted, or
+    // while another program had the card's memory before a build that reached the card counted as working: not kept.)
+    return [...list.filter(kind => kind && !(off[kind] && off[kind].driver === driver && off[kind].check === 3)), 'vulkan'];
   }
   async function cardDriver(kind) { return kind.startsWith('cuda') ? (await nvidiaGpu())?.driver || 0 : (await videoCards()).find(card => kind === 'rocm' ? /radeon/i.test(card.name) : /intel/i.test(card.name))?.driver || ''; }
 
@@ -356,14 +370,21 @@ function createLocalAi(userData) {
         // The device and layer count are read as the model loads (-lv 4 prints them).
         // They are looked for in the output as it comes, before only its end is kept: a large model prints so much while it
         // loads that the device line is gone from the last 8000 characters by the time the server answers.
-        let log = '', device = '', onCard = false, layers = 0, total = 0;
+        let log = '', device = '', onCard = false, layers = 0, total = 0, warming = 0;
         const keep = chunk => {
           const text = log + chunk.toString();
           device ||= text.match(/using device \S+ \(([^)]+)\)/)?.[1] || '';
           onCard ||= Boolean(RUNTIMES[kind].device?.test(text));
           const offloaded = text.match(/offloaded (\d+)\/(\d+) layers to GPU/); if (offloaded) { layers = Number(offloaded[1]); total = Number(offloaded[2]); }
+          if (!warming && /warming up the model/.test(text)) warming = Date.now();
           log = text.slice(-8000);
         };
+        // A maker's build that found the card and put the model's layers on it works on this PC: one that then stops or
+        // hangs (in its warm-up run) is short of card memory, most often because another program is using the card (a
+        // second llama.cpp did it on a 4 GB card), unless its code does not fit the card. So it is loaded again with more
+        // room, then on the CPU, and not given up on for the next build.
+        const placed = () => onCard && total > 0 && !/no kernel image|invalid device function|unsupported/i.test(log);
+        const short = () => Object.assign(new Error('그래픽카드 메모리가 부족해 모델을 불러오지 못했습니다. 그래픽카드를 쓰는 다른 프로그램을 닫거나 더 작은 모델(Hy-MT2 1.8B)을 써 보세요.'), { memory: true });
         child.stdout.on('data', keep); child.stderr.on('data', keep);
         const exited = new Promise(resolve => child.once('exit', code => resolve(code)));
         // A maker's build turns its code for the card into the card's own the first time it runs (SYCL always, CUDA on
@@ -375,9 +396,8 @@ function createLocalAi(userData) {
         for (;;) {
           const code = await Promise.race([exited, new Promise(resolve => setTimeout(() => resolve(undefined), 500))]);
           if (code !== undefined) {
-            const memory = /OutOfDeviceMemory|unable to allocate|failed to allocate|out of memory/i.test(log);
-            const error = new Error(memory ? '그래픽카드 메모리가 부족해 모델을 불러오지 못했습니다. 더 작은 모델(Hy-MT2 1.8B)을 써 보세요.' : `llama.cpp가 종료되었습니다: ${log.trim().split('\n').filter(line => / E /.test(line)).pop() || log.trim().split('\n').pop() || code}`);
-            error.memory = memory; throw error;
+            if (/OutOfDeviceMemory|unable to allocate|failed to allocate|out of memory/i.test(log) || placed()) throw short();
+            throw new Error(`llama.cpp가 종료되었습니다: ${log.trim().split('\n').filter(line => / E /.test(line)).pop() || log.trim().split('\n').pop() || code}`);
           }
           let ready = false;
           try { ready = (await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(2000) })).ok; } catch { /* still loading */ }
@@ -389,7 +409,10 @@ function createLocalAi(userData) {
             if (first) try { fs.writeFileSync(buildFile(path.join(root, RUNTIMES[kind].dir)), JSON.stringify({ ...buildOf(kind), ran: driver })); } catch {}
             return { child, port, device, layers: device ? layers : 0, total };
           }
-          if (Date.now() > deadline) { child.kill(); throw new Error('모델을 불러오는 데 너무 오래 걸립니다.'); }
+          // The warm-up takes a second or two once the build has run with this driver (the first run turns its code into
+          // the card's own there, which can take minutes).
+          if (placed() && warming && !first && Date.now() - warming > 60000) { child.kill(); throw short(); }
+          if (Date.now() > deadline) { child.kill(); if (placed()) throw short(); throw new Error('모델을 불러오는 데 너무 오래 걸립니다.'); }
           if (first && !told && Date.now() - begun > 20000) { told = true; status(`llama.cpp(${RUNTIMES[kind].label})를 처음 실행해 그래픽카드에 맞게 준비하는 중 (몇 분 걸릴 수 있어요)`); }
         }
       };
@@ -419,7 +442,7 @@ function createLocalAi(userData) {
           // A maker's build that does not start on this PC (a driver or card it does not support) is not tried again
           // with this driver; the next build for the PC takes over (Vulkan in the end).
           if (kind === 'vulkan' || error.memory) throw error;
-          try { fs.mkdirSync(root, { recursive: true }); fs.writeFileSync(brokenFile, JSON.stringify({ ...broken(), [kind]: { driver: await cardDriver(kind), check: 2, error: error.message.slice(0, 300) } })); } catch {}
+          try { fs.mkdirSync(root, { recursive: true }); fs.writeFileSync(brokenFile, JSON.stringify({ ...broken(), [kind]: { driver: await cardDriver(kind), check: 3, error: error.message.slice(0, 300) } })); } catch {}
           status(`llama.cpp(${RUNTIMES[kind].label})가 실행되지 않아 다른 판으로 다시 불러오는 중`);
           ({ kind, exe } = await runtimeFor(status));
         }
@@ -438,7 +461,8 @@ function createLocalAi(userData) {
   // Android LocalAiTranslationRuntime.parseSingleOutput: the model's answer without wrappers. Small models sometimes
   // translate the context too, so only the last lines (as many as the source has) are kept.
   function clean(output, original) {
-    let value = String(output || '').replace(/\r\n?/g, '\n').trim().replace(/^<target>|<\/target>$/g, '').trim();
+    // A chat model's own end mark written out as text (Aya Expanse's <|END_OF_TURN_TOKEN|>) is left out.
+    let value = String(output || '').replace(/<\|[A-Z_]+\|>/g, '').replace(/\r\n?/g, '\n').trim().replace(/^<target>|<\/target>$/g, '').trim();
     value = value.replace(/^```(?:text|plaintext|korean|ko)?\s*/i, '').replace(/\s*```$/, '').trim();
     const labelled = value.match(/<target>([\s\S]*?)<\/target>/i)?.[1]?.trim(); if (labelled) value = labelled;
     const lines = value.split('\n').map(line => line.trimEnd()).filter(Boolean), wanted = Math.max(1, original.split('\n').filter(Boolean).length);
