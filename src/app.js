@@ -430,9 +430,9 @@ const prefersAiSubtitle=()=>Boolean(seriesKey()&&aiSeries()[seriesKey()]);
 function preferAiSubtitle(on){const key=seriesKey();if(!key)return;const all=aiSeries();if(on)all[key]=Date.now();else if(all[key])delete all[key];else return;try{localStorage.setItem('aiSubtitleSeries',JSON.stringify(all))}catch{}}
 // Android SubtitleStore parity: subtitles are remembered per episode and source.
 function subtitleStoreKey(){const episode=currentPlaybackContext.episode;return episode?episodeRef(episode):''}
-async function rememberSubtitle(subtitle){const key=subtitleStoreKey();if(!key)return;try{await window.lilac.saveSubtitle(key,{source:subtitle.source,label:subtitle.label,path:subtitle.path,assPath:subtitle.assPath||null,fonts:subtitle.fonts||[]})}catch{}renderSubtitleSheet()}
+async function rememberSubtitle(subtitle){const key=subtitleStoreKey();if(!key)return;try{await window.lilac.saveSubtitle(key,{source:subtitle.source,label:subtitle.label,path:subtitle.path,assPath:subtitle.assPath||null,fonts:subtitle.fonts||[],from:subtitle.from||null,fromName:subtitle.fromName||''})}catch{}renderSubtitleSheet()}
 // A saved Re:Anime / Miruro track is matched to its track by name ("Re:Anime English (Dialogue) 자막"), so the list marks it and 번역 knows it.
-function applySavedSubtitle(entry){if(entry.source==='jimaku')return applySavedJimaku(entry);if(entry.source==='reanime'){const track=(currentPlaybackContext.subtitleTracks||[]).find(item=>entry.label===`${trackSourceLabel()} ${item.label} 자막`);if(track)currentPlaybackContext.selectedSubtitleTrack=track.url}currentSubtitlePath=entry.path;attachSubtitle(entry.url,entry.label,{path:entry.path,assUrl:entry.assUrl,assPath:entry.assPath,fonts:entry.fonts,source:entry.source,saved:true})}
+function applySavedSubtitle(entry){if(entry.source==='jimaku')return applySavedJimaku(entry);if(entry.source==='reanime'){const track=(currentPlaybackContext.subtitleTracks||[]).find(item=>entry.label===`${trackSourceLabel()} ${item.label} 자막`);if(track)currentPlaybackContext.selectedSubtitleTrack=track.url}currentSubtitlePath=entry.path;attachSubtitle(entry.url,entry.label,{path:entry.path,assUrl:entry.assUrl,assPath:entry.assPath,fonts:entry.fonts,source:entry.source,from:entry.from||null,fromName:entry.fromName||'',saved:true})}
 // The subtitle sheet: the chip of the source on screen is lit (a machine translation lights AI 번역), the list of the
 // source picked last opens under the chips (Re:Anime / Miruro tracks, Jimaku files, Anissia makers; else the one of the
 // subtitle on screen), and one 번역 row is shown while a Japanese or English subtitle is on (or a translation runs).
@@ -445,9 +445,16 @@ function activeSubtitleSource(){const context=currentPlaybackContext;if(context.
 function pressSubtitleSource(source){Object.assign(currentPlaybackContext,{pressedSource:source,pressedFor:currentSubtitle})}
 function openSheet(){const picked=currentPlaybackContext.sheetSource;return picked!==undefined?picked:['reanime','jimaku','anissia'].includes(currentSubtitle?.source)?currentSubtitle.source:null}
 function translatableSubtitle(){const source=currentSubtitle?.source;if(source==='jimaku')return currentPlaybackContext.jimakuSubtitle?'jimaku':null;if(source==='user')return currentSubtitle.korean?null:'user';if(source!=='reanime')return null;const track=(currentPlaybackContext.subtitleTracks||[]).find(item=>item.url===currentPlaybackContext.selectedSubtitleTrack);return track&&!isKoreanTrack(track)?'track':null}
+// A machine translation on screen whose source file is still there can be made again (다시 번역): the saved one is
+// passed over and the new one takes its place, by the API or the local AI.
+function retranslatable(){return currentSubtitle?.source==='gemini'&&currentSubtitle.from?currentSubtitle:null}
+function labelTranslateButtons(){
+  const again=Boolean(retranslatable()),ro=translationSettings?.cloudRo||'로';
+  for(const [button,text] of [[$('#translateNow'),again?`${cloudName()}${ro} 다시 번역`:`${cloudName()}${ro} 한국어 번역`],[$('#translateNowLocal'),again?'내 PC(로컬 AI)로 다시 번역':'내 PC(로컬 AI)로 번역']]){button.dataset.label=text;if(!button.dataset.run)button.textContent=text}
+}
 function renderSubtitleSheet(){
   $$('#psSubtitleSources button').forEach(button=>button.classList.toggle('selected',button.dataset.source===activeSubtitleSource()));
-  $('#subtitleTranslateRow').classList.toggle('hidden',!translatableSubtitle()&&!['#translateNow','#translateNowLocal'].some(id=>$(id).dataset.run));
+  $('#subtitleTranslateRow').classList.toggle('hidden',!translatableSubtitle()&&!retranslatable()&&!['#translateNow','#translateNowLocal'].some(id=>$(id).dataset.run));labelTranslateButtons();
   renderSubtitleTracks();renderJimaku();if(typeof renderAnissiaMakers==='function')renderAnissiaMakers();
 }
 // Kairan → Csora → Anissia (the preferred one first), started while the stream is still being resolved so the
@@ -554,8 +561,8 @@ async function translateAlongside(source,requestId){
     const run=++backgroundRun;translationEpisodes.set(run,key);
     try{
       const result=await window.lilac.translateSubtitle({path:file.path,title:currentPlaybackContext.subtitleTitle||$('#skipTitle').value.trim(),id:run,provider,anime});
-      await window.lilac.saveSubtitle(key,{source:'gemini',label:translatedLabel(result,name),path:result.path,behind:true});
-      if(result.engine==='로컬 AI'&&requestId===playbackRequestId&&!currentPlaybackContext.siteKorean)prepareNextEpisode();
+      await window.lilac.saveSubtitle(key,{source:'gemini',label:translatedLabel(result,name),path:result.path,behind:true,from:file.path,fromName:name});
+      if((result.engine==='로컬 AI'||translationSettings?.prepareNextCloud)&&requestId===playbackRequestId&&!currentPlaybackContext.siteKorean)prepareNextEpisode();
       if(key===subtitleStoreKey()){renderSubtitleSheet();if(!alongsideNoted.has(seriesKey())){alongsideNoted.add(seriesKey());toast('번역본도 만들어 뒀어요. 한국어 자막이 맞지 않으면 플레이어 설정 > 자막 > 저장된 자막에서 골라 보세요.')}}
     }finally{translationEpisodes.delete(run)}
   }catch{/* the Korean subtitle stays; nothing to show */}
@@ -629,7 +636,7 @@ function cancelButtonRun(button){const run=Number(button.dataset.run);if(!run||!
 function cancelOtherEpisodeTranslations(){const episode=subtitleStoreKey();for(const [run,key] of translationEpisodes)if(key!==episode)window.lilac.cancelTranslation(run).catch(()=>{})}
 // A translation for the episode on screen is running: its progress stays in the subtitle state line.
 const translatingNow=()=>translating?.requestId===playbackRequestId;
-async function runTranslation({file,name,button,provider,manual=false}){
+async function runTranslation({file,name,button,provider,manual=false,fresh=false}){
   translationSettings=await window.lilac.geminiSettings().catch(()=>translationSettings);
   if(!translationReady('cloud')&&!translationReady('local')){toast(provider==='local'?'설정 > 자막 자동 번역에서 로컬 AI 모델을 먼저 받아 주세요.':`설정 > 자막 자동 번역에서 ${cloudName()} API 키를 넣어 주세요.`);return}
   cancelButtonRun(button); // a run this button was showing gives way (another Jimaku file picked)
@@ -639,12 +646,13 @@ async function runTranslation({file,name,button,provider,manual=false}){
   try{
     const source=await file();if(!current())return;
     if(translating?.run===run)translating.path=source.path;
-    const result=await window.lilac.translateSubtitle({path:source.path,title,id:run,provider,anime:subtitleSearchAnime(),playing:$('#video').currentTime||0});if(!current())return;
-    currentSubtitlePath=result.path;attachSubtitle(result.url,translatedLabel(result,name),{path:result.path,source:'gemini'});
-    // The local AI translated this episode: the next one is made ready meanwhile (see prepareNextEpisode).
+    const result=await window.lilac.translateSubtitle({path:source.path,title,id:run,provider,anime:subtitleSearchAnime(),playing:$('#video').currentTime||0,fresh});if(!current())return;
+    currentSubtitlePath=result.path;attachSubtitle(fresh?`${result.url}?again=${Date.now()}`:result.url,translatedLabel(result,name),{path:result.path,source:'gemini',from:source.path,fromName:name});
+    // The local AI translated this episode (or the API, with 번역 API로도 다음 화 미리 번역 on): the next one is made ready
+    // meanwhile (see prepareNextEpisode; main decides by the settings).
     // Pressed with a Korean subtitle there: the series goes on in machine translation.
     if(manual&&(currentPlaybackContext.koreanFound||currentPlaybackContext.siteKorean))preferAiSubtitle(true);
-    if(result.engine==='로컬 AI'&&(manual||!currentPlaybackContext.siteKorean||prefersAiSubtitle()))prepareNextEpisode();
+    if((result.engine==='로컬 AI'||translationSettings?.prepareNextCloud)&&(manual||!currentPlaybackContext.siteKorean||prefersAiSubtitle()))prepareNextEpisode();
     if(result.fallbackNote)toast(`${result.fallbackNote}${result.fallbackReason?`: ${result.fallbackReason}`:'.'}`);
     if(result.failed)toast(`${result.failed}줄은 번역하지 못해 원문으로 남겼습니다.`);
   }catch(error){if(current()){if(TRANSLATION_CANCELLED.test(ipcMessage(error)))$('#subtitleState').textContent='번역을 멈췄어요. 다시 누르면 멈춘 곳부터 이어서 번역해요.';else{$('#subtitleState').textContent='자동 번역에 실패했습니다.';toast(`자동 번역 실패: ${ipcMessage(error)}`)}}}
@@ -738,7 +746,7 @@ function prepareNextEpisode(){
 }
 function translateJimaku(provider='cloud',manual=false){const subtitle=currentPlaybackContext.jimakuSubtitle;if(subtitle)runTranslation({file:async()=>subtitle,name:'Jimaku',button:provider==='local'?$('#translateNowLocal'):$('#translateNow'),provider,manual})}
 // The one 번역 row translates the subtitle on screen: the picked Jimaku file, or the picked track.
-const translateShown=provider=>{const kind=translatableSubtitle(),button=provider==='local'?$('#translateNowLocal'):$('#translateNow');if(kind==='jimaku')return translateJimaku(provider,true);if(kind==='user'){const path=currentSubtitle.path;return runTranslation({file:async()=>({path}),name:'내 자막',button,provider,manual:true})}return translateSubtitleTrack(provider,true)};
+const translateShown=provider=>{const kind=translatableSubtitle(),button=provider==='local'?$('#translateNowLocal'):$('#translateNow'),again=retranslatable();if(again)return runTranslation({file:async()=>({path:again.from}),name:again.fromName||'자막',button,provider,manual:true,fresh:true});if(kind==='jimaku')return translateJimaku(provider,true);if(kind==='user'){const path=currentSubtitle.path;return runTranslation({file:async()=>({path}),name:'내 자막',button,provider,manual:true})}return translateSubtitleTrack(provider,true)};
 $('#translateNow').onclick=event=>cancelButtonRun(event.currentTarget)||translateShown('cloud');$('#translateNowLocal').onclick=event=>cancelButtonRun(event.currentTarget)||translateShown('local');
 // A jump while the subtitle on screen is translated: its run translates from there next.
 $('#video').addEventListener('seeked',()=>{if(translating?.path&&translatingNow())window.lilac.jumpTranslation(translating.run,$('#video').currentTime||0).catch(()=>{})});
@@ -841,18 +849,29 @@ async function init(){
     let season,top;
     if(state.source==='linkkf'){
       try{const linkkf=await window.lilac.linkkfHome(1,20);season=linkkf;top={data:linkkf.data.slice().reverse()};state.catalogPage=2;$('#filterBar').classList.remove('hidden');}
-      catch(error){toast('Linkkf 서버가 응답하지 않아 작품 정보 모드로 표시합니다.');[season,top]=await Promise.all([window.lilac.season(),window.lilac.top()]);}
+      catch(error){showSourceNotice(state.source);[season,top]=await Promise.all([window.lilac.season(),window.lilac.top()]);}
     }else if(PROVIDER_SOURCES.includes(state.source)){
       // The catalog's first page (most popular first) fills 인기 애니메이션 and 전체; this season's shows come separately.
       // Asked twice: Miruro's list (several pages checked for playable episodes) did not always come the first time.
       const current=window.lilac.providerSeason(state.source).catch(()=>window.lilac.providerSeason(state.source)).catch(()=>null),airing=window.lilac.providerAiring(state.source).catch(()=>null);
       try{season=await window.lilac.providerCatalog(state.source);top={data:season.data};const [result,onAir]=await Promise.all([current,airing]);if(result){state.current=result.data||[];state.currentLabel=result.label}if(onAir?.data?.length)state.airing=onAir.data}
-      catch(error){toast(`${state.source} 서버가 응답하지 않아 작품 정보 모드로 표시합니다.`);[season,top]=await Promise.all([window.lilac.season(),window.lilac.top()]);}
+      catch(error){showSourceNotice(state.source);[season,top]=await Promise.all([window.lilac.season(),window.lilac.top()]);}
     }else [season,top]=await Promise.all([window.lilac.season(),window.lilac.top()]);
     state.season=season.data;state.top=top.data;if(state.source==='reanime'){state.catalogOffset=season.data.length;state.catalogTotal=season.total||null}else if(['animenosub','ohli24'].includes(state.source)){state.catalogOffset=season.nextOffset||2}else if(state.source==='miruro'){state.catalogOffset=season.nextOffset;state.catalogDone=Boolean(season.done)}$('#seasonRail').closest('.content-section').classList.toggle('hidden',Boolean(state.current&&!state.current.length));renderCards('#seasonRail',(state.current||state.season).slice(0,30));$('#airingSection').classList.toggle('hidden',!state.airing?.length);if(state.airing?.length)renderCards('#airingRail',state.airing.slice(0,30));renderCards('#topRail',state.top.slice(0,20));$('#seasonTitle').textContent='이번 시즌 신작';if(state.source==='linkkf'&&state.season[0]?.provider==='linkkf')loadLinkkfHome();
     const a=state.current?.[0]||state.season[0]||state.top[0];if(a){const hero=$('#hero'),libraryButton=hero.querySelector('.library-toggle');hero.classList.remove('skeleton');setBackgroundImage(hero,imageOf(a));hero.querySelector('h1').textContent=titleOf(a);titleAnime.set(animeTitleKey(a),a);hero.querySelector('h1').dataset.titleFor=animeTitleKey(a);hero.querySelector('p').textContent=(/[가-힣]/.test(a.synopsis||'')?a.synopsis:'새로운 이야기를 만나보세요.').slice(0,145);hero.querySelector('.primary').onclick=()=>openDetail(a.mal_id);updateLibraryButton(libraryButton,saved(a.mal_id));libraryButton.onclick=e=>toggleLibrary(a,e.currentTarget);}
-  } catch(e){$('#seasonRail').classList.remove('loading-cards');$('#topRail').classList.remove('loading-cards');toast('목록을 불러오지 못했습니다. 인터넷 연결을 확인하세요.');}
+  } catch(e){$('#seasonRail').classList.remove('loading-cards');$('#topRail').classList.remove('loading-cards');showSourceNotice(null);}
 }
+// A source whose server does not answer (Linkkf's API behind Cloudflare 522 in October 2026): said above the home page
+// until the app is opened again, not in a passing toast, with the source's name as the settings show it, what the list
+// shows meanwhile (the work info from the anime database) and the two ways on. null: nothing loaded at all.
+const sourceName=source=>$(`#contentSource option[value="${source}"]`)?.textContent||source;
+function showSourceNotice(source){
+  const notice=$('#sourceNotice');
+  notice.querySelector('p').textContent=source?`${sourceName(source)} 서버가 응답하지 않아요 (사이트 쪽 장애일 수 있어요). 지금은 작품 정보만 보여 드려서 바로 재생되지 않을 수 있어요. 잠시 뒤 다시 시도하거나 다른 소스를 골라 보세요.`:'목록을 불러오지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요.';
+  notice.querySelector('[data-notice="source"]').classList.toggle('hidden',!source);notice.classList.remove('hidden');
+}
+$('#sourceNotice [data-notice="retry"]').onclick=()=>location.reload();
+$('#sourceNotice [data-notice="source"]').onclick=()=>{switchView('settings');requestAnimationFrame(()=>{const choices=$('#sourceChoices');choices.scrollIntoView({block:'center'});(choices.querySelector('button:not(.selected)')||choices.querySelector('button'))?.focus()})};
 
 $$('.nav').forEach(b=>b.onclick=()=>switchView(b.dataset.view));$$('[data-goto]').forEach(b=>b.onclick=()=>switchView(b.dataset.goto));
 // 홈 > "2026 가을 신작" / "방영 중" > 전체 보기: the whole list in the search view.
@@ -953,7 +972,7 @@ const CLOUD_FIELDS={
 };
 function renderTranslationSettings(value,message,messageFor){
   translationSettings=value||translationSettings;renderLocalAi(value);if(!value)return;
-  $('#geminiDownloads').checked=value.translateDownloads===true;$$('#jimakuTranslateChoices button').forEach(button=>button.classList.toggle('selected',button.dataset.value===(value.jimakuTranslate||'off')));
+  $('#geminiDownloads').checked=value.translateDownloads===true;$('#prepareNextCloud').checked=value.prepareNextCloud===true;$$('#jimakuTranslateChoices button').forEach(button=>button.classList.toggle('selected',button.dataset.value===(value.jimakuTranslate||'off')));
   $$('#cloudChoices button').forEach(button=>button.classList.toggle('selected',button.dataset.value===value.cloud));$$('.cloud-block').forEach(block=>block.classList.toggle('hidden',block.dataset.cloud!==value.cloud));
   $$('#qwenRegionChoices button').forEach(button=>button.classList.toggle('selected',button.dataset.value===value.qwenRegion));
   for(const field of Object.values(CLOUD_FIELDS)){
@@ -962,8 +981,7 @@ function renderTranslationSettings(value,message,messageFor){
     $(`#${field.id}KeyState`).textContent=(messageFor===field.id&&message)||(value[field.key]?`${field.name} API 키를 사용 중입니다${field.model&&value[field.model]?` (${value[field.model]})`:''}.`:field.empty);
   }
   // The player's API buttons carry the picked API's name.
-  const label=`${value.cloudName}${value.cloudRo} 한국어 번역`;
-  ['#translateNow'].forEach(id=>{const button=$(id);button.dataset.label=label;if(!button.dataset.run)button.textContent=label});
+  labelTranslateButtons();
 }
 window.lilac.geminiSettings().then(value=>renderTranslationSettings(value)).catch(()=>{});
 async function saveCloudKey(cloud){
@@ -981,6 +999,7 @@ for(const cloud of Object.keys(CLOUD_FIELDS)){
 $$('#cloudChoices button').forEach(button=>button.onclick=()=>saveTranslation({cloud:button.dataset.value}));
 $$('#qwenRegionChoices button').forEach(button=>button.onclick=()=>saveTranslation({qwenRegion:button.dataset.value}));
 $('#geminiDownloads').onchange=()=>saveTranslation({translateDownloads:$('#geminiDownloads').checked});
+$('#prepareNextCloud').onchange=()=>saveTranslation({prepareNextCloud:$('#prepareNextCloud').checked});
 // 자막 캐시: how much the subtitle files take, and how much of it no saved subtitle uses.
 const megabytes=bytes=>bytes>=1e9?`${(bytes/1e9).toFixed(1)}GB`:`${Math.max(bytes?0.1:0,bytes/1e6).toFixed(1)}MB`;
 async function renderSubtitleCache(message){try{const usage=await window.lilac.subtitleCacheUsage();$('#subtitleCacheState').textContent=`${message?`${message} `:''}자막 파일 ${megabytes(usage.total)} 중 ${megabytes(usage.removable)}를 지울 수 있어요.`;$('#cleanSubtitleCache').disabled=!usage.removable}catch{$('#subtitleCacheState').textContent='자막 파일 용량을 확인하지 못했습니다.'}}

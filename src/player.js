@@ -539,6 +539,22 @@ function handlePlayerKey(event) {
   if (key === ' ' || key === 'MediaPlayPause' || ((key === 'Enter') && !focusInPlayer)) { event.preventDefault(); video.paused ? video.play() : video.pause(); showPlayerControls(); return; }
   if (key.toLowerCase() === 'f') { $('#fullscreenPlayer').click(); showPlayerControls(); return; }
   if (key.toLowerCase() === 'm') { $('#mutePlayer').click(); showPlayerControls(); return; }
+  // C: subtitles on / off; Z / X: subtitles half a second earlier / later (the 자막 싱크 setting); S: skip the opening or
+  // ending on screen; 0-9: to that tenth of the episode; [ / ]: slower / faster. Each says what it did. (Up and down stay
+  // for moving the focus with a remote.)
+  const letter = event.ctrlKey || event.altKey || event.metaKey ? '' : key.toLowerCase();
+  if (letter === 'c') { const box = $('#subtitleEnabled'); box.checked = !box.checked; box.dispatchEvent(new Event('change')); toast(box.checked ? '자막을 켰어요' : '자막을 껐어요'); return; }
+  if (letter === 'z' || letter === 'x') {
+    const next = Math.max(-5000, Math.min(5000, Number(localStorage.getItem('subtitleSync') || 0) + (letter === 'z' ? -500 : 500)));
+    setSubtitleSetting('subtitleSync', next); window.LilacAss?.setOffset(next); applyVttLayout();
+    toast(`자막 싱크 ${next > 0 ? '+' : ''}${(next / 1000).toFixed(1)}초 (${next < 0 ? '자막이 빨리 나옴' : next > 0 ? '자막이 늦게 나옴' : '원래대로'})`); return;
+  }
+  if (letter === 's') { const skip = $('#skipNow'); if (skip && !skip.classList.contains('hidden')) skip.click(); else toast('지금은 건너뛸 OP/ED 구간이 아니에요'); return; }
+  if (/^[0-9]$/.test(letter) && video.duration) { video.currentTime = video.duration * Number(key) / 10; showPlayerControls(); return; }
+  if (letter === '[' || letter === ']') {
+    const at = SPEED_OPTIONS.indexOf(video.playbackRate), next = SPEED_OPTIONS[Math.max(0, Math.min(SPEED_OPTIONS.length - 1, (at < 0 ? SPEED_OPTIONS.indexOf(1) : at) + (key === ']' ? 1 : -1)))];
+    video.playbackRate = next; $('#speed').value = String(next); if (playerSettingsOpen()) syncPlayerSettingsUI(); toast(`재생 속도 ${next.toFixed(2)}x`); return;
+  }
   if (key === 'MediaTrackNext' || key === 'PageDown') { event.preventDefault(); playSiblingEpisode(siblingEpisode(1)); return; }
   if (key === 'MediaTrackPrevious' || key === 'PageUp') { event.preventDefault(); playSiblingEpisode(siblingEpisode(-1)); return; }
   showPlayerControls();

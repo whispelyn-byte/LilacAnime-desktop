@@ -455,21 +455,28 @@ function miruroPlayableEpisodes(list,root,now=Date.now()){
     const aired=raw.aired_on?Date.parse(raw.aired_on):NaN;return Number.isFinite(aired)?aired<=now:root.status!=='NOT_YET_RELEASED';
   });
 }
+// A show's episodes: the films of a movie, the regular ones of a series (all of them when it has none of that kind). The
+// list is asked for whole and picked here: since October 2026 the API answers a kind in the request with 400
+// ("Unsupported catalog request"), which left every Miruro show without episodes (and the home rails empty).
+async function miruroEpisodeList(root){
+  const list=(await miruroApi(`anime/${root.id}/episodes`,{limit:10000}))?.data||[],kind=root.format==='MOVIE'?'film':'regular',own=list.filter(raw=>raw.kind===kind);
+  return own.length?own:list;
+}
 // Whether a show has an episode to play now (the home rail's check), remembered for half an hour.
 const miruroEpisodeCheck=new Map();
 async function miruroHasEpisodes(root){
   const known=miruroEpisodeCheck.get(root.id);if(known&&Date.now()-known.time<30*60*1000)return known.value;
-  const list=await miruroApi(`anime/${root.id}/episodes`,{kind:root.format==='MOVIE'?'film':'regular',limit:10000}).catch(()=>null);
-  const value=Boolean(list&&miruroPlayableEpisodes(list.data||[],root).length);
+  const list=await miruroEpisodeList(root).catch(()=>null);
+  const value=Boolean(list&&miruroPlayableEpisodes(list,root).length);
   miruroEpisodeCheck.set(root.id,{value,time:Date.now()});return value;
 }
 async function miruroDetail(anime){
   const root=await miruroApi(`anime/${anime.id}`);
-  const [episodes,relations]=await Promise.all([miruroApi(`anime/${anime.id}/episodes`,{kind:root.format==='MOVIE'?'film':'regular',limit:10000}),miruroApi(`anime/${anime.id}/relations`).catch(()=>null)]);
+  const [episodes,relations]=await Promise.all([miruroEpisodeList(root),miruroApi(`anime/${anime.id}/relations`).catch(()=>null)]);
   const start=root.started_on||'',end=root.ended_on||'',studios=root.studios||[];
   const data={...anime,...miruroItem(root),studios:(studios.filter(item=>item.is_animation_studio).length?studios.filter(item=>item.is_animation_studio):studios.slice(0,2)).map(item=>({name:item.name})),
     aired:start&&end?`${start} ~ ${end}`:start,related:(relations?.data||[]).filter(item=>item.anime?.id).map(item=>({...miruroItem(item.anime),relationType:item.kind||''}))};
-  return {data,episodes:miruroPlayableEpisodes(episodes?.data||[],root).map(raw=>miruroEpisode(raw,data)).filter(Boolean),unavailable:false};
+  return {data,episodes:miruroPlayableEpisodes(episodes,root).map(raw=>miruroEpisode(raw,data)).filter(Boolean),unavailable:false};
 }
 // The play route lists every track: "sub" has English burned in, "ssub" (SOFT) is the clean video with separate
 // subtitle files, "raw" the broadcast without any, "dub" comes last. Servers without a direct HLS stream (embed pages
@@ -1720,7 +1727,7 @@ app.whenReady().then(async () => {
     const provider=jimakuTranslation();if(!provider)return null;
     const title=job.displayTitles?.ko||job.title||'',result=await translator().translate({file,title,provider,context:await translationContext(job.anime||{},title)});
     const label=`${result.engine||'AI'} 번역 (Jimaku)`,key=downloadSubtitleKey(job);
-    if(key&&!result.failed)subtitleStore.save(key,{source:'gemini',label,path:result.path,behind:!primary});
+    if(key&&!result.failed)subtitleStore.save(key,{source:'gemini',label,path:result.path,behind:!primary,from:file,fromName:'Jimaku'});
     return {path:result.path,label};
   };
   // Android LilacDownloadService: AniSkip timestamps are saved with the download (one retry after 500 ms);
@@ -2016,20 +2023,22 @@ app.whenReady().then(async () => {
   }
   ipcMain.handle('subtitle:prepare', (_, { anime = null, episode = 1, item = null, title = '' } = {}) => {
     const key = `${anime?.provider || ''}:${anime?.id || ''}:${Number(episode) || 1}`;
-    // Only when the next episode's own translation would be the local AI's (설정 > 자막 자동 번역 on, and the local AI
-    // picked or the API without a key): otherwise it would not pick this one up.
+    // Only by the side the next episode's own translation would use (설정 > 자막 자동 번역 on), or it would not pick this
+    // one up: the local AI when it is picked (or the API is, without a key); the API when it is picked and 번역 API로도
+    // 다음 화 미리 번역 is on.
     const settings = translator().settings(), local = settings.jimakuTranslate === 'local' ? translator().ready('local') : settings.jimakuTranslate === 'cloud' && !settings.cloudReady;
-    if (!anime?.id || preparedEpisodes.has(key) || !local) return false;
+    const provider = local ? 'local' : settings.jimakuTranslate === 'cloud' && settings.cloudReady && settings.prepareNextCloud ? 'cloud' : '';
+    if (!anime?.id || preparedEpisodes.has(key) || !provider) return false;
     preparedEpisodes.add(key);
     preparing = preparing.then(async () => {
-      if (!translator().ready('local')) return;
+      if (!translator().ready(provider)) return;
       const [file] = await jimakuEpisodeFiles(anime, Number(episode) || 1).catch(() => []);
       let source = file ? (await jimakuDownload(file, anime, Number(episode) || 1)).path : '';
       if (!source) {
         const { tracks, referer } = await episodeTracks(item), track = sourceTrack(tracks || []); if (!track) return;
         source = subtitleResult(await saveRemoteSubtitle(track.url, remoteTrackOptions(track.url, referer))).path;
       }
-      await translator().translate({ file: source, title: String(title || ''), provider: 'local', context: await translationContext(anime, String(title || '')) });
+      await translator().translate({ file: source, title: String(title || ''), provider, context: await translationContext(anime, String(title || '')) });
     }).catch(() => {});
     return true;
   });
@@ -2099,14 +2108,14 @@ app.whenReady().then(async () => {
   ipcMain.handle('subtitle:jump',(_,id,seconds)=>{translator().jump(Number(id)||null,Number(seconds)||0);return true});
   // playing: where the episode is (the lines from there are translated first); the lines done so far go to the player
   // as they come (translate:progress {lines}), so it shows them before the rest is translated.
-  ipcMain.handle('subtitle:translate',async(event,{path:file='',title='',id=0,provider='',anime=null,playing=0}={})=>{
+  ipcMain.handle('subtitle:translate',async(event,{path:file='',title='',id=0,provider='',anime=null,playing=0,fresh=false}={})=>{
     const resolved=path.resolve(String(file||''));
     // App subtitle files and the tracks saved with downloads.
     const savedByUser=Object.values(subtitleStore.data).some(items=>items.some(item=>item.source==='user'&&path.resolve(item.path)===resolved));
     if(!savedByUser&&![path.join(app.getPath('userData'),'subtitles'),downloadManager?.root].some(root=>root&&resolved.startsWith(root+path.sep))||!/\.vtt$/i.test(resolved)||!fs.existsSync(resolved))throw new Error('번역할 자막 파일이 없습니다.');
     const send=value=>{if(!event.sender.isDestroyed())event.sender.send('translate:progress',{id,...value})};
     const context=await translationContext(anime||{},String(title||''));
-    const result=await translator().translate({file:resolved,id:Number(id)||null,title:String(title||''),provider:['cloud','gemini','local'].includes(provider)?provider:'',context,playing:Number(playing)||0,progress:(done,total)=>send({done,total}),status:text=>send({status:text}),lines:items=>send({lines:items})});
+    const result=await translator().translate({file:resolved,id:Number(id)||null,title:String(title||''),provider:['cloud','gemini','local'].includes(provider)?provider:'',context,playing:Number(playing)||0,fresh:fresh===true,progress:(done,total)=>send({done,total}),status:text=>send({status:text}),lines:items=>send({lines:items})});
     return subtitleResult(result.path,{model:result.model,engine:result.engine||'',failed:result.failed,cached:result.cached,fallbackNote:result.fallbackNote||'',fallbackReason:result.fallbackReason||''});
   });
   // Several lookups at a time (TMDB answers quickly; AniList allows about 90 requests a minute).

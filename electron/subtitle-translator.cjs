@@ -43,6 +43,9 @@ function createTranslator(userData) {
       deeplKey: text('deeplKey'),
       qwenKey: text('qwenKey'), qwenModel: text('qwenModel'), qwenModels: list('qwenModels'), qwenRegion: value.qwenRegion === 'china' ? 'china' : 'international',
       localModel: installedModel(String(value.localModel || 'gemma-4-e4b')),
+      // The next episode is made ready ahead by the local AI when it translates; by the API only when this is on (it
+      // spends the API's allowance on an episode that may not be watched).
+      prepareNextCloud: value.prepareNextCloud === true,
       // How a picked Jimaku file is translated by itself: 'off', 'cloud' or 'local' ('gemini' before the other APIs came;
       // older settings still: on = whichever is set up).
       jimakuTranslate: value.jimakuTranslate === 'gemini' ? 'cloud' : ['off', 'cloud', 'local'].includes(value.jimakuTranslate) ? value.jimakuTranslate : value.autoJimaku === false ? 'off' : 'cloud' };
@@ -129,6 +132,7 @@ function createTranslator(userData) {
     // On until turned off in 설정 (translateDownloadsChosen: someone chose, so an old saved value is not taken as one).
     if ('translateDownloads' in change) Object.assign(next, { translateDownloads: change.translateDownloads === true, translateDownloadsChosen: true });
     if ('jimakuTranslate' in change && ['off', 'cloud', 'local'].includes(change.jimakuTranslate)) next.jimakuTranslate = change.jimakuTranslate;
+    if ('prepareNextCloud' in change) next.prepareNextCloud = change.prepareNextCloud === true;
     if ('cloud' in change && Object.hasOwn(CLOUDS, change.cloud)) next.cloud = change.cloud;
     if ('qwenRegion' in change && ['international', 'china'].includes(change.qwenRegion)) next.qwenRegion = change.qwenRegion;
     if ('openaiModel' in change && next.openaiModels.includes(change.openaiModel)) next.openaiModel = change.openaiModel;
@@ -464,8 +468,9 @@ function createTranslator(userData) {
   // playing: the time (seconds) the episode is at: the lines from there are translated first, the ones before it
   // last; control.jump(seconds) moves it while the run goes on. onLines([{raw, text}]) hears the lines translated so far
   // (the cue's text in the file, the translated cue's), a few at a time, so the player can show them before the rest is
-  // done; control.done() gives all of them.
-  async function translateOnce({ file, title = '', provider = '', context = {}, signal = null, progress = () => {}, status = () => {}, playing = 0, onLines = () => {}, control = {} }) {
+  // done; control.done() gives all of them. fresh: made again (다시 번역), the saved translation and the lines kept from an
+  // earlier run passed over; the new one takes the saved one's place.
+  async function translateOnce({ file, title = '', provider = '', context = {}, signal = null, progress = () => {}, status = () => {}, playing = 0, onLines = () => {}, control = {}, fresh = false }) {
     const settings = read(), wanted = provider || autoProvider() || 'cloud';
     // The engines in the order they are tried: an API's name, or 'local'.
     const apis = [settings.cloud, ...Object.keys(CLOUDS).filter(api => api !== settings.cloud)].filter(api => keyOf(settings, api));
@@ -483,7 +488,7 @@ function createTranslator(userData) {
     // (the picked one's first, then one another API made when it could not be used) for the API, so the two stay apart.
     // The side is the first one set up: the API asked for without any key is the local AI's side.
     const side = order[0] === 'local', sameSide = name => (name === 'local') === side;
-    for (const name of order.filter(sameSide)) {
+    for (const name of fresh ? [] : order.filter(sameSide)) {
       const out = path.join(cacheDir, `${hashOf(name)}.vtt`);
       if (!fs.existsSync(out)) continue;
       const models = modelsIn(out);
@@ -523,7 +528,7 @@ function createTranslator(userData) {
     // missing lines are translated again.
     // by: the engine of each line; lineModel: the model that translated it (kept lines: the engine's picked model).
     const translated = new Map(), by = new Map(), lineModel = new Map(), linesFile = name => path.join(cacheDir, `${hashOf(name)}.lines.json`);
-    for (const name of order.filter(sameSide)) {
+    for (const name of fresh ? [] : order.filter(sameSide)) {
       let kept = {}; try { kept = JSON.parse(fs.readFileSync(linesFile(name), 'utf8')) || {}; } catch { continue; }
       for (const line of unique) if (!translated.has(line.i) && typeof kept[line.text] === 'string') { translated.set(line.i, kept[line.text]); by.set(line.i, name); lineModel.set(line.i, modelOf(name)); }
     }

@@ -164,3 +164,7 @@
 .ps-sources button small { color: #ffffff8c; font-size: 10px; }
 .ps-sources button.selected small { color: #0000008c; }
 .ps-sources button.hidden { display: none; }
+
+/* Keyboard shortcuts listed under the 재생 tab. */
+.ps-shortcuts { margin: 14px 0 4px; color: #ffffff8c; font-size: 11px; line-height: 1.7; }
+.ps-shortcuts b { color: #ffffffcc; font-weight: 600; margin-right: 6px; }

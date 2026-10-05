@@ -16,7 +16,7 @@ class SubtitleStore {
   write() { fs.mkdirSync(path.dirname(this.file), { recursive: true }); fs.writeFileSync(this.file, JSON.stringify(this.data, null, 1), 'utf8'); }
 
   withUrls(entry) {
-    return { ...entry, url: pathToFileURL(entry.path).href, assUrl: entry.assPath && fs.existsSync(entry.assPath) ? pathToFileURL(entry.assPath).href : null };
+    return { ...entry, url: pathToFileURL(entry.path).href, assUrl: entry.assPath && fs.existsSync(entry.assPath) ? pathToFileURL(entry.assPath).href : null, from: entry.from && fs.existsSync(entry.from) ? entry.from : null };
   }
 
   list(key) {
@@ -31,9 +31,11 @@ class SubtitleStore {
     // One machine translation per episode and engine ("Gemini 번역 (Jimaku)", "로컬 AI 번역 (Jimaku)"): the newest (a
     // finished one after a partial one) takes the place of the older one by the same engine, so translations by
     // different engines stay side by side; the file it replaces stays for the translation cache until it is cleaned.
+    // from: a machine translation's source file and its name ("Jimaku"), so 다시 번역 can make it again from there (given
+    // back only while the file is still there).
     const engine = item => String(item.label || '').split(' 번역')[0];
     const list = (this.data[key] || []).filter(item => !(item.source === source && (item.path === entry.path || (source === 'gemini' && engine(item) === engine(entry)))));
-    const saved = { id: `sub_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, source, label: String(entry.label || source), path: entry.path, assPath: entry.assPath || null, fonts: Array.isArray(entry.fonts) ? entry.fonts : [], saved: Date.now() };
+    const saved = { id: `sub_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, source, label: String(entry.label || source), path: entry.path, assPath: entry.assPath || null, fonts: Array.isArray(entry.fonts) ? entry.fonts : [], saved: Date.now(), ...(entry.from ? { from: String(entry.from), fromName: String(entry.fromName || '') } : {}) };
     // behind: made in the background beside the subtitle on screen, so it does not come first when the episode opens.
     this.data[key] = (entry.behind ? [...list.slice(0, 19), saved] : [saved, ...list]).slice(0, 20);
     this.write();
