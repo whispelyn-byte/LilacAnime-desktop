@@ -872,25 +872,32 @@ async function tmdbSeasonTitle(id,original){
   const series=String(ko.name||'').trim(),firstWord=simpleTitle(series).split(' ')[0]||'';
   return firstWord&&simpleTitle(name).includes(firstWord)?name:`${series.replace(/\s*[~〜～][^~〜～]*[~〜～]\s*/g,' ').trim()} ${name}`;
 }
-async function tmdbKoreanTitles(titles,{light=false}={}){
+// What TMDB is searched for, from a work's names: season words, and OVA / special marks and symbols ("Kamisama Kiss◎
+// OVA"), are not in TMDB's series names; the part before a subtitle is tried second.
+function tmdbQueries(titles){
   const queries=[];
   for(const title of titles){
-    // Season words, and OVA / special marks and symbols ("Kamisama Kiss◎ OVA"), are not in TMDB's series names.
     const base=String(title||'').replace(/…/g,'...').replace(/[◎○●☆★]+/g,' ').replace(/\s*(?:OVA|OAD|ONA|specials?|recap)\s*\d*\s*$/i,'').replace(/\s*(?:season\s*\d+|\d+(?:st|nd|rd|th)\s*season|part\s*\d+|第\d+期)\s*$/i,'').replace(/[:：]\s*$/,'').trim();
     for(const query of [base,base.split(/\s*[:：]\s+|\s+-\s+/)[0]])if(query&&!/[가-힣]/.test(query)&&!queries.includes(query))queries.push(query);
   }
+  return queries;
+}
+// The work a TMDB search means, with its ko-KR entry: the same search in English and Korean, the English names picking
+// the work (TMDB can rank a spin-off such as "Attack on Titan: Junior High" first). An animation named exactly like the
+// query, otherwise TMDB's own ranking with Japanese works first: "Grand Blue" is listed as "Grand Blue Dreaming", and a
+// prefix match would pick the unrelated "Grand Blues!".
+async function tmdbPick(query,kind){
+  const [enRoot,koRoot]=await Promise.all([tmdbFetch(`/search/${kind}`,{query,language:'en-US',include_adult:'false'}),tmdbFetch(`/search/${kind}`,{query,language:'ko-KR',include_adult:'false'})]);
+  const japanese=item=>Number(item.origin_country?.includes?.('JP')||item.original_language==='ja');
+  const animation=(enRoot?.results||[]).filter(item=>(item.genre_ids||[]).includes(16)),wantedKey=titleCompareKey(query),nameKey=item=>titleCompareKey(item.name||item.title||'');
+  const pick=animation.find(item=>nameKey(item)===wantedKey)||animation.slice().sort((a,b)=>japanese(b)-japanese(a))[0];
+  return pick?(koRoot?.results||[]).find(item=>item.id===pick.id)||pick:null;
+}
+async function tmdbKoreanTitles(titles,{light=false}={}){
   const found=[];
-  for(const query of queries){
+  for(const query of tmdbQueries(titles)){
     for(const kind of ['tv','movie']){
-      // The same search in English and Korean: the English names pick the work (TMDB can rank a spin-off such as
-      // "Attack on Titan: Junior High" first), the Korean results give its ko-KR name.
-      const [enRoot,koRoot]=await Promise.all([tmdbFetch(`/search/${kind}`,{query,language:'en-US',include_adult:'false'}),tmdbFetch(`/search/${kind}`,{query,language:'ko-KR',include_adult:'false'})]);
-      const japanese=item=>Number(item.origin_country?.includes?.('JP')||item.original_language==='ja');
-      const animation=(enRoot?.results||[]).filter(item=>(item.genre_ids||[]).includes(16)),wantedKey=titleCompareKey(query),nameKey=item=>titleCompareKey(item.name||item.title||'');
-      // Otherwise TMDB's own ranking (Japanese works first): "Grand Blue" is listed as "Grand Blue Dreaming", and a
-      // prefix match would pick the unrelated "Grand Blues!".
-      const pick=animation.find(item=>nameKey(item)===wantedKey)||animation.slice().sort((a,b)=>japanese(b)-japanese(a))[0];
-      const results=pick?[(koRoot?.results||[]).find(item=>item.id===pick.id)||pick]:[];
+      const pick=await tmdbPick(query,kind),results=pick?[pick]:[];
       // Everything after the first title must not name another season of the same franchise.
       const add=name=>{name=String(name||'').trim();if(/[가-힣]{2}/.test(name)&&!found.includes(name)&&!siblingTitle(found[0],name))found.push(name)};
       if(kind==='tv'&&results[0])add(await tmdbSeasonTitle(results[0].id,titles[0]).catch(()=>''));
@@ -902,6 +909,36 @@ async function tmdbKoreanTitles(titles,{light=false}={}){
     }
   }
   return found;
+}
+// A work's story in Korean from TMDB (with the key from 설정 > 한국어 제목 검색), for the sources that give it in English:
+// the work is found as for its Korean name; a later season (named in TMDB like "Rascal Does Not Dream of Santa Claus",
+// or numbered in the title) gets that season's overview when TMDB has one in Korean, otherwise the series'. '' without
+// a key or a Korean overview, so the source's own text stays. Kept on disk for a month (a miss for a week).
+let tmdbOverviewDisk=null;
+const tmdbOverviewFile=()=>path.join(app.getPath('userData'),'tmdb-overview-cache.json');
+async function tmdbOverview(anime={}){
+  if(!tmdbKey())return '';
+  const key=`${anime.provider||'jikan'}:${anime.id??anime.mal_id}`;
+  tmdbOverviewDisk||=(()=>{try{return JSON.parse(fs.readFileSync(tmdbOverviewFile(),'utf8'))||{}}catch{return {}}})();
+  const cached=tmdbOverviewDisk[key];if(cached&&Date.now()-cached.time<(cached.text?30:7)*86400000)return cached.text;
+  // A film is looked for among films first; a work found without a Korean overview gives way to the next match.
+  const title=String(anime.title_english||anime.title||'').trim(),kinds=/movie|film|극장/i.test(String(anime.type||''))?['movie','tv']:['tv','movie'];let text='';
+  find:for(const query of tmdbQueries([anime.title_english,anime.title,anime.romaji,anime.title_japanese])){
+    for(const kind of kinds){
+      const pick=await tmdbPick(query,kind).catch(()=>null);if(!pick)continue;
+      const [ko,en]=await Promise.all([tmdbFetch(`/${kind}/${pick.id}`,{language:'ko-KR'}),kind==='tv'?tmdbFetch(`/tv/${pick.id}`,{language:'en-US'}).catch(()=>null):null]);
+      text=String(ko?.overview||'').trim();
+      if(kind==='tv'){
+        const titleKey=titleCompareKey(title),named=(en?.seasons||[]).filter(item=>!/^(?:season\s*\d+|specials)$/i.test(item.name||'')&&titleCompareKey(item.name).length>=6&&titleKey.includes(titleCompareKey(item.name))).sort((a,b)=>titleCompareKey(b.name).length-titleCompareKey(a.name).length)[0];
+        const number=named?.season_number||titleSeason(anime.title||title);
+        if(number>1){const season=await tmdbFetch(`/tv/${pick.id}/season/${number}`,{language:'ko-KR'}).catch(()=>null);if(hasHangul(season?.overview))text=String(season.overview).trim()}
+      }
+      if(hasHangul(text))break find;
+    }
+  }
+  if(!hasHangul(text))text='';
+  tmdbOverviewDisk[key]={text,time:Date.now()};try{fs.writeFileSync(tmdbOverviewFile(),JSON.stringify(tmdbOverviewDisk),'utf8')}catch{}
+  return text;
 }
 // Fallbacks when TMDB has no Korean name (or no key is set): AniList's Korean synonyms, then the Korean
 // Wikidata labels of the work and its series, looked up by MAL/AniList ID.
@@ -2119,6 +2156,8 @@ app.whenReady().then(async () => {
     return subtitleResult(result.path,{model:result.model,engine:result.engine||'',failed:result.failed,cached:result.cached,fallbackNote:result.fallbackNote||'',fallbackReason:result.fallbackReason||''});
   });
   // Several lookups at a time (TMDB answers quickly; AniList allows about 90 requests a minute).
+  // A work's story in Korean from TMDB ('' when there is none; see tmdbOverview).
+  ipcMain.handle('anime:overview',(_,anime={})=>tmdbOverview(anime||{}).catch(()=>''));
   ipcMain.handle('titles:resolve',async(_,list=[])=>{
     const items=(Array.isArray(list)?list:[]).slice(0,60),results=[];let next=0;
     await Promise.all(Array.from({length:6},async()=>{while(next<items.length){const item=items[next++];results.push(await resolveDisplayTitle(item).catch(()=>({key:`${item.provider||'jikan'}:${item.id??item.mal_id}`,ko:'',en:''})))}}));

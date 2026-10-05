@@ -66,6 +66,7 @@ contextBridge.exposeInMainWorld('lilac', {
   onUpdateState: callback => ipcRenderer.on('update:state', (_, value) => callback(value)),
   tmdbKey: () => ipcRenderer.invoke('tmdb:get'),
   resolveTitles: list => ipcRenderer.invoke('titles:resolve', list),
+  animeOverview: anime => ipcRenderer.invoke('anime:overview', anime),
   titleVariants: query => ipcRenderer.invoke('titles:variants', query),
   catalogKoreanSearch: (provider, query) => ipcRenderer.invoke('catalog:search-korean', provider, query),
   catalogIndexState: () => ipcRenderer.invoke('catalog-index:state'),
