@@ -188,7 +188,7 @@ function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
     // Nor one for a DLL Windows did not find: the Visual C++ runtime missing, not the build; see ensureVcRuntime.)
     return [...list.filter(kind => kind && !(off[kind] && off[kind].driver === driver && off[kind].check === 3 && !String(off[kind].error).includes(String(DLL_NOT_FOUND)))), 'vulkan'];
   }
-  // llama.cpp's Windows builds (b11438 and later) use Microsoft's Visual C++ runtime, which not every PC has: without it
+  // llama.cpp's Windows builds use Microsoft's Visual C++ runtime (b11303 and b11438 both), which not every PC has: without it
   // no build starts (Windows does not find its DLLs: exit code 0xC0000135) and every translation went to the API. It
   // is installed from Microsoft once the person agrees (needVcRuntime, a question from main; Windows asks for
   // permission too). Declined, the local AI says why it cannot run, and only a translation asked for by hand (askInstall: 내 PC로
