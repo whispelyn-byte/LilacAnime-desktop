@@ -409,7 +409,9 @@ async function renderAssSubtitle(){
   try{
     const [ass,font]=await Promise.all([assRendererReady(),subtitleFontData()]);if(currentSubtitle!==subtitle)return;
     subtitle.assRendering=true;setVttVisible();
-    await ass.attach($('#video'),{subUrl:subtitle.assUrl,fonts:subtitle.fonts||[],defaultFont:font,offsetMs:Number(localStorage.getItem('subtitleSync')||0),visible:$('#subtitleEnabled').checked});
+    const attached=await ass.attach($('#video'),{subUrl:subtitle.assUrl,fonts:subtitle.fonts||[],defaultFont:font,offsetMs:Number(localStorage.getItem('subtitleSync')||0),visible:$('#subtitleEnabled').checked});
+    // Drawn again while it is being translated: the lines translated so far go back in.
+    if(attached&&currentSubtitle===subtitle&&translating?.lines&&translating.path===subtitle.path)ass.setLines(translating.lines);
   }catch{if(currentSubtitle===subtitle){subtitle.assRendering=false;setVttVisible();toast('ASS 자막 효과를 적용하지 못해 단순 자막으로 표시합니다.')}}
 }
 // options: {path, assUrl, assPath, fonts, source, saved}. A source+path is remembered per episode.
@@ -565,7 +567,7 @@ async function translateAlongside(source,requestId){
     const run=++backgroundRun;translationEpisodes.set(run,key);
     try{
       const result=await window.lilac.translateSubtitle({path:file.path,title:currentPlaybackContext.subtitleTitle||$('#skipTitle').value.trim(),id:run,provider,anime});
-      await window.lilac.saveSubtitle(key,{source:'gemini',label:translatedLabel(result,name),path:result.path,behind:true,from:file.path,fromName:name});
+      await window.lilac.saveSubtitle(key,{source:'gemini',label:translatedLabel(result,name),path:result.path,assPath:result.assPath,fonts:result.fonts,behind:true,from:file.path,fromName:name});
       if((result.engine==='로컬 AI'||translationSettings?.prepareNextCloud)&&requestId===playbackRequestId&&!currentPlaybackContext.siteKorean)prepareNextEpisode();
       if(key===subtitleStoreKey()){renderSubtitleSheet();if(!alongsideNoted.has(seriesKey())){alongsideNoted.add(seriesKey());toast('번역본도 만들어 뒀어요. 한국어 자막이 맞지 않으면 플레이어 설정 > 자막 > 저장된 자막에서 골라 보세요.')}}
     }finally{translationEpisodes.delete(run)}
@@ -651,7 +653,9 @@ async function runTranslation({file,name,button,provider,manual=false,fresh=fals
     const source=await file();if(!current())return;
     if(translating?.run===run)translating.path=source.path;
     const result=await window.lilac.translateSubtitle({path:source.path,title,id:run,provider,anime:subtitleSearchAnime(),playing:$('#video').currentTime||0,fresh});if(!current())return;
-    currentSubtitlePath=result.path;attachSubtitle(fresh?`${result.url}?again=${Date.now()}`:result.url,translatedLabel(result,name),{path:result.path,source:'gemini',from:source.path,fromName:name});
+    // An ASS subtitle's translation is ASS too, drawn by libass with the source's styles and effects.
+    const again=fresh?`?again=${Date.now()}`:'';
+    currentSubtitlePath=result.path;attachSubtitle(result.url+again,translatedLabel(result,name),{path:result.path,assUrl:result.assUrl?result.assUrl+again:null,assPath:result.assPath,fonts:result.fonts,source:'gemini',from:source.path,fromName:name});
     // The local AI translated this episode (or the API, with 번역 API로도 다음 화 미리 번역 on): the next one is made ready
     // meanwhile (see prepareNextEpisode; main decides by the settings).
     // Pressed with a Korean subtitle there: the series goes on in machine translation.
@@ -664,7 +668,8 @@ async function runTranslation({file,name,button,provider,manual=false,fresh=fals
 }
 // The lines translated so far are on screen while the rest is translated (the run starts where the episode is): the
 // subtitle being translated gets its cues again from its file, with those lines in Korean, and is laid out as when it
-// was loaded (an ASS file drawn with its effects is shown as plain cues meanwhile, as its translation will be).
+// was loaded; an ASS file drawn with its effects keeps them, its Dialogue lines taking the Korean words in libass (as
+// its translation, written as ASS too, will be).
 // raw: a cue's text as the translator reads it (tags off), text: the translated cue.
 const plainCueText=text=>text.replace(/<[^>]*>/g,'').replace(/&nbsp;/g,' ').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&').trim();
 function vttCueList(text){
@@ -678,7 +683,7 @@ async function showTranslatedLines(items){
   run.cues??=fetch(currentSubtitle.src).then(response=>response.text()).then(vttCueList).catch(()=>null);
   const cues=await run.cues,track=$('#video').textTracks[0];
   if(!cues?.length||!track?.cues||translating!==run||currentSubtitle?.path!==run.path)return;
-  if(currentSubtitle.assRendering){currentSubtitle.assRendering=false;window.LilacAss?.destroy();setVttVisible()}
+  if(currentSubtitle.assRendering)window.LilacAss?.setLines(run.lines);
   // Only the cues whose lines came in are replaced (as libass takes one event at a time), not the whole track every batch.
   // (A blank: a bilingual file's Chinese line, left out of its translation.)
   setVttCues(track,flatVttLines(cues.map(cue=>({start:cue.start,end:cue.end,text:run.lines.get(cue.raw)??cue.text})).filter(cue=>cue.text)));

@@ -226,6 +226,32 @@ function createTranslator(userData) {
   const untagged = text => text.replace(/\{\\[^}]*\}/g, '').replace(/^[ \t]+|[ \t]+$/gm, '').trim();
   const positionTag = text => text.match(/\{\\an[1-9]\}/)?.[0] || '';
   const escapeCue = text => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n{2,}/g, '\n').replace(/-->/g, '→');
+  // An ASS subtitle is translated from its VTT copy (main's assToVtt, written beside it under the same name), and its
+  // translation is written as ASS too, so libass draws the Korean lines with the original's styles, positions and
+  // effects. A Dialogue line's words as the copy has them (assToVtt, then plain) find its translation.
+  const assSourceOf = file => ['.ass', '.ssa'].map(ext => file.replace(/\.vtt$/i, ext)).find(name => name !== file && fs.existsSync(name)) || null;
+  const assWords = text => plain(text.replace(/\{[^}]*}/g, '').replace(/\\[Nn]/g, '\n').replace(/\\h/g, ' ').trim());
+  // A Dialogue line's override tags at the start (position, fade, colours), kept before its Korean words; a karaoke
+  // syllable's timing (\k20) is not, as the words are no longer those syllables.
+  const assLead = text => text.match(/^(?:\{[^}]*\})*/)[0].replace(/\\[kK][fo]?\d+/g, '').replace(/\{\}/g, '');
+  // words: a line's words → its translation ('' hides it: a bilingual file's Chinese line). Each Dialogue line found
+  // there keeps its tags at the start (assLead) before the Korean words; the tags inside the words go with them. A
+  // drawing (\p1) and a line not translated stay as they are.
+  function translatedAss(file, words) {
+    let inEvents = false, fields = [];
+    return fs.readFileSync(file, 'utf8').replace(/^﻿/, '').split(/\r?\n/).map(line => {
+      if (/^\[Events]/i.test(line)) { inEvents = true; return line; }
+      if (/^\[/.test(line)) { inEvents = false; return line; }
+      if (!inEvents) return line;
+      if (/^Format:/i.test(line)) { fields = line.slice(line.indexOf(':') + 1).split(','); return line; }
+      if (!/^Dialogue:/i.test(line) || !fields.length) return line;
+      const head = line.indexOf(':') + 1, parts = line.slice(head).split(','), at = fields.length - 1, text = parts.slice(at).join(',');
+      const korean = words.get(assWords(text));
+      if (korean === undefined || /\\p[1-9]/.test(text)) return line;
+      const lead = assLead(text), body = untagged(korean).replace(/\{/g, '｛').replace(/\}/g, '｝').replace(/\r?\n/g, '\\N');
+      return `${line.slice(0, head)}${parts.slice(0, at).join(',')},${body ? lead + body : ''}`;
+    }).join('\n');
+  }
 
   // Written like a Korean fansub team's style guide: the work, what the answer must look like, then how to translate.
   // context: {title (as shown in the app, usually Korean), originalTitle, genres, synopsis, characters: [{name, native,
@@ -483,6 +509,9 @@ function createTranslator(userData) {
     const engineOf = name => name === 'local' ? LOCAL_ENGINE : CLOUDS[name];
     // The prompt version is part of the cache key, so a better prompt is not hidden behind older results.
     const source = fs.readFileSync(file, 'utf8');
+    // The ASS file it was made from, if any (see assSourceOf): its translation is named by the VTT one and this file.
+    const assSource = assSourceOf(file), assKey = assSource ? crypto.createHash('sha1').update(fs.readFileSync(assSource)).digest('hex').slice(0, 8) : '';
+    const assOf = vtt => assSource ? vtt.replace(/\.vtt$/i, `.${assKey}.ass`) : null;
     const hashOf = name => crypto.createHash('sha1').update(`${modelOf(name)}\n${name === 'local' ? LOCAL_PROMPT_VERSION + promptVersion(localModel) : PROMPT_VERSION}\n${source}`).digest('hex').slice(0, 20);
     // Kept translations are taken from the side that translates now only: the local AI's for the local AI, the APIs'
     // (the picked one's first, then one another API made when it could not be used) for the API, so the two stay apart.
@@ -492,7 +521,9 @@ function createTranslator(userData) {
       const out = path.join(cacheDir, `${hashOf(name)}.vtt`);
       if (!fs.existsSync(out)) continue;
       const models = modelsIn(out);
-      progress(1, 1); return { path: out, model: Object.keys(models)[0] || modelOf(name), models, engine: engineOf(name).name, failed: 0, cached: true };
+      // (One made before translations were written as ASS too is drawn as plain cues.)
+      const ass = assOf(out);
+      progress(1, 1); return { path: out, ass: ass && fs.existsSync(ass) ? ass : null, model: Object.keys(models)[0] || modelOf(name), models, engine: engineOf(name).name, failed: 0, cached: true };
     }
 
     const parsed = parseVtt(source);
@@ -582,7 +613,7 @@ function createTranslator(userData) {
     const models = {};
     for (const i of translated.keys()) { const model = lineModel.get(i) || modelOf(by.get(i) || main); models[model] = (models[model] || 0) + 1; }
     const ranked = Object.fromEntries(Object.entries(models).sort((a, b) => b[1] - a[1]));
-    const written = writeResult(cues, unique, translated, hashOf(main), ranked);
+    const written = writeResult(cues, unique, translated, hashOf(main), ranked, assSource && { file: assSource, of: assOf, hidden: blanks.map(blank => blank.raw) });
     if (!written.failed) for (const name of used) try { fs.unlinkSync(linesFile(name)); } catch { /* none kept */ }
     const result = { ...written, engine: engineOf(main).name };
     // Said when the one asked for (the button's API or the local AI) did not do it all.
@@ -598,7 +629,9 @@ function createTranslator(userData) {
     const list = head.match(/^translated-by: (.+)$/m)?.[1] || '';
     return Object.fromEntries(list.split('; ').map(item => item.match(/^(.+)=(\d+)$/)).filter(Boolean).map(match => [match[1], Number(match[2])]));
   };
-  function writeResult(cues, unique, translated, hash, models) {
+  // ass: {file, of, hidden} for an ASS subtitle: the source file, the translation's name from the VTT one's, and the
+  // lines left out (a bilingual file's Chinese ones).
+  function writeResult(cues, unique, translated, hash, models, ass = null) {
     if (!translated.size) throw new Error('번역 결과를 받지 못했습니다.');
     const out = path.join(cacheDir, `${hash}.vtt`), failed = unique.length - translated.size;
     const byText = new Map(unique.filter(line => translated.has(line.i)).map(line => [line.raw, positionTag(line.raw) + translated.get(line.i)]));
@@ -612,7 +645,12 @@ function createTranslator(userData) {
     const target = failed ? path.join(cacheDir, `${hash}-partial-${Date.now()}.vtt`) : out;
     const note = Object.entries(models).map(([model, lines]) => `${model}=${lines}`).join('; ');
     fs.writeFileSync(target, `WEBVTT\n\n${note ? `NOTE\ntranslated-by: ${note}\n\n` : ''}${body}\n`, 'utf8');
-    return { path: target, model: Object.keys(models)[0] || '', models, failed, cached: false };
+    let assTarget = null;
+    if (ass) try {
+      const words = new Map([...ass.hidden.map(raw => [raw, '']), ...unique.filter(line => translated.has(line.i)).map(line => [line.raw, translated.get(line.i)])]);
+      fs.writeFileSync(assTarget = ass.of(target), translatedAss(ass.file, words), 'utf8');
+    } catch { assTarget = null; /* drawn as plain cues then */ }
+    return { path: target, ass: assTarget, model: Object.keys(models)[0] || '', models, failed, cached: false };
   }
 
   return { settings, saveSettings, translate, cancel, jump, ready, local, clouds: CLOUDS };

@@ -62,7 +62,9 @@ class SubtitleStore {
   // all: every file, the saved ones too (모든 자막 지우기), except what changed in the last ten minutes.
   unused({ olderThan = 0, all = false } = {}) {
     const used = new Set(), folders = new Set(), now = Date.now(), files = [];
-    if (!all) for (const items of Object.values(this.data)) for (const item of items) for (const file of [item.path, item.assPath]) if (file) { used.add(path.resolve(file)); if (/\.(ass|ssa)$/i.test(file)) folders.add(path.dirname(path.resolve(file))); }
+    // (A translation written as ASS sits among the other translations, with no fonts: it keeps only itself.)
+    const translations = path.join(path.resolve(this.managedRoot), 'translated');
+    if (!all) for (const items of Object.values(this.data)) for (const item of items) for (const file of [item.path, item.assPath]) if (file) { used.add(path.resolve(file)); if (/\.(ass|ssa)$/i.test(file) && path.dirname(path.resolve(file)) !== translations) folders.add(path.dirname(path.resolve(file))); }
     const walk = dir => { let entries = []; try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
       for (const entry of entries) {
         const file = path.join(dir, entry.name);

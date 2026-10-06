@@ -63,5 +63,37 @@ function frame(video) {
   return instance._canvas;
 }
 
-window.LilacAss = { attach, destroy, setVisible, setOffset, frame, get active() { return Boolean(instance); } };
+// A Dialogue line's words as its VTT copy has them (main's assToVtt, then the translator's plain), and the words put in
+// a Dialogue line (the translator's translatedAss does the same to the file).
+const assWords = text => text.replace(/\{[^}]*}/g, '').replace(/\\[Nn]/g, '\n').replace(/\\h/g, ' ').trim()
+  .replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').trim();
+const assLead = text => text.match(/^(?:\{[^}]*\})*/)[0].replace(/\\[kK][fo]?\d+/g, '').replace(/\{\}/g, '');
+const dialogueText = cue => cue.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/\{\\[^}]*\}/g, '')
+  .replace(/^[ \t]+|[ \t]+$/gm, '').trim().replace(/\{/g, '｛').replace(/\}/g, '｝').replace(/\r?\n/g, '\\N');
+
+// Lines of the subtitle on screen in other words while libass draws it (a translation coming in): only the events whose
+// words changed are set again, one by one as libass takes them, not the whole file. lines: Map of a line's words (as
+// the VTT copy has them) → its new words as a VTT cue ('' hides the line). An event keeps its override tags at the
+// start; a drawing (\p1) stays as it is.
+async function setLines(lines) {
+  const active = instance; if (!active) return;
+  active.lilacEvents ??= active.renderer.getEvents().then(events => {
+    const byWords = new Map();
+    events.forEach((event, index) => { const words = assWords(event.Text || ''); if (words && !/\\p[1-9]/.test(event.Text)) byWords.set(words, [...(byWords.get(words) || []), index]); });
+    return { events, byWords, shown: new Map() };
+  });
+  const { events, byWords, shown } = await active.lilacEvents; if (active !== instance) return;
+  const changes = [];
+  for (const [raw, text] of lines) {
+    if (shown.get(raw) === text || !byWords.has(raw)) continue; shown.set(raw, text);
+    const words = dialogueText(text);
+    for (const index of byWords.get(raw)) { const event = events[index], lead = assLead(event.Text); changes.push(active.renderer.setEvent({ ...event, Text: words ? lead + words : '' }, index)); }
+  }
+  if (!changes.length) return;
+  await Promise.all(changes);
+  // Playing, the next frame draws them; paused, the picture is drawn again now.
+  if (active === instance && active._video?.paused) active._demandRender(true).catch(() => {});
+}
+
+window.LilacAss = { attach, destroy, setVisible, setOffset, setLines, frame, get active() { return Boolean(instance); } };
 window.dispatchEvent(new Event('lilac-ass-ready'));
