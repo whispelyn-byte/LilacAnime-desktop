@@ -409,7 +409,7 @@ async function renderAssSubtitle(){
   try{
     const [ass,font]=await Promise.all([assRendererReady(),subtitleFontData()]);if(currentSubtitle!==subtitle)return;
     subtitle.assRendering=true;setVttVisible();
-    const attached=await ass.attach($('#video'),{subUrl:subtitle.assUrl,fonts:subtitle.fonts||[],defaultFont:font,offsetMs:Number(localStorage.getItem('subtitleSync')||0),visible:$('#subtitleEnabled').checked});
+    const attached=await ass.attach($('#video'),{subUrl:subtitle.assUrl,fonts:subtitle.fonts||[],defaultFont:font,offsetMs:Number(localStorage.getItem('subtitleSync')||0),visible:$('#subtitleEnabled').checked,korean:subtitle.source==='gemini'});
     // Drawn again while it is being translated: the lines translated so far go back in.
     if(attached&&currentSubtitle===subtitle&&translating?.lines&&translating.path===subtitle.path)ass.setLines(translating.lines);
   }catch{if(currentSubtitle===subtitle){subtitle.assRendering=false;setVttVisible();toast('ASS 자막 효과를 적용하지 못해 단순 자막으로 표시합니다.')}}
