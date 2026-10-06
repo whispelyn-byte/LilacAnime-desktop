@@ -566,7 +566,7 @@ function createTranslator(userData, options = {}) {
           const position = new Map(lines.map((line, index) => [line, index])), left = new Set(lines);
           const pick = () => { const line = nextLine(left); if (!line) return undefined; left.delete(line); return position.get(line); };
           engine.jump = null;
-          await local.translateLines(lines.map(line => line.text), { modelId: localModel.id, progress, status, context, signal, pick, onLine: (index, text) => { translated.set(lines[index].i, text); lineModel.set(lines[index].i, modelOf(name)); shown([lines[index].i]); keepSoon(name); } });
+          await local.translateLines(lines.map(line => line.text), { modelId: localModel.id, progress, status, context, signal, pick, askInstall: only, onLine: (index, text) => { translated.set(lines[index].i, text); lineModel.set(lines[index].i, modelOf(name)); shown([lines[index].i]); keepSoon(name); } });
         } else await translateCloud(settings, name, modelFor(name), lines, translated, { title, ...context }, { progress, signal, onSwitch, order: playingFirst, near, control: engine, saved: (model, ids) => { for (const i of ids) lineModel.set(i, name === 'gemini' ? model : `${name}${model ? `:${model}` : ''}`); shown(ids); keepSoon(name); } });
         lastError = null;
       } catch (error) { lastError = error; }

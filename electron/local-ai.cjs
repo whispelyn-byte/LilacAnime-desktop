@@ -191,15 +191,18 @@ function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
   // llama.cpp's Windows builds (b11438 and later) use Microsoft's Visual C++ runtime, which not every PC has: without it
   // no build starts (Windows does not find its DLLs: exit code 0xC0000135) and every translation went to the API. It
   // is installed from Microsoft once the person agrees (needVcRuntime, a question from main; Windows asks for
-  // permission too); declined, the local AI says why it cannot run (and asks again the next time).
+  // permission too). Declined, the local AI says why it cannot run, and only a translation asked for by hand (askInstall: 내 PC로
+  // 번역 pressed) asks again: the next episode made ready or a download's translation do not keep asking.
   const DLL_NOT_FOUND = 3221225781, VC_DLLS = ['vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll'];
   const vcRuntimeMissing = () => process.platform === 'win32' && VC_DLLS.some(name => !fs.existsSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', name)));
   const vcError = (why = '') => Object.assign(new Error(`로컬 AI(llama.cpp)를 실행하려면 Microsoft Visual C++ 런타임이 필요합니다${why ? ` (${why})` : ''}. 내 PC 번역을 다시 누르면 설치할 수 있어요.`), { vcRuntime: true });
-  let vcInstall = null;
-  function ensureVcRuntime(status) {
+  let vcInstall = null, vcDeclined = false;
+  function ensureVcRuntime(status, ask = false) {
     if (!vcRuntimeMissing()) return Promise.resolve();
+    if (vcDeclined && !ask) return Promise.reject(vcError('설치하지 않음'));
     vcInstall ||= (async () => {
-      if (!await needVcRuntime()) throw vcError('설치하지 않음');
+      if (!await needVcRuntime()) { vcDeclined = true; throw vcError('설치하지 않음'); }
+      vcDeclined = false;
       const exe = path.join(root, 'vc_redist.x64.exe');
       status('Microsoft Visual C++ 런타임 받는 중');
       await download('https://aka.ms/vs/17/release/vc_redist.x64.exe', exe, () => {});
@@ -371,7 +374,7 @@ function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
   // (バカ バカ バカ…) can keep all four slots busy for longer than that.
   function touch() { clearTimeout(idleTimer); idleTimer = setTimeout(() => { if (busy) touch(); else stop(); }, IDLE_STOP); idleTimer.unref?.(); }
   // One server for the selected model; layers go to the graphics card when the build finds one.
-  async function start(model, status = () => {}) {
+  async function start(model, status = () => {}, ask = false) {
     const file = modelPath(model);
     if (server?.model === file && !server.child.killed) { touch(); return server; }
     if (starting?.model === file) return starting.promise;
@@ -379,7 +382,7 @@ function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
     const promise = (async () => {
       if (!fs.existsSync(file)) throw new Error(`${model.label} 모델을 먼저 받아 주세요 (설정 > 자막 자동 번역).`);
       status('llama.cpp 준비 중');
-      await ensureVcRuntime(status);
+      await ensureVcRuntime(status, ask);
       let { kind, exe } = await runtimeFor(status);
       await stopLeftover();
       // llama.cpp puts as many layers on the graphics card as fit in its free memory and runs the rest on the CPU, and
@@ -506,10 +509,10 @@ function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
   // context: the work's {characters} from AniList, for the names in the terminology list. pick(): the index of the line
   // to translate next (undefined when none is left), asked as each slot frees up, so the lines follow where the episode
   // is playing (and where it jumps to); the lines before a line are still its neighbours. Without it, in order.
-  async function translateLines(texts, { modelId, progress = () => {}, status = () => {}, onLine = () => {}, context = {}, signal = null, pick = null } = {}) {
+  async function translateLines(texts, { modelId, progress = () => {}, status = () => {}, onLine = () => {}, context = {}, signal = null, pick = null, askInstall = false } = {}) {
     const model = models().find(item => item.id === modelId) || models().find(item => item.installed);
     if (!model) throw new Error('로컬 AI 모델이 없습니다. 설정 > 자막 자동 번역에서 모델을 받아 주세요.');
-    const { port, template } = await start(model, status);
+    const { port, template } = await start(model, status, askInstall);
     const names = characterTerms(context.characters || []), kind = modelKind(model, template);
     const cast = (context.characters || []).slice(0, 15).map(character => { const full = names.find(term => term.ja === String(character.native || '').trim()); return full ? `${full.ja} = ${full.ko}${/^(?:male|female)$/i.test(character.gender) ? ` (${character.gender.toLowerCase()})` : ''}` : ''; }).filter(Boolean);
     // An answer is cut off at a few times the line's length (a subtitle line never needs more), so a model stuck
