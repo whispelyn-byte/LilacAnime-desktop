@@ -647,6 +647,8 @@ async function runTranslation({file,name,button,provider,manual=false,fresh=fals
   translationSettings=await window.lilac.geminiSettings().catch(()=>translationSettings);
   if(!translationReady('cloud')&&!translationReady('local')){toast(provider==='local'?'설정 > 자막 자동 번역에서 로컬 AI 모델을 먼저 받아 주세요.':`설정 > 자막 자동 번역에서 ${cloudName()} API 키를 넣어 주세요.`);return}
   cancelButtonRun(button); // a run this button was showing gives way (another Jimaku file picked)
+  // The API and the local AI do not translate at once: the one pressed last does, the other's run stops.
+  for(const other of [$('#translateNow'),$('#translateNowLocal')])if(other!==button)cancelButtonRun(other);
   const label=button.dataset.label||(button.dataset.label=button.textContent),run=++translationRun;
   const requestId=playbackRequestId,title=currentPlaybackContext.subtitleTitle||$('#skipTitle').value.trim(),current=()=>requestId===playbackRequestId&&run===translationRun;
   translationButtons.set(run,button);translationEpisodes.set(run,subtitleStoreKey());translating={run,requestId,name};button.dataset.run=String(run);button.textContent='번역 준비 중… · 취소';$('#subtitleState').textContent=`${name} 자막을 한국어로 번역하는 중...`;renderSubtitleSheet();
