@@ -685,16 +685,8 @@ function isKoreanTrack(track){return /kor|korean|한국/i.test(`${track.language
 // WebVTT copy for the <track> fallback. Fonts extracted next to the subtitle are passed along.
 function subtitleResult(file,extra={}){
   const isAss=/\.(ass|ssa)$/i.test(file),vtt=/\.srt$/i.test(file)?srtToVtt(file):/\.(smi|sami)$/i.test(file)?smiToVtt(file):isAss?assToVtt(file):file;
-  const fonts=isAss?assFonts(file):[];
+  const fonts=isAss?fs.readdirSync(path.dirname(file)).filter(name=>/\.(ttf|otf|ttc|woff2?)$/i.test(name)).map(name=>pathToFileURL(path.join(path.dirname(file),name)).href):[];
   return {...extra,path:vtt,url:pathToFileURL(vtt).href,assPath:isAss?file:null,assUrl:isAss?pathToFileURL(file).href:null,fonts};
-}
-const assFonts=file=>fs.readdirSync(path.dirname(file)).filter(name=>/\.(ttf|otf|ttc|woff2?)$/i.test(name)).map(name=>pathToFileURL(path.join(path.dirname(file),name)).href);
-// An ASS subtitle's translation is ASS too (the translator's assSourceOf): {assPath, fonts} of a translation of the
-// VTT copy `file`, drawn with the fonts next to the source ASS; {} when there is none.
-function translatedAss(file,result){
-  if(!result?.ass||!fs.existsSync(result.ass))return {};
-  const source=['.ass','.ssa'].map(ext=>file.replace(/\.vtt$/i,ext)).find(name=>fs.existsSync(name));
-  return {assPath:result.ass,fonts:source?assFonts(source):[]};
 }
 // Downloads a remote VTT/SRT/ASS subtitle and returns the original file (see subtitleResult).
 async function saveRemoteSubtitle(url,{referer='',userAgent=LINKKF_UA,headers={}}={}){
@@ -1772,7 +1764,7 @@ app.whenReady().then(async () => {
     const provider=jimakuTranslation();if(!provider)return null;
     const title=job.displayTitles?.ko||job.title||'',result=await translator().translate({file,title,provider,context:await translationContext(job.anime||{},title)});
     const label=`${result.engine||'AI'} 번역 (Jimaku)`,key=downloadSubtitleKey(job);
-    if(key&&!result.failed)subtitleStore.save(key,{source:'gemini',label,path:result.path,...translatedAss(file,result),behind:!primary,from:file,fromName:'Jimaku'});
+    if(key&&!result.failed)subtitleStore.save(key,{source:'gemini',label,path:result.path,behind:!primary,from:file,fromName:'Jimaku'});
     return {path:result.path,label};
   };
   // Android LilacDownloadService: AniSkip timestamps are saved with the download (one retry after 500 ms);
@@ -2161,9 +2153,7 @@ app.whenReady().then(async () => {
     const send=value=>{if(!event.sender.isDestroyed())event.sender.send('translate:progress',{id,...value})};
     const context=await translationContext(anime||{},String(title||''));
     const result=await translator().translate({file:resolved,id:Number(id)||null,title:String(title||''),provider:['cloud','gemini','local'].includes(provider)?provider:'',context,playing:Number(playing)||0,fresh:fresh===true,progress:(done,total)=>send({done,total}),status:text=>send({status:text}),lines:items=>send({lines:items})});
-    const translated=subtitleResult(result.path,{model:result.model,engine:result.engine||'',failed:result.failed,cached:result.cached,fallbackNote:result.fallbackNote||'',fallbackReason:result.fallbackReason||''});
-    const ass=translatedAss(resolved,result);
-    return ass.assPath?{...translated,...ass,assUrl:pathToFileURL(ass.assPath).href}:translated;
+    return subtitleResult(result.path,{model:result.model,engine:result.engine||'',failed:result.failed,cached:result.cached,fallbackNote:result.fallbackNote||'',fallbackReason:result.fallbackReason||''});
   });
   // Several lookups at a time (TMDB answers quickly; AniList allows about 90 requests a minute).
   // A work's story in Korean from TMDB ('' when there is none; see tmdbOverview).
