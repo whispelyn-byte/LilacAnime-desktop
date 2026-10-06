@@ -120,7 +120,7 @@ function modelKind(model, template = '') {
 }
 const KANA = /[぀-ゟ゠-ヺヽ-ヿ]/;
 
-// needVcRuntime: asks whether Microsoft's Visual C++ runtime may be installed (see ensureVcRuntime); true to install.
+// needVcRuntime: asks whether Microsoft's Visual C++ runtime may be installed (see installVcRuntime); true to install.
 function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
   const root = path.join(userData, 'local-ai'), modelDir = path.join(root, 'models');
   let server = null, starting = null, idleTimer = null, busy = 0;
@@ -185,20 +185,21 @@ function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
     }
     // (A mark from before check 3 may be a build wrongly given up on: on a large model before checks were counted, or
     // while another program had the card's memory before a build that reached the card counted as working: not kept.
-    // Nor one for a DLL Windows did not find: the Visual C++ runtime missing, not the build; see ensureVcRuntime.)
+    // Nor one for a DLL Windows did not find: the Visual C++ runtime missing, not the build; see installVcRuntime.)
     return [...list.filter(kind => kind && !(off[kind] && off[kind].driver === driver && off[kind].check === 3 && !String(off[kind].error).includes(String(DLL_NOT_FOUND)))), 'vulkan'];
   }
   // llama.cpp's Windows builds use Microsoft's Visual C++ runtime (b11303 and b11438 both), which not every PC has: without it
-  // no build starts (Windows does not find its DLLs: exit code 0xC0000135) and every translation went to the API. It
-  // is installed from Microsoft once the person agrees (needVcRuntime, a question from main; Windows asks for
-  // permission too). Declined, the local AI says why it cannot run, and only a translation asked for by hand (askInstall: 내 PC로
-  // 번역 pressed) asks again: the next episode made ready or a download's translation do not keep asking.
-  const DLL_NOT_FOUND = 3221225781, VC_DLLS = ['vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll'];
-  const vcRuntimeMissing = () => process.platform === 'win32' && VC_DLLS.some(name => !fs.existsSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', name)));
+  // no build starts (Windows does not find its DLLs: exit code 0xC0000135) and every translation went to the API. When
+  // llama.cpp stops for that, the runtime is installed from Microsoft once the person agrees (needVcRuntime, a
+  // question from main; Windows asks for permission too) and it is started again. Only then: Windows also finds the
+  // DLLs outside System32 (a folder on PATH), where llama.cpp runs without it (0.4.28 looked in System32 first and kept
+  // such a PC from translating when it could not install). Declined, the local AI says why it cannot run, and only a
+  // translation asked for by hand (askInstall: 내 PC로 번역 pressed) asks again: the next episode made ready or a
+  // download's translation do not keep asking.
+  const DLL_NOT_FOUND = 3221225781;
   const vcError = (why = '') => Object.assign(new Error(`로컬 AI(llama.cpp)를 실행하려면 Microsoft Visual C++ 런타임이 필요합니다${why ? ` (${why})` : ''}. 내 PC 번역을 다시 누르면 설치할 수 있어요.`), { vcRuntime: true });
   let vcInstall = null, vcDeclined = false;
-  function ensureVcRuntime(status, ask = false) {
-    if (!vcRuntimeMissing()) return Promise.resolve();
+  function installVcRuntime(status, ask = false) {
     if (vcDeclined && !ask) return Promise.reject(vcError('설치하지 않음'));
     vcInstall ||= (async () => {
       if (!await needVcRuntime()) { vcDeclined = true; throw vcError('설치하지 않음'); }
@@ -214,7 +215,7 @@ function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
         child.once('error', () => resolve(-1)); child.once('exit', resolve);
       });
       try { fs.unlinkSync(exe); } catch {}
-      if (vcRuntimeMissing() || ![0, 1638, 3010].includes(code)) throw vcError(code === 1223 || code === 1602 ? '설치를 취소함' : `설치하지 못함: ${code}`);
+      if (![0, 1638, 3010].includes(code)) throw vcError(code === 1223 || code === 1602 ? '설치를 취소함' : `설치하지 못함: ${code}`);
     })().finally(() => { vcInstall = null; });
     return vcInstall;
   }
@@ -382,7 +383,6 @@ function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
     const promise = (async () => {
       if (!fs.existsSync(file)) throw new Error(`${model.label} 모델을 먼저 받아 주세요 (설정 > 자막 자동 번역).`);
       status('llama.cpp 준비 중');
-      await ensureVcRuntime(status, ask);
       let { kind, exe } = await runtimeFor(status);
       await stopLeftover();
       // llama.cpp puts as many layers on the graphics card as fit in its free memory and runs the rest on the CPU, and
@@ -429,7 +429,7 @@ function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
         for (;;) {
           const code = await Promise.race([exited, new Promise(resolve => setTimeout(() => resolve(undefined), 500))]);
           if (code !== undefined) {
-            if (code === DLL_NOT_FOUND) throw Object.assign(new Error('llama.cpp에 필요한 DLL을 Windows가 찾지 못해 실행되지 않았습니다.'), { dll: true });
+            if (code === DLL_NOT_FOUND) throw Object.assign(new Error('llama.cpp에 필요한 DLL(Microsoft Visual C++ 런타임)을 Windows가 찾지 못해 실행되지 않았습니다.'), { dll: true });
             if (/OutOfDeviceMemory|unable to allocate|failed to allocate|out of memory/i.test(log) || placed()) throw short();
             throw new Error(`llama.cpp가 종료되었습니다: ${log.trim().split('\n').filter(line => / E /.test(line)).pop() || log.trim().split('\n').pop() || code}`);
           }
@@ -461,7 +461,7 @@ function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
           catch (retry) { if (!retry.memory) throw retry; reason = '그래픽카드 메모리 부족'; status('그래픽카드 메모리가 부족해 CPU로 불러오는 중'); return launch(['-ngl', '0']); }
         }
       };
-      let started;
+      let started, vcTried = false;
       while (!started) {
         try { started = await load(); }
         catch (failure) {
@@ -473,6 +473,8 @@ function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
             if (swapInUpdate(kind)) { exe = runtimeExe(kind); try { started = await load(); error = null; } catch (again) { error = again; } }
           }
           if (!error) break;
+          // Windows did not find a DLL (the Visual C++ runtime): installed if the person agrees, then started again, once.
+          if (error.dll && !vcTried) { vcTried = true; await installVcRuntime(status, ask); status('모델 불러오는 중'); continue; }
           // A maker's build that does not start on this PC (a driver or card it does not support) is not tried again
           // with this driver; the next build for the PC takes over (Vulkan in the end).
           // (Nor one missing a DLL of Windows': no other build would start either.)
