@@ -375,6 +375,13 @@ function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
   // (バカ バカ バカ…) can keep all four slots busy for longer than that.
   function touch() { clearTimeout(idleTimer); idleTimer = setTimeout(() => { if (busy) touch(); else stop(); }, IDLE_STOP); idleTimer.unref?.(); }
   // One server for the selected model; layers go to the graphics card when the build finds one.
+  // Short of memory, a smaller model is the way out: the listed ones smaller than this one, said first, and where to
+  // change it; already on the smallest, closing other programs is what is left.
+  function smallerAdvice(model, others) {
+    const size = model.size || (() => { try { return fs.statSync(modelPath(model)).size; } catch { return 0; } })();
+    const smaller = MODELS.filter(item => !item.legacy && item.size < size * 0.9).sort((a, b) => b.size - a.size).map(item => `${item.label} ${(item.size / 1e9).toFixed(1)}GB`);
+    return smaller.length ? `설정 > 자막 자동 번역 > 로컬 AI 모델에서 더 작은 모델(${smaller.join(', ')})로 바꿔 보세요. ${others}도 도움이 됩니다.` : `가장 작은 모델이에요. ${others.replace(/는 것$/, '고')} 다시 해 보세요.`;
+  }
   async function start(model, status = () => {}, ask = false) {
     const file = modelPath(model);
     if (server?.model === file && !server.child.killed) { touch(); return server; }
@@ -421,7 +428,7 @@ function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
         // card: the memory that ran out was the card's (layers placed there, or an allocation on a device in the log);
         // otherwise the PC's (see ram()).
         const cardShort = () => placed() || /OutOfDeviceMemory|(?:CUDA|Vulkan|ROCm|SYCL|OPENVINO)\S*[^\n]{0,80}(?:alloc|memory)|(?:alloc|memory)[^\n]{0,80}(?:CUDA|Vulkan|ROCm|SYCL|OPENVINO)/i.test(log);
-        const short = () => Object.assign(new Error('그래픽카드 메모리가 부족해 모델을 불러오지 못했습니다. 그래픽카드를 쓰는 다른 프로그램을 닫거나 더 작은 모델(Gemma 4 E2B, Hy-MT2 1.8B)을 써 보세요.'), { memory: true, card: cardShort() });
+        const short = () => Object.assign(new Error(`그래픽카드 메모리가 부족해 모델을 불러오지 못했습니다. ${smallerAdvice(model, '그래픽카드를 쓰는 다른 프로그램을 닫는 것')}`), { memory: true, card: cardShort() });
         child.stdout.on('data', keep); child.stderr.on('data', keep);
         const exited = new Promise(resolve => child.once('exit', code => resolve(code)));
         // A maker's build turns its code for the card into the card's own the first time it runs (SYCL always, CUDA on
@@ -465,7 +472,7 @@ function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
         { args: ['-ngl', '0'], status: '그래픽카드 메모리가 작아 CPU로 불러오는 중 (조금 걸려요)' }
       ];
       // On the CPU the model is read into the PC's memory whole: short of it there, the PC's memory is what is said.
-      const ram = () => Object.assign(new Error(`PC 메모리(RAM)가 부족해 모델을 불러오지 못했습니다 (모델 ${(fs.statSync(file).size / 1e9).toFixed(1)}GB, 이 PC ${Math.round(os.totalmem() / 1e9)}GB 중 남은 것 ${(os.freemem() / 1e9).toFixed(1)}GB). 다른 프로그램을 닫거나 더 작은 모델(Gemma 4 E2B 3.4GB, Hy-MT2 1.8B 1.1GB)을 써 보세요.`), { memory: true });
+      const ram = () => Object.assign(new Error(`PC 메모리(RAM)가 부족해 모델을 불러오지 못했습니다 (모델 ${(fs.statSync(file).size / 1e9).toFixed(1)}GB, 이 PC ${Math.round(os.totalmem() / 1e9)}GB 중 남은 것 ${(os.freemem() / 1e9).toFixed(1)}GB). ${smallerAdvice(model, '다른 프로그램을 닫는 것')}`), { memory: true });
       const load = async () => {
         for (let step = 0; ; step++) {
           if (step === STEPS.length - 1) reason = '그래픽카드 메모리 부족';
