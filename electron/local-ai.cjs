@@ -403,20 +403,21 @@ function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
         // The device and layer count are read as the model loads (-lv 4 prints them).
         // They are looked for in the output as it comes, before only its end is kept: a large model prints so much while it
         // loads that the device line is gone from the last 8000 characters by the time the server answers.
-        let log = '', device = '', onCard = false, layers = 0, total = 0, warming = 0;
+        let log = '', device = '', onCard = false, layers = 0, total = 0;
         const keep = chunk => {
           const text = log + chunk.toString();
           device ||= text.match(/using device \S+ \(([^)]+)\)/)?.[1] || '';
           onCard ||= Boolean(RUNTIMES[kind].device?.test(text));
           const offloaded = text.match(/offloaded (\d+)\/(\d+) layers to GPU/); if (offloaded) { layers = Number(offloaded[1]); total = Number(offloaded[2]); }
-          if (!warming && /warming up the model/.test(text)) warming = Date.now();
           log = text.slice(-8000);
         };
-        // A maker's build that found the card and put the model's layers on it works on this PC: one that then stops or
-        // hangs (in its warm-up run) is short of card memory, most often because another program is using the card (a
-        // second llama.cpp did it on a 4 GB card), unless its code does not fit the card. So it is loaded again with more
-        // room, then on the CPU, and not given up on for the next build.
-        const placed = () => onCard && total > 0 && !/no kernel image|invalid device function/i.test(log);
+        // A maker's build that found the card and put some of the model's layers on it works on this PC: one that then
+        // stops, or does not answer within the time below, is short of card memory, most often because another program
+        // is using the card (a second llama.cpp did it on a 4 GB card), unless its code does not fit the card. So it is
+        // loaded again with more room, then on the CPU, and not given up on for the next build. Loaded on the CPU (-ngl 0)
+        // the build still finds the card and reports the layer count (0/43): with no layer on the card it is not
+        // "placed", so a slow CPU is given the whole time and not taken for a card out of memory.
+        const placed = () => onCard && layers > 0 && !/no kernel image|invalid device function/i.test(log);
         const short = () => Object.assign(new Error('그래픽카드 메모리가 부족해 모델을 불러오지 못했습니다. 그래픽카드를 쓰는 다른 프로그램을 닫거나 더 작은 모델(Hy-MT2 1.8B)을 써 보세요.'), { memory: true });
         child.stdout.on('data', keep); child.stderr.on('data', keep);
         const exited = new Promise(resolve => child.once('exit', code => resolve(code)));
@@ -443,9 +444,9 @@ function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
             if (first) try { fs.writeFileSync(buildFile(path.join(root, RUNTIMES[kind].dir)), JSON.stringify({ ...buildOf(kind), ran: driver })); } catch {}
             return { child, port, device, layers: device ? layers : 0, total };
           }
-          // The warm-up takes a second or two once the build has run with this driver (the first run turns its code into
-          // the card's own there, which can take minutes).
-          if (placed() && warming && !first && Date.now() - warming > 60000) { child.kill(); throw short(); }
+          // (A minute for the warm-up run was given up on: a small card with a few layers of the model (an MX450, 2 GB)
+          // and the rest on a laptop CPU takes longer than that and was sent to the CPU, where it was cut off too, so
+          // the local AI did not translate where 0.4.21 did. A card short of memory is told by the time below.)
           if (Date.now() > deadline) { child.kill(); if (placed()) throw short(); throw new Error('모델을 불러오는 데 너무 오래 걸립니다.'); }
           if (first && !told && Date.now() - begun > 20000) { told = true; status(`llama.cpp(${RUNTIMES[kind].label})를 처음 실행해 그래픽카드에 맞게 준비하는 중 (몇 분 걸릴 수 있어요)`); }
         }
