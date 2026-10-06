@@ -25,12 +25,13 @@ const LOCAL_ENGINE = { name: '로컬 AI', eul: '를', ro: '로' };
 const QWEN_API = { international: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', china: 'https://dashscope.aliyuncs.com/compatible-mode/v1' };
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-function createTranslator(userData) {
+// options: {needVcRuntime} for the local AI (see local-ai.cjs).
+function createTranslator(userData, options = {}) {
   const settingsFile = path.join(userData, 'translation.json'), cacheDir = path.join(userData, 'subtitles', 'translated');
   // Kept as gemini.json while Gemini was the only API: moved once, under the name that says what it holds.
   const oldSettingsFile = path.join(userData, 'gemini.json');
   if (!fs.existsSync(settingsFile) && fs.existsSync(oldSettingsFile)) try { fs.renameSync(oldSettingsFile, settingsFile); } catch { /* read from the old name below */ }
-  const local = createLocalAi(userData);
+  const local = createLocalAi(userData, options);
   // The picked model, or the first one on disk when the picked one is not (never downloaded, or deleted).
   const installedModel = id => { const models = local.models(); return models.some(model => model.id === id && model.installed) ? id : models.find(model => model.installed)?.id || id; };
   const read = () => {
@@ -433,7 +434,7 @@ function createTranslator(userData) {
     // A run is known by what it translates, not by where the file is: a site track is saved under a new name each time
     // it is fetched, so the next episode made ready ahead (main's subtitle:prepare) is joined when it is opened.
     let content = options.file; try { content = crypto.createHash('sha1').update(fs.readFileSync(options.file)).digest('hex'); } catch { /* reported by the run */ }
-    const key = `${content}\n${options.provider}`;
+    const key = `${content}\n${options.provider}${options.only ? '\nonly' : ''}`;
     let job = running.get(key), joined = true;
     // A run being cancelled is not joined: a new one starts (and goes on from the lines it kept).
     if (!job || job.abort.signal.aborted) {
@@ -470,11 +471,12 @@ function createTranslator(userData) {
   // (the cue's text in the file, the translated cue's), a few at a time, so the player can show them before the rest is
   // done; control.done() gives all of them. fresh: made again (다시 번역), the saved translation and the lines kept from an
   // earlier run passed over; the new one takes the saved one's place.
-  async function translateOnce({ file, title = '', provider = '', context = {}, signal = null, progress = () => {}, status = () => {}, playing = 0, onLines = () => {}, control = {}, fresh = false }) {
+  async function translateOnce({ file, title = '', provider = '', context = {}, signal = null, progress = () => {}, status = () => {}, playing = 0, onLines = () => {}, control = {}, fresh = false, only = false }) {
     const settings = read(), wanted = provider || autoProvider() || 'cloud';
     // The engines in the order they are tried: an API's name, or 'local'.
     const apis = [settings.cloud, ...Object.keys(CLOUDS).filter(api => api !== settings.cloud)].filter(api => keyOf(settings, api));
-    const order = (wanted === 'local' ? ['local', ...apis] : [...apis, 'local']).filter(name => name !== 'local' || ready('local'));
+    // only: the local AI was asked for by hand (내 PC로 번역), so no API takes over when it cannot translate.
+    const order = (wanted === 'local' ? ['local', ...(only ? [] : apis)] : [...apis, 'local']).filter(name => name !== 'local' || ready('local'));
     if (!order.length) throw new Error(wanted === 'local' ? '설정 > 자막 자동 번역에서 로컬 AI 모델을 먼저 받아 주세요.' : `설정 > 자막 자동 번역에서 ${CLOUDS[settings.cloud].name} API 키를 넣어 주세요.`);
     const localModel = local.models().find(item => item.id === settings.localModel);
     // A Gemini model is named as before (so translations made then are still found); the other APIs by their name.

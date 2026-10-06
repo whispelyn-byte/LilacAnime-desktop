@@ -15,7 +15,9 @@ const { Updater } = require('./updater.cjs');
 const { SubtitleStore } = require('./subtitle-store.cjs');
 const { createTranslator } = require('./subtitle-translator.cjs');
 let subtitleTranslator = null;
-const translator = () => subtitleTranslator ||= createTranslator(app.getPath('userData'));
+// The local AI asks before Microsoft's Visual C++ runtime is installed for it (local-ai.cjs ensureVcRuntime).
+const askVcRuntime = async () => (await dialog.showMessageBox(...[mainWindow].filter(Boolean), { type: 'question', buttons: ['설치', '취소'], defaultId: 0, cancelId: 1, noLink: true, title: '로컬 AI', message: '로컬 AI에 필요한 Microsoft Visual C++ 런타임을 설치할까요?', detail: '로컬 AI 번역 프로그램(llama.cpp)이 이 런타임으로 실행되는데, 이 PC에는 없습니다. Microsoft에서 받아(약 25MB) 설치하고, Windows가 설치를 허락할지 한 번 묻습니다.' })).response === 0;
+const translator = () => subtitleTranslator ||= createTranslator(app.getPath('userData'), { needVcRuntime: askVcRuntime });
 
 app.commandLine.appendSwitch('disable-blink-features','AutomationControlled');
 // Android BackgroundAudioService: playback continues while the window is hidden or minimized.
@@ -2145,14 +2147,14 @@ app.whenReady().then(async () => {
   ipcMain.handle('subtitle:jump',(_,id,seconds)=>{translator().jump(Number(id)||null,Number(seconds)||0);return true});
   // playing: where the episode is (the lines from there are translated first); the lines done so far go to the player
   // as they come (translate:progress {lines}), so it shows them before the rest is translated.
-  ipcMain.handle('subtitle:translate',async(event,{path:file='',title='',id=0,provider='',anime=null,playing=0,fresh=false}={})=>{
+  ipcMain.handle('subtitle:translate',async(event,{path:file='',title='',id=0,provider='',anime=null,playing=0,fresh=false,only=false}={})=>{
     const resolved=path.resolve(String(file||''));
     // App subtitle files and the tracks saved with downloads.
     const savedByUser=Object.values(subtitleStore.data).some(items=>items.some(item=>item.source==='user'&&path.resolve(item.path)===resolved));
     if(!savedByUser&&![path.join(app.getPath('userData'),'subtitles'),downloadManager?.root].some(root=>root&&resolved.startsWith(root+path.sep))||!/\.vtt$/i.test(resolved)||!fs.existsSync(resolved))throw new Error('번역할 자막 파일이 없습니다.');
     const send=value=>{if(!event.sender.isDestroyed())event.sender.send('translate:progress',{id,...value})};
     const context=await translationContext(anime||{},String(title||''));
-    const result=await translator().translate({file:resolved,id:Number(id)||null,title:String(title||''),provider:['cloud','gemini','local'].includes(provider)?provider:'',context,playing:Number(playing)||0,fresh:fresh===true,progress:(done,total)=>send({done,total}),status:text=>send({status:text}),lines:items=>send({lines:items})});
+    const result=await translator().translate({file:resolved,id:Number(id)||null,title:String(title||''),provider:['cloud','gemini','local'].includes(provider)?provider:'',context,playing:Number(playing)||0,fresh:fresh===true,only:only===true,progress:(done,total)=>send({done,total}),status:text=>send({status:text}),lines:items=>send({lines:items})});
     return subtitleResult(result.path,{model:result.model,engine:result.engine||'',failed:result.failed,cached:result.cached,fallbackNote:result.fallbackNote||'',fallbackReason:result.fallbackReason||''});
   });
   // Several lookups at a time (TMDB answers quickly; AniList allows about 90 requests a minute).

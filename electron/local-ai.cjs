@@ -120,7 +120,8 @@ function modelKind(model, template = '') {
 }
 const KANA = /[぀-ゟ゠-ヺヽ-ヿ]/;
 
-function createLocalAi(userData) {
+// needVcRuntime: asks whether Microsoft's Visual C++ runtime may be installed (see ensureVcRuntime); true to install.
+function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
   const root = path.join(userData, 'local-ai'), modelDir = path.join(root, 'models');
   let server = null, starting = null, idleTimer = null, busy = 0;
   const downloads = new Map(); // model id -> {done, total}
@@ -183,8 +184,36 @@ function createLocalAi(userData) {
       if (amd) { list.push('rocm'); driver = amd.driver; } else if (arc) { list.push('sycl', 'openvino'); driver = arc.driver; }
     }
     // (A mark from before check 3 may be a build wrongly given up on: on a large model before checks were counted, or
-    // while another program had the card's memory before a build that reached the card counted as working: not kept.)
-    return [...list.filter(kind => kind && !(off[kind] && off[kind].driver === driver && off[kind].check === 3)), 'vulkan'];
+    // while another program had the card's memory before a build that reached the card counted as working: not kept.
+    // Nor one for a DLL Windows did not find: the Visual C++ runtime missing, not the build; see ensureVcRuntime.)
+    return [...list.filter(kind => kind && !(off[kind] && off[kind].driver === driver && off[kind].check === 3 && !String(off[kind].error).includes(String(DLL_NOT_FOUND)))), 'vulkan'];
+  }
+  // llama.cpp's Windows builds (b11438 and later) use Microsoft's Visual C++ runtime, which not every PC has: without it
+  // no build starts (Windows does not find its DLLs: exit code 0xC0000135) and every translation went to the API. It
+  // is installed from Microsoft once the person agrees (needVcRuntime, a question from main; Windows asks for
+  // permission too); declined, the local AI says why it cannot run (and asks again the next time).
+  const DLL_NOT_FOUND = 3221225781, VC_DLLS = ['vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll'];
+  const vcRuntimeMissing = () => process.platform === 'win32' && VC_DLLS.some(name => !fs.existsSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', name)));
+  const vcError = (why = '') => Object.assign(new Error(`로컬 AI(llama.cpp)를 실행하려면 Microsoft Visual C++ 런타임이 필요합니다${why ? ` (${why})` : ''}. 내 PC 번역을 다시 누르면 설치할 수 있어요.`), { vcRuntime: true });
+  let vcInstall = null;
+  function ensureVcRuntime(status) {
+    if (!vcRuntimeMissing()) return Promise.resolve();
+    vcInstall ||= (async () => {
+      if (!await needVcRuntime()) throw vcError('설치하지 않음');
+      const exe = path.join(root, 'vc_redist.x64.exe');
+      status('Microsoft Visual C++ 런타임 받는 중');
+      await download('https://aka.ms/vs/17/release/vc_redist.x64.exe', exe, () => {});
+      status('Microsoft Visual C++ 런타임 설치 중 (Windows가 허락을 물어요)');
+      // Started elevated through PowerShell: the installer is for the whole PC. 1638: a newer one is there; 3010: done,
+      // the PC wants a restart (not needed for llama.cpp).
+      const code = await new Promise(resolve => {
+        const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', `try { $p = Start-Process -FilePath '${exe.replace(/'/g, "''")}' -ArgumentList '/install','/passive','/norestart' -Verb RunAs -Wait -PassThru; exit $p.ExitCode } catch { exit 1223 }`], { windowsHide: true });
+        child.once('error', () => resolve(-1)); child.once('exit', resolve);
+      });
+      try { fs.unlinkSync(exe); } catch {}
+      if (vcRuntimeMissing() || ![0, 1638, 3010].includes(code)) throw vcError(code === 1223 || code === 1602 ? '설치를 취소함' : `설치하지 못함: ${code}`);
+    })().finally(() => { vcInstall = null; });
+    return vcInstall;
   }
   async function cardDriver(kind) { return kind.startsWith('cuda') ? (await nvidiaGpu())?.driver || 0 : (await videoCards()).find(card => kind === 'rocm' ? /radeon/i.test(card.name) : /intel/i.test(card.name))?.driver || ''; }
 
@@ -350,6 +379,7 @@ function createLocalAi(userData) {
     const promise = (async () => {
       if (!fs.existsSync(file)) throw new Error(`${model.label} 모델을 먼저 받아 주세요 (설정 > 자막 자동 번역).`);
       status('llama.cpp 준비 중');
+      await ensureVcRuntime(status);
       let { kind, exe } = await runtimeFor(status);
       await stopLeftover();
       // llama.cpp puts as many layers on the graphics card as fit in its free memory and runs the rest on the CPU, and
@@ -396,6 +426,7 @@ function createLocalAi(userData) {
         for (;;) {
           const code = await Promise.race([exited, new Promise(resolve => setTimeout(() => resolve(undefined), 500))]);
           if (code !== undefined) {
+            if (code === DLL_NOT_FOUND) throw Object.assign(new Error('llama.cpp에 필요한 DLL을 Windows가 찾지 못해 실행되지 않았습니다.'), { dll: true });
             if (/OutOfDeviceMemory|unable to allocate|failed to allocate|out of memory/i.test(log) || placed()) throw short();
             throw new Error(`llama.cpp가 종료되었습니다: ${log.trim().split('\n').filter(line => / E /.test(line)).pop() || log.trim().split('\n').pop() || code}`);
           }
@@ -441,7 +472,8 @@ function createLocalAi(userData) {
           if (!error) break;
           // A maker's build that does not start on this PC (a driver or card it does not support) is not tried again
           // with this driver; the next build for the PC takes over (Vulkan in the end).
-          if (kind === 'vulkan' || error.memory) throw error;
+          // (Nor one missing a DLL of Windows': no other build would start either.)
+          if (kind === 'vulkan' || error.memory || error.dll) throw error;
           try { fs.mkdirSync(root, { recursive: true }); fs.writeFileSync(brokenFile, JSON.stringify({ ...broken(), [kind]: { driver: await cardDriver(kind), check: 3, error: error.message.slice(0, 300) } })); } catch {}
           status(`llama.cpp(${RUNTIMES[kind].label})가 실행되지 않아 다른 판으로 다시 불러오는 중`);
           ({ kind, exe } = await runtimeFor(status));

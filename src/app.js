@@ -653,7 +653,7 @@ async function runTranslation({file,name,button,provider,manual=false,fresh=fals
   try{
     const source=await file();if(!current())return;
     if(translating?.run===run)translating.path=source.path;
-    const result=await window.lilac.translateSubtitle({path:source.path,title,id:run,provider,anime:subtitleSearchAnime(),playing:$('#video').currentTime||0,fresh});if(!current())return;
+    const result=await window.lilac.translateSubtitle({path:source.path,title,id:run,provider,anime:subtitleSearchAnime(),playing:$('#video').currentTime||0,fresh,only:manual&&provider==='local'});if(!current())return;
     currentSubtitlePath=result.path;attachSubtitle(fresh?`${result.url}?again=${Date.now()}`:result.url,translatedLabel(result,name),{path:result.path,source:'gemini',from:source.path,fromName:name});
     // The local AI translated this episode (or the API, with 번역 API로도 다음 화 미리 번역 on): the next one is made ready
     // meanwhile (see prepareNextEpisode; main decides by the settings).
