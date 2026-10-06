@@ -679,10 +679,10 @@ async function showTranslatedLines(items){
   const cues=await run.cues,track=$('#video').textTracks[0];
   if(!cues?.length||!track?.cues||translating!==run||currentSubtitle?.path!==run.path)return;
   if(currentSubtitle.assRendering){currentSubtitle.assRendering=false;window.LilacAss?.destroy();setVttVisible()}
-  for(const cue of [...track.cues])track.removeCue(cue);
+  // Only the cues whose lines came in are replaced (as libass takes one event at a time), not the whole track every batch.
   // (A blank: a bilingual file's Chinese line, left out of its translation.)
-  for(const cue of cues){const text=run.lines.get(cue.raw)??cue.text;if(text)track.addCue(new VTTCue(cue.start,cue.end,text))}
-  track.lilacFlat=false;applyVttLayout();
+  setVttCues(track,flatVttLines(cues.map(cue=>({start:cue.start,end:cue.end,text:run.lines.get(cue.raw)??cue.text})).filter(cue=>cue.text)));
+  track.lilacFlat=true;applyVttLayout();
 }
 // Jimaku (Android JIMAKU_USER_SELECTION_V2): the episode's Japanese subtitle files are listed for the user to pick; the
 // picked one is applied, saved for the episode and, when set up, translated into Korean right away. Like the Re:Anime /

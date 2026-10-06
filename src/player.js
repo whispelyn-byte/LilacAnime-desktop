@@ -140,32 +140,40 @@ function vttBaseline() {
 // top of each other (an ASS file's lines turned into VTT, a translation of one). They are flattened once, before any
 // sync offset: each stretch of time gets one cue with all lines active then, the earlier line first.
 function flattenVttCues(track) {
-  const list = [...track.cues].sort((a, b) => a.startTime - b.startTime || a.endTime - b.endTime);
-  if (track.lilacFlat || !list.length) return; track.lilacFlat = true;
+  if (track.lilacFlat || !track.cues.length) return; track.lilacFlat = true;
+  setVttCues(track, flatVttLines([...track.cues].map(cue => ({ start: cue.startTime, end: cue.endTime, text: cue.text }))));
+}
+// lines: [{start, end, text}] → [{start, end, text, top}] as they are shown.
+function flatVttLines(lines) {
   // ASS override tags left in SRT / VTT text (Jimaku files have {\an8} on captions, translations keep them) are not
   // shown: {\an7} {\an8} {\an9} put the cue at the top of the picture, the others are dropped.
-  for (const cue of list) {
-    if (!cue.text.includes('{\\')) continue;
-    cue.lilacTop = /\{\\an[789]\}/.test(cue.text);
-    cue.text = cue.text.replace(/\{\\[^}]*\}/g, '').replace(/^[ \t]+|[ \t]+$/gm, '').trim();
-  }
+  const list = lines.map(({ start, end, text }) => text.includes('{\\')
+    ? { start, end, top: /\{\\an[789]\}/.test(text), text: text.replace(/\{\\[^}]*\}/g, '').replace(/^[ \t]+|[ \t]+$/gm, '').trim() }
+    : { start, end, top: false, text }).sort((a, b) => a.start - b.start || a.end - b.end);
   // Cues overlapping in time are merged, the top ones and the bottom ones each among themselves.
   const merge = group => {
-    const times = [...new Set(group.flatMap(cue => [cue.startTime, cue.endTime]))].sort((a, b) => a - b), flat = [];
+    const times = [...new Set(group.flatMap(cue => [cue.start, cue.end]))].sort((a, b) => a - b), flat = [];
     for (let i = 0; i < times.length - 1; i++) {
       const start = times[i], stop = times[i + 1], lines = [];
-      for (const cue of group) { if (cue.startTime > start + 1e-6) break; if (cue.endTime > start + 1e-6 && !lines.includes(cue.text)) lines.push(cue.text); }
+      for (const cue of group) { if (cue.start > start + 1e-6) break; if (cue.end > start + 1e-6 && !lines.includes(cue.text)) lines.push(cue.text); }
       if (!lines.length) continue;
       const text = lines.join('\n'), last = flat[flat.length - 1];
       if (last && last.text === text && Math.abs(last.end - start) < 1e-6) last.end = stop; else flat.push({ start, end: stop, text });
     }
     return flat;
   };
-  const overlaps = group => { let end = -1; for (const cue of group) { if (cue.startTime < end - 0.001) return true; end = Math.max(end, cue.endTime); } return false; };
-  const groups = [list.filter(cue => !cue.lilacTop), list.filter(cue => cue.lilacTop)];
-  if (!groups.some(overlaps)) return;
-  for (const cue of [...track.cues]) track.removeCue(cue);
-  groups.forEach((group, top) => { for (const item of merge(group)) { const cue = new VTTCue(item.start, item.end, item.text); cue.lilacTop = Boolean(top); track.addCue(cue); } });
+  const overlaps = group => { let end = -1; for (const cue of group) { if (cue.start < end - 0.001) return true; end = Math.max(end, cue.end); } return false; };
+  const groups = [list.filter(cue => !cue.top), list.filter(cue => cue.top)];
+  if (!groups.some(overlaps)) return list;
+  return groups.flatMap((group, top) => merge(group).map(item => ({ ...item, top: Boolean(top) })));
+}
+// Puts these lines on the track, touching only the cues that differ: a cue that stays (the one on screen while lines
+// of a translation come in) is not removed and drawn again. Cues are matched by their times before the sync offset.
+function setVttCues(track, lines) {
+  const key = (start, end, top, text) => `${start}|${end}|${top ? 1 : 0}|${text}`, wanted = new Map();
+  for (const line of lines) if (line.text) wanted.set(key(line.start, line.end, line.top, line.text), line);
+  for (const cue of [...track.cues]) { const at = key(cue.lilacStart ?? cue.startTime, cue.lilacEnd ?? cue.endTime, cue.lilacTop, cue.text); if (wanted.has(at)) wanted.delete(at); else track.removeCue(cue); }
+  for (const line of wanted.values()) { const cue = new VTTCue(line.start, line.end, line.text); cue.lilacTop = line.top; track.addCue(cue); }
 }
 function applyVttLayout() {
   const track = $('#video').textTracks[0]; if (!track?.cues) return;
