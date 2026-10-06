@@ -456,10 +456,9 @@ function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
       };
       status('모델 불러오는 중');
       let reason = '';
-      // The steps of a load, the next one taken when the card is short of memory. A small card (an MX450, 2 GB) went
-      // through all three every time, its status reading like a failure for a minute or more (someone pressed the API
-      // button meanwhile): the step that worked is kept with the run, and the next load of the model with this build
-      // starts there for three days (then the card is tried again, in case it has more room by then).
+      // The steps of a load, the next one taken when the card is short of memory. Every load starts with the card (it
+      // may have room another time). A small card (an MX450, 2 GB) goes through all three, so their statuses say what
+      // is going on rather than reading like a failure (someone pressed the API button meanwhile).
       const STEPS = [
         { args: [], status: '' },
         { args: ['--fit-target', '2048'], status: '그래픽카드에 다 들어가지 않아 여유를 두고 다시 불러오는 중' },
@@ -468,11 +467,10 @@ function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
       // On the CPU the model is read into the PC's memory whole: short of it there, the PC's memory is what is said.
       const ram = () => Object.assign(new Error(`PC 메모리(RAM)가 부족해 모델을 불러오지 못했습니다 (모델 ${(fs.statSync(file).size / 1e9).toFixed(1)}GB, 이 PC ${Math.round(os.totalmem() / 1e9)}GB 중 남은 것 ${(os.freemem() / 1e9).toFixed(1)}GB). 다른 프로그램을 닫거나 더 작은 모델(Gemma 4 E2B 3.4GB, Hy-MT2 1.8B 1.1GB)을 써 보세요.`), { memory: true });
       const load = async () => {
-        const last = runs()[file], from = last?.kind === kind && last.step > 0 && Date.now() - last.time < 3 * 24 * 60 * 60 * 1000 ? last.step : 0;
-        for (let step = from; ; step++) {
+        for (let step = 0; ; step++) {
           if (step === STEPS.length - 1) reason = '그래픽카드 메모리 부족';
-          if (step > 0) status(step === from ? '지난번처럼 CPU 쪽을 더 써서 불러오는 중' : STEPS[step].status);
-          try { return { ...await launch(STEPS[step].args), step }; }
+          if (step > 0) status(STEPS[step].status);
+          try { return await launch(STEPS[step].args); }
           catch (error) {
             if (!error.memory) throw error;
             if (step === STEPS.length - 1) throw error.card ? error : ram();
@@ -502,8 +500,8 @@ function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
           ({ kind, exe } = await runtimeFor(status));
         }
       }
-      const { child, port, device, layers, total, step } = started;
-      saveRun(file, { kind, step, device: layers ? `${device} · ${RUNTIMES[kind].label}` : '', layers, total, reason: layers ? '' : reason || (device ? '' : '그래픽카드를 찾지 못함'), time: Date.now() });
+      const { child, port, device, layers, total } = started;
+      saveRun(file, { device: layers ? `${device} · ${RUNTIMES[kind].label}` : '', layers, total, reason: layers ? '' : reason || (device ? '' : '그래픽카드를 찾지 못함'), time: Date.now() });
       let template = '';
       try { template = String((await (await fetch(`http://127.0.0.1:${port}/props`, { signal: AbortSignal.timeout(3000) })).json())?.chat_template || ''); } catch { /* asked by the model's name */ }
       server = { child, port, model: file, template }; child.once('exit', () => { if (server?.child === child) server = null; }); touch();
