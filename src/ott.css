@@ -143,6 +143,13 @@ body.light .rail-arrow{color:var(--text)}
 #homeView .continue-card:hover .continue-play{opacity:1}
 
 .poster-grid{grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:30px 12px}
+/* 전체: the sort beside the title, one height and radius with the other chips. */
+.all-head{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;flex-wrap:wrap}
+.sort-chips{display:inline-flex;gap:2px;padding:3px;border-radius:8px;background:var(--panel2)}
+.sort-chips button{height:32px;padding:0 14px;border:0;border-radius:6px;background:transparent;color:var(--muted);font:inherit;font-size:13px;font-weight:600;cursor:pointer;transition:background-color .14s,color .14s}
+.sort-chips button:hover{color:var(--text)}
+.sort-chips button.selected{background:var(--lilac);color:#1c1b1f}
+.sort-chips button:focus-visible{outline:2px solid var(--lilac);outline-offset:2px}
 
 /* Detail: a wide sheet with a tall still on top. */
 dialog#detailDialog{width:min(1100px,94vw);border:0;border-radius:10px;background:var(--ott-surface)}

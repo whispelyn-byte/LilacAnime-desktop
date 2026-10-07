@@ -1065,6 +1065,46 @@ const indexSaveTimers={};
 function saveCatalogFile(provider,name,value){const key=`${provider}-${name}`;clearTimeout(indexSaveTimers[key]);indexSaveTimers[key]=setTimeout(()=>{try{fs.writeFileSync(path.join(app.getPath('userData'),`${key}.json`),JSON.stringify(value()))}catch{}},2000)}
 function saveCatalogIndex(provider){const index=catalogIndex(provider);saveCatalogFile(provider,'index',()=>({items:index.items,updated:index.updated,wikidata:index.wikidata}))}
 function saveCatalogTried(provider){const index=catalogIndex(provider);saveCatalogFile(provider,'tried',()=>index.tried)}
+
+// 전체 sorted (popular: 인기순, year: 최신순, score: 평점순), a page at a time. RE:Anime and Linkkf from their whole list on
+// disk (the background index), so the order is the whole catalog's; Miruro and Animenosub by the site. A year's order
+// leaves out what has not come out yet. pending: the list on disk is not there yet (it is loading in the background).
+const SORTED_PAGE=36,sortedLists=new Map();
+function sortedFromIndex(provider,sort){
+  const index=catalogIndex(provider),key=`${provider}:${sort}`,cached=sortedLists.get(key);
+  if(!index.items.length)return null;
+  if(cached&&cached.items===index.items)return cached.list;
+  const number=value=>Number(value)||0,thisYear=new Date().getFullYear(),released=item=>!/not yet/i.test(String(item.status||''))&&number(item.year)<=thisYear;
+  const order=index.items.map((item,at)=>({item,at})),by={
+    popular:(a,b)=>number(b.item.popularity)-number(a.item.popularity)||a.at-b.at,
+    score:(a,b)=>number(b.item.score)-number(a.item.score)||number(b.item.popularity)-number(a.item.popularity)||a.at-b.at,
+    year:(a,b)=>number(b.item.year)-number(a.item.year)||String(b.item.aired||'').localeCompare(String(a.item.aired||''))||number(b.item.popularity)-number(a.item.popularity)||a.at-b.at}[sort];
+  if(!by)return null;
+  const list=order.filter(({item})=>sort!=='year'||released(item)).sort(by).map(({item})=>item);
+  sortedLists.set(key,{items:index.items,list});return list;
+}
+async function sortedCatalog(provider,sort,offset){
+  if(provider==='reanime'||provider==='linkkf'){
+    const list=sortedFromIndex(provider,sort);if(!list)return {data:[],offset:0,nextOffset:0,done:true,pending:true};
+    const at=Math.max(0,Number(offset)||0);return {data:list.slice(at,at+SORTED_PAGE),offset:at,nextOffset:at+SORTED_PAGE,total:list.length,done:at+SORTED_PAGE>=list.length};
+  }
+  if(provider==='miruro'){
+    // offset is the cursor of the next page. A year's order starts with announced shows, passed over until enough are found.
+    const wanted={popular:'-popularity',score:'-score',year:'-season_year'}[sort],thisYear=new Date().getFullYear(),data=[];let cursor=offset||undefined,more=true;
+    for(let tries=0;tries<20&&more&&data.length<15;tries++){
+      const root=await miruroApi('anime',{sort:wanted,limit:15,cursor});
+      data.push(...(root.data||[]).filter(raw=>sort!=='year'||(raw.status!=='NOT_YET_RELEASED'&&Number(raw.season_year)&&Number(raw.season_year)<=thisYear)).map(miruroItem));
+      cursor=root.next_cursor||undefined;more=Boolean(root.has_more&&cursor);
+    }
+    return {data,offset,nextOffset:cursor||null,done:!more};
+  }
+  if(provider==='animenosub'){
+    const page=Math.max(1,Number(offset)||1),order={popular:'popular',score:'rating',year:'latest'}[sort];
+    const $=cheerio.load(await providerFetch(`${ANIMENOSUB_WEB}/anime/?${page>1?`page=${page}&`:''}order=${order}`,{referer:`${ANIMENOSUB_WEB}/`})),cards=$('article.bs');
+    return {data:animenosubList(cards.map((_,node)=>$.html(node)).get().join('')),offset:page,nextOffset:page+1,done:!cards.length};
+  }
+  throw new Error('이 소스는 정렬을 지원하지 않습니다.');
+}
 const indexKorean=(provider,item)=>withSeason(displayTitleStore()[`${provider}:${item.id}`]?.ko||'',item.title,item.type);
 function catalogIndexState(){return {tmdb:Boolean(tmdbKey()),sources:Object.entries(CATALOGS).filter(([provider])=>provider===activeCatalogSource).map(([provider,{label,korean}])=>{const index=catalogIndex(provider);return {provider,label,status:index.status,total:index.items.length,korean:korean===false?null:index.items.filter(item=>indexKorean(provider,item)).length}})}}
 function reportCatalogIndex(provider,status){
@@ -1941,7 +1981,8 @@ app.whenReady().then(async () => {
   }
   ipcMain.handle('provider:season', (_, provider) => homeShows(provider,'season'));
   ipcMain.handle('provider:airing', (_, provider) => homeShows(provider,'airing'));
-  ipcMain.handle('provider:catalog', async (_, provider, query = '', offset = 0) => {
+  ipcMain.handle('provider:catalog', async (_, provider, query = '', offset = 0, sort = '') => {
+    if (sort && !query) return sortedCatalog(provider, String(sort), offset);
     if (provider === 'reanime') {
       const pageOffset=Math.max(0,Number(offset)||0),url=new URL('/api/v1/search',REANIME_WEB);if(query)url.searchParams.set('q',query);url.searchParams.set('limit','36');url.searchParams.set('offset',String(pageOffset));const root=await providerFetch(url.href,{json:true,referer:`${REANIME_WEB}/search?limit=36&offset=${pageOffset}`});return {data:reanimeItems(root),total:Number(root?.total)||null,offset:pageOffset,limit:36};
     }

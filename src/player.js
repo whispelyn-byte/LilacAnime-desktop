@@ -526,8 +526,11 @@ function handlePlayerKey(event) {
   const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName) && !['checkbox', 'range'].includes(document.activeElement?.type);
   if (key === 'Escape' || key === 'BrowserBack' || key === 'GoBack') {
     event.preventDefault();
+    // Esc steps back one level: the settings sheet, then full screen (to the window), then out of the player. The mouse's
+    // back button goes straight out.
     if (playerSettingsOpen()) { openPlayerSettings(false); $('#playerSettingsButton').focus(); }
     else if (document.fullscreenElement) document.exitFullscreen();
+    else if (key === 'Escape' && playerWindowFullscreen) $('#fullscreenPlayer').click();
     else $('#playerBack').click();
     return;
   }
