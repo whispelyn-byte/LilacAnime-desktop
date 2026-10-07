@@ -204,7 +204,7 @@ function reanimeItems(root) {
 function absoluteUrl(value, base) { try { return new URL(value, base).href; } catch { return ''; } }
 // Search pages also carry the sidebar's popular / newest lists, which are not results: onlyResults skips them.
 function animenosubList(html, base = `${ANIMENOSUB_WEB}/`, { onlyResults = false } = {}) {
-  const $ = cheerio.load(html); const found = new Map();
+  const $ = cheerio.load(html); const found = new Map(), backdrops = new Set();
   $('a[href]').each((_, node) => {
     if (onlyResults && $(node).closest('#sidebar, header, footer, nav').length) return;
     const el=$(node), href=absoluteUrl(el.attr('href'),base);
@@ -215,11 +215,18 @@ function animenosubList(html, base = `${ANIMENOSUB_WEB}/`, { onlyResults = false
     const seriesSlug=(href.includes('/anime/')?episodeSlug:episodeSlug.replace(/-episode-\d+[a-z]?((?:-[a-z]+)*)$/i,(_,suffix)=>suffix.replace(/-dub(?=-|$)/i,''))).toLowerCase();
     if(!seriesSlug||new URL(href).pathname==='/anime/')return; const container=el.closest('article,li,.item,.film-poster,.post,.ani,div');
     const img=el.find('img').first().length?el.find('img').first():container.find('img').first();
-    const poster=absoluteUrl(img.attr('data-src')||img.attr('data-lazy-src')||img.attr('src')||'',base);
+    // The home page's slider has no <img>: its picture is the slide's backdrop (a CSS background). A link with no
+    // picture at all has none (an empty address is not the page's own), and a picture from an <img> elsewhere on the
+    // page takes the place of a backdrop.
+    const src=img.attr('data-src')||img.attr('data-lazy-src')||img.attr('src')||'';
+    const backdrop=src?'':(el.closest('.swiper-slide,article,li,.item').find('[style*="background-image"]').first().attr('style')||'').match(/background-image:\s*url\(\s*['"]?([^'")]+)['"]?\s*\)/i)?.[1]||'';
+    const poster=src||backdrop?absoluteUrl(src||backdrop,base):'';
     let title=(img.attr('alt')||container.find('h1,h2,h3,h4,.title,.film-name,.post-title').first().text()||el.text()).trim();
     title=title.replace(/\s+episode\s+\d+.*$/i,'').trim()||seriesSlug.replace(/[-_]+/g,' ');
     const id=`animenosub:${seriesSlug}`, current=found.get(id);
-    if(!current||(!current.images.webp.large_image_url&&poster))found.set(id,{provider:'animenosub',id:seriesSlug,mal_id:id,title,title_english:'',images:{webp:{large_image_url:poster}},score:null,year:'',type:'Anime',episodes:null,synopsis:'',genres:[],studios:[],url:`${ANIMENOSUB_WEB}/anime/${seriesSlug}/`});
+    const better=!current||(poster&&(!current.images.webp.large_image_url||(backdrops.has(id)&&src)));
+    if(better){if(src||!poster)backdrops.delete(id);else backdrops.add(id)}
+    if(better)found.set(id,{provider:'animenosub',id:seriesSlug,mal_id:id,title,title_english:'',images:{webp:{large_image_url:poster}},score:null,year:'',type:'Anime',episodes:null,synopsis:'',genres:[],studios:[],url:`${ANIMENOSUB_WEB}/anime/${seriesSlug}/`});
   });
   return [...found.values()];
 }

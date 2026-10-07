@@ -56,7 +56,7 @@ main{padding-bottom:0}
 #hero:is(:hover,:focus-within) .hero-pick.active .hero-pick-progress i{animation-play-state:paused}
 @keyframes hero-progress{to{width:100%}}
 .hero-pick:focus-visible{outline:2px solid var(--lilac);outline-offset:3px}
-#homeView .hero h1{font-size:clamp(38px,4.6vw,68px);font-weight:900;line-height:1.04;letter-spacing:-.035em;margin:0 0 14px;text-shadow:0 2px 18px #00000080}
+#homeView .hero h1{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;font-size:clamp(38px,4.6vw,68px);font-weight:900;line-height:1.04;letter-spacing:-.035em;margin:0 0 14px;padding-bottom:.06em;text-shadow:0 2px 18px #00000080}
 .hero-meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:0 0 14px;font-size:14px;font-weight:600;color:#ffffffd9}
 .hero-meta:empty{display:none}
 .hero-meta .hero-score{color:#f4cf72}
