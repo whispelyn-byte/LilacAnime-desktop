@@ -534,7 +534,7 @@ async function ensureSubtitle(stream,title,episode,{skipSaved=false}={}){
   const saved=key&&!skipSaved?await window.lilac.savedSubtitles(key).catch(()=>[]):[];if(requestId!==playbackRequestId)return false;
   // 애니24: the Korean subtitle is in the picture, so nothing is put over it, searched or translated (a subtitle picked by
   // hand still goes on; the next episode is not translated ahead).
-  if(!skipSaved&&(stream?.burnedKorean||['ohli24','linkani'].includes(currentPlaybackContext.episode?.provider))){currentPlaybackContext.siteKorean=true;$('#subtitleState').textContent='영상에 한국어 자막이 들어 있어요.';return true}
+  if(!skipSaved&&(stream?.burnedKorean||currentPlaybackContext.episode?.provider==='ohli24')){currentPlaybackContext.siteKorean=true;$('#subtitleState').textContent='영상에 한국어 자막이 들어 있어요.';return true}
   // A series the user watches in machine translation (see prefersAiSubtitle): the episode's saved translation, else one
   // made now from its best source (ready at once when it was translated ahead); the usual order when there is none.
   if(!skipSaved&&prefersAiSubtitle()){
@@ -549,10 +549,10 @@ async function ensureSubtitle(stream,title,episode,{skipSaved=false}={}){
   const reanime=currentPlaybackContext.episode?.provider==='reanime',koreanUrl=url=>/(?:^|[^a-z])(?:kor|korean|ko)(?:[^a-z]|$)|한국/i.test(decodeURIComponent(String(url||'')));
   // A downloaded episode's subtitle was picked for it when it was saved (a fansub, or the track the user chose).
   const fromDownload=Boolean(stream?.downloaded),fansub=fromDownload&&/Kairan|Csora|Anissia/.test(stream.subtitleLabel||'');
-  const track=(stream?.subtitleTracks||[]).find(isKoreanTrack),streamKorean=Boolean(track)||currentPlaybackContext.resolveKind==='linkkf'||(reanime&&koreanUrl(stream?.subtitleUrl))||fromDownload;
+  const track=(stream?.subtitleTracks||[]).find(isKoreanTrack),linkaniKorean=currentPlaybackContext.episode?.provider==='linkani'&&Boolean(stream?.subtitleUrl),streamKorean=Boolean(track)||currentPlaybackContext.resolveKind==='linkkf'||linkaniKorean||(reanime&&koreanUrl(stream?.subtitleUrl))||fromDownload;
   // The site's own Korean subtitle (a Korean track, Linkkf's): the next episode most likely has one too, so it is not
   // translated ahead unless the user asks for a translation (see prepareNextEpisode).
-  currentPlaybackContext.siteKorean=Boolean(track)||currentPlaybackContext.resolveKind==='linkkf'||(reanime&&koreanUrl(stream?.subtitleUrl));
+  currentPlaybackContext.siteKorean=Boolean(track)||currentPlaybackContext.resolveKind==='linkkf'||linkaniKorean||(reanime&&koreanUrl(stream?.subtitleUrl));
   // A machine translation stands for the Re:Anime / Jimaku subtitle it was made from when it was the last one put on
   // (one made in the background beside a Korean subtitle sits at the end of the list and does not take its place).
   const savedPreferred=(['reanime','jimaku'].includes(preferred)&&saved[0]?.source==='gemini'&&saved[0])||saved.find(entry=>entry.source===preferred);if(savedPreferred){await applySavedSubtitle(savedPreferred);offerAfter(savedPreferred.source,savedPreferred.source!=='jimaku');translateAlongside(savedPreferred.source,requestId);return true}

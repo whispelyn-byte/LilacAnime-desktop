@@ -716,8 +716,23 @@ async function resolveLinkaniEpisode(episode){
   let player=null;try{player=JSON.parse(raw||'')}catch{/* below */}
   const url=player?.url||player?.actual_url||'';
   if(!/^https?:\/\//i.test(url))throw new Error('이 회차의 영상 주소를 찾지 못했습니다.');
-  const subtitle=/^https?:\/\//i.test(String(player.subtitle_url||''))?player.subtitle_url:'';
-  return {url,headers:{'User-Agent':LINKKF_UA,Referer:`${LINKANI_WEB}/`},referer:`${LINKANI_WEB}/`,hls:/\.m3u8(?:$|\?)/i.test(url),burnedKorean:!subtitle,subtitleTracks:[],...(subtitle?{subtitleUrl:subtitle,subtitleLabel:'링크애니 자막'}:{})};
+  // Most videos have the Korean subtitle in the picture; some come clean with it as a file (subtitle_url, a VTT on the
+  // video's host), saved like the other sites' tracks and applied as the episode's own Korean subtitle.
+  const stream={url,headers:{'User-Agent':LINKKF_UA,Referer:`${LINKANI_WEB}/`},referer:`${LINKANI_WEB}/`,hls:/\.m3u8(?:$|\?)/i.test(url),burnedKorean:true,subtitleTracks:[]};
+  const subtitle=/^https?:\/\//i.test(String(player?.subtitle_url||''))?player.subtitle_url:'';
+  if(subtitle){
+    stream.burnedKorean=false;
+    try{
+      const response=await net.fetch(subtitle,{signal:AbortSignal.timeout(20000),headers:{'User-Agent':LINKKF_UA,Referer:`${LINKANI_WEB}/`}});
+      if(!response.ok)throw new Error(`자막 HTTP ${response.status}`);
+      const text=(await response.text()).replace(/^﻿/,''),ext=/^webvtt/i.test(text.trimStart())?'.vtt':/\[script info\]/i.test(text)?'.ass':'.srt';
+      if(!text.includes('-->')&&ext!=='.ass')throw new Error('자막 파일이 아닙니다.');
+      const dir=path.join(app.getPath('userData'),'subtitles','provider');fs.mkdirSync(dir,{recursive:true});
+      const file=path.join(dir,`linkani_${Date.now()}_${Math.random().toString(36).slice(2,8)}${ext}`);fs.writeFileSync(file,text,'utf8');
+      const saved=subtitleResult(file);Object.assign(stream,{subtitleUrl:saved.url,subtitlePath:saved.path,subtitleAss:saved.assUrl?{url:saved.assUrl,path:saved.assPath}:null,subtitleLabel:'링크애니 한국어 자막'});
+    }catch{/* no subtitle then: the Korean subtitle is searched for as for a clean video */}
+  }
+  return stream;
 }
 
 function openProviderPlayer(episode, title = 'LilacAnime Player') {

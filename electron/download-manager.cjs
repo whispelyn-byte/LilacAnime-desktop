@@ -248,7 +248,7 @@ class DownloadManager {
     // Kairan / Csora / Anissia one (a fansub can be another episode's), saved for the episode so the player offers it.
     // Not when the site has its own Korean subtitle (a RE:Anime / Miruro Korean track, Linkkf's), which is the
     // episode's: no Jimaku file and no translation beside it (see attachTracks too).
-    job.siteKorean = Boolean(stream?.subtitleUrl) && (job.resolveKind === 'linkkf' || ['reanime', 'miruro'].includes(job.episode?.provider));
+    job.siteKorean = Boolean(stream?.subtitleUrl) && (job.resolveKind === 'linkkf' || ['reanime', 'miruro', 'linkani'].includes(job.episode?.provider));
     if (!found || found.stream) {
       await this.saveSubtitle(job, stream?.subtitleUrl); this.saveAssSubtitle(job, stream?.subtitleAss?.path);
       if (!job.siteKorean) await this.attachJimaku(job, stream, !found && !job.subtitlePath);
