@@ -1,6 +1,6 @@
 {
   "name": "lilacanime-desktop",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "LilacAnime inspired desktop anime library and player",
   "main": "electron/main.cjs",
   "author": "LilacAnime Desktop",
