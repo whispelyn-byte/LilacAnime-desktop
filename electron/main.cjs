@@ -622,7 +622,7 @@ async function ohliDetail(anime){
   // Listed newest first; a movie's page has no list and plays itself.
   episodes.reverse();if(episodes.every(episode=>episode.number))episodes.sort((a,b)=>a.number-b.number);
   if(!episodes.length)episodes.push({name:'1',number:1,url:anime.url,dub:false,provider:'ohli24'});
-  const native=meta['원제']||anime.title_japanese||'',ids=await ohliAnilist(native,(meta['방영일']||'').match(/\d{4}/)?.[0]);
+  const native=meta['원제']||anime.title_japanese||'',ids=native&&!hasHangul(native)?await ohliAnilist(native,(meta['방영일']||'').match(/\d{4}/)?.[0]):null;
   if(ids)for(const episode of episodes)Object.assign(episode,ids);
   const data={...anime,...(ids||{}),title,title_japanese:native,images:{webp:{large_image_url:absoluteUrl(poster,OHLI24_WEB)}},
     synopsis:$('.movie-coment').first().text().replace(/\s+/g,' ').trim()||anime.synopsis||'',genres:(meta['장르']||'').split(/[,/·]/).map(name=>name.trim()).filter(Boolean).map(name=>({name})),
@@ -1916,7 +1916,7 @@ app.whenReady().then(async () => {
   // without them the local analyzer runs over the anime's other downloaded episodes.
   const findDownloadSkips=async job=>{
     let anilistId=job.episode?.anilistId||job.anime?.anilistId||null,malId=job.episode?.malId||job.anime?.malId||null;
-    if(!anilistId&&!malId&&['ohli24','linkani'].includes(job.anime?.provider))({anilistId=null,malId=null}=await ohliAnilist(String(job.anime.title_japanese||''),job.anime.year)||{});
+    if(!anilistId&&!malId&&['ohli24','linkani'].includes(job.anime?.provider)&&!hasHangul(job.anime.title_japanese))({anilistId=null,malId=null}=await ohliAnilist(String(job.anime.title_japanese||''),job.anime.year)||{});
     const lookup=()=>androidOnlineSkipTimes({episode:job.episodeNumber,anilistId,malId,duration:job.duration||0}).catch(()=>[]);
     let segments=await lookup();if(!segments.length){await new Promise(resolve=>setTimeout(resolve,500));segments=await lookup()}
     return segments;
@@ -2156,7 +2156,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('oped:get', async (event, request = {}) => {
     let {title='',episode,duration,currentUrl,candidates=[],anilistId=null,malId=null,nativeTitle='',year='',audioAnalysis=true,offline=false,jobId=null}=request;if(!/^(https?|file):/i.test(currentUrl||'')||!Number.isFinite(Number(duration)))return [];
     // 애니24 has no AniList id of its own: it is found by the original title (see ohliAnilist).
-    if(!anilistId&&!malId&&nativeTitle)({anilistId=null,malId=null}=await ohliAnilist(String(nativeTitle),year)||{});
+    if(!anilistId&&!malId&&nativeTitle&&!hasHangul(nativeTitle))({anilistId=null,malId=null}=await ohliAnilist(String(nativeTitle),year)||{});
     const status=message=>event.sender.send('oped:status',message);
     if(!offline){status('AniSkip 타임스탬프 확인 중');try{return await androidOnlineSkipTimes({episode,anilistId,malId,duration})}catch{return []}}
     const saved=downloadManager.jobs.find(job=>job.id===jobId)?.skipSegments;if(Array.isArray(saved)&&saved.length)return saved;
