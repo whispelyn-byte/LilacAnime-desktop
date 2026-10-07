@@ -13,6 +13,8 @@
     "dev": "electron .",
     "predist": "npm run vendor",
     "dist": "electron-builder --win nsis",
+    "predist:mac": "npm run vendor",
+    "dist:mac": "electron-builder --mac dmg",
     "prepack": "npm run vendor",
     "pack": "electron-builder --dir"
   },
@@ -51,6 +53,14 @@
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
       "installerHeaderIcon": "build/icon.ico"
+    },
+    "mac": {
+      "icon": "build/icon.png",
+      "category": "public.app-category.entertainment",
+      "target": "dmg",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "artifactName": "LilacAnime-mac-${arch}.${ext}"
     }
   },
   "dependencies": {

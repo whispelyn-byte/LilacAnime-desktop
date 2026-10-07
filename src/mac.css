@@ -1,0 +1,8 @@
+/* macOS: the window buttons sit at the top left (main.cjs: trafficLightPosition) instead of over the top right,
+   so the header leaves room on the left and reaches the right edge. The class is set by preload.cjs. */
+html.mac .sidebar{padding-left:max(var(--ott-gutter),104px);padding-right:calc(24px + 270px + 8px)}
+html.mac .topbar{right:24px;padding-right:0}
+html.mac .immersive-player.windowed .player-top{padding-left:104px;padding-right:28px}
+@media(max-width:1100px){
+  html.mac .sidebar{padding-right:calc(24px + 220px)}
+}

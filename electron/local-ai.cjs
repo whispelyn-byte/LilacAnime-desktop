@@ -53,8 +53,13 @@ const MODELS = [
 //   (GGML_OPENVINO_DEVICE=GPU); on a Ryzen + GTX 1050 Ti PC it stopped while loading every model tried.
 // device: the line a build prints when it uses its card. Without it a build ran on the processor alone (its library
 // for the card did not load, or found no card) and is given up on.
+// macOS has the one build for its processor, which uses the graphics through Metal; it stands in for Vulkan (the build
+// every PC starts with and falls back to).
+const MAC = process.platform === 'darwin';
 const RUNTIMES = {
-  vulkan: { dir: 'runtime', label: 'Vulkan', assets: [/^llama-b\d+-bin-win-vulkan-x64\.zip$/] },
+  vulkan: MAC
+    ? { dir: 'runtime', label: 'Metal', assets: [new RegExp(`^llama-b\\d+-bin-macos-${process.arch === 'arm64' ? 'arm64' : 'x64'}\\.tar\\.gz$`)] }
+    : { dir: 'runtime', label: 'Vulkan', assets: [/^llama-b\d+-bin-win-vulkan-x64\.zip$/] },
   cuda12: { dir: 'runtime-cuda12', label: 'CUDA', device: /using device CUDA/i, assets: [/^llama-b\d+-bin-win-cuda-12\.[\d.]+-x64\.zip$/, /^cudart-llama-bin-win-cuda-12\.[\d.]+-x64\.zip$/] },
   cuda13: { dir: 'runtime-cuda13', label: 'CUDA', device: /using device CUDA/i, assets: [/^llama-b\d+-bin-win-cuda-13\.[\d.]+-x64\.zip$/, /^cudart-llama-bin-win-cuda-13\.[\d.]+-x64\.zip$/] },
   rocm: { dir: 'runtime-rocm', label: 'ROCm', device: /using device ROCm/i, assets: [/^llama-b\d+-bin-win-rocm-[\d.]+-x64\.zip$/] },
@@ -146,7 +151,7 @@ function createLocalAi(userData) {
   }
   const runtimeExe = kind => {
     const walk = dir => { try { return fs.readdirSync(dir, { withFileTypes: true }).flatMap(item => item.isDirectory() ? walk(path.join(dir, item.name)) : [path.join(dir, item.name)]); } catch { return []; } };
-    return walk(path.join(root, RUNTIMES[kind].dir)).find(file => path.basename(file).toLowerCase() === 'llama-server.exe') || null;
+    return walk(path.join(root, RUNTIMES[kind].dir)).find(file => path.basename(file).toLowerCase() === (MAC ? 'llama-server' : 'llama-server.exe')) || null;
   };
   // The builds for this PC, best first: CUDA for an NVIDIA card nvidia-smi reports (with a driver new enough for it),
   // ROCm for an AMD Radeon RX / PRO card, SYCL then OpenVINO for an Intel Arc one, Vulkan last; a build that failed here
@@ -231,10 +236,16 @@ function createLocalAi(userData) {
   }
   // Unpacked by Windows' own tar (bsdtar reads zip) in its own process: done here a build's 1 GB DLL (ROCm) kept the
   // app from answering for 5 seconds and more, long enough for Windows to call it not responding. adm-zip (here, in
-  // one go) only where there is no tar.exe (Windows 10 before 1803).
+  // one go) only where there is no tar.exe (Windows 10 before 1803). macOS's tar unpacks its .tar.gz builds, keeping
+  // the programs runnable and the libraries' links.
   function unzip(zip, dir) {
     fs.mkdirSync(dir, { recursive: true });
-    const tar = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
+    const tar = MAC ? '/usr/bin/tar' : path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
+    if (MAC) return new Promise((resolve, reject) => {
+      let error = ''; const child = spawn(tar, ['-xzf', zip, '-C', dir]);
+      child.stderr.on('data', chunk => { error += chunk; }); child.once('error', reject);
+      child.once('close', code => code === 0 ? resolve() : reject(new Error(`llama.cpp 압축을 풀지 못했습니다: ${error.trim().slice(0, 200) || code}`)));
+    });
     if (process.platform !== 'win32' || !fs.existsSync(tar)) return Promise.resolve().then(() => new AdmZip(zip).extractAllTo(dir, true));
     return new Promise((resolve, reject) => {
       let error = ''; const child = spawn(tar, ['-xf', zip, '-C', dir], { windowsHide: true });

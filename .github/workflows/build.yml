@@ -1,0 +1,72 @@
+# Builds the Windows installer and the macOS disk images (Apple Silicon and Intel).
+# - A pushed tag v* (e.g. v0.5.2): the files go to that tag's GitHub release. With no release yet a draft is made
+#   (write the notes and publish it); an existing one gets the .dmg files, and the .exe only when it has none yet
+#   (one uploaded by hand is kept).
+# - Run by hand (Actions > Build > Run workflow): the files are kept as the run's artifacts only.
+name: Build
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            script: dist
+            files: dist/LilacAnime-Setup.exe
+          - os: macos-latest # Apple Silicon
+            script: dist:mac
+            files: dist/LilacAnime-mac-arm64.dmg
+          - os: macos-15-intel
+            script: dist:mac
+            files: dist/LilacAnime-mac-x64.dmg
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # No Apple Developer certificate: the Mac app is signed ad hoc (package.json: mac.identity "-").
+      - run: npm run ${{ matrix.script }} -- --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          ls -l out
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            gh release create "$TAG" out/* --draft --title "$TAG" --notes ""
+            exit 0
+          fi
+          gh release upload "$TAG" out/*.dmg --clobber
+          if gh release view "$TAG" --json assets --jq '.assets[].name' | grep -qi '\.exe$'; then
+            echo "The release already has an .exe; it is kept."
+          else
+            gh release upload "$TAG" out/*.exe
+          fi

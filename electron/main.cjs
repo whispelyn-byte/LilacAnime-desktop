@@ -786,7 +786,7 @@ async function downloadBuffer(url,referer){
   }catch(error){if(error.name==='AbortError')throw new Error('자막 다운로드 시간이 초과되었습니다.');throw error}finally{clearTimeout(timer)}
 }
 function driveId(url){return url.match(/\/file\/d\/([^/?]+)/)?.[1]||url.match(/[?&]id=([^&]+)/)?.[1]||null}
-function findExecutable(name){const suffix=process.platform==='win32'?'.exe':'';const candidates=(process.env.PATH||'').split(path.delimiter).map(dir=>path.join(dir,`${name}${suffix}`));if(process.platform==='win32'){candidates.push(path.join(process.env.LOCALAPPDATA||'','Programs','mpv','mpv.exe'),path.join(process.env.PROGRAMFILES||'','mpv','mpv.exe'),path.join(app.getAppPath(),'bin','mpv.exe'))}return candidates.find(file=>file&&fs.existsSync(file))||null}
+function findExecutable(name){const suffix=process.platform==='win32'?'.exe':'';const candidates=(process.env.PATH||'').split(path.delimiter).map(dir=>path.join(dir,`${name}${suffix}`));if(process.platform==='win32'){candidates.push(path.join(process.env.LOCALAPPDATA||'','Programs','mpv','mpv.exe'),path.join(process.env.PROGRAMFILES||'','mpv','mpv.exe'),path.join(app.getAppPath(),'bin','mpv.exe'))}if(process.platform==='darwin'){/* An app opened from Finder does not get the shell's PATH (Homebrew). */candidates.push(`/opt/homebrew/bin/${name}`,`/usr/local/bin/${name}`,`/Applications/${name}.app/Contents/MacOS/${name}`)}return candidates.find(file=>file&&fs.existsSync(file))||null}
 // Reads the English family name (name ID 1) from a TTF/OTF, or the first font of a TTC.
 function fontFamilyName(data){
   let offset=0;if(data.toString('latin1',0,4)==='ttcf')offset=data.readUInt32BE(12);
@@ -1338,11 +1338,12 @@ async function extractCommunityArchive(buffer,dir){
     return files;
   }
   const isSevenZip=buffer.slice(0,6).equals(Buffer.from([0x37,0x7a,0xbc,0xaf,0x27,0x1c])),isRar=buffer.slice(0,4).toString('latin1')==='Rar!';
-  if(!isSevenZip&&!isRar||process.platform!=='win32')return null;
+  // Windows' and macOS's own tar are bsdtar, which reads 7z and RAR.
+  if(!isSevenZip&&!isRar||!['win32','darwin'].includes(process.platform))return null;
   const work=fs.mkdtempSync(path.join(app.getPath('temp'),'lilac-sub-')),archive=path.join(work,isRar?'a.rar':'a.7z'),out=path.join(work,'x');
   try{
     fs.writeFileSync(archive,buffer);fs.mkdirSync(out);
-    await new Promise((resolve,reject)=>{const child=spawn(path.join(process.env.SystemRoot||'C:\\Windows','System32','tar.exe'),['-xf',archive,'-C',out],{windowsHide:true});child.once('error',reject);child.once('close',code=>code===0?resolve():reject(new Error(`tar ${code}`)))});
+    await new Promise((resolve,reject)=>{const child=spawn(process.platform==='darwin'?'/usr/bin/tar':path.join(process.env.SystemRoot||'C:\\Windows','System32','tar.exe'),['-xf',archive,'-C',out],{windowsHide:true});child.once('error',reject);child.once('close',code=>code===0?resolve():reject(new Error(`tar ${code}`)))});
     const walk=folder=>fs.readdirSync(folder,{withFileTypes:true}).flatMap(item=>item.isDirectory()?walk(path.join(folder,item.name)):[path.join(folder,item.name)]);
     for(const file of walk(out))write(file,fs.readFileSync(file));
     return files;
@@ -1719,7 +1720,8 @@ function createWindow() {
     icon: path.join(__dirname, '..', 'build', 'icon.png'),
     backgroundColor: '#121212',
     titleBarStyle: 'hidden',
-    titleBarOverlay: { color: '#121212', symbolColor: '#d0cdd6', height: 42 },
+    // macOS keeps its window buttons at the top left, in the middle of the 64px header (mac.css makes room for them).
+    ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 20, y: 25 } } : { titleBarOverlay: { color: '#121212', symbolColor: '#d0cdd6', height: 42 } }),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -2194,7 +2196,15 @@ app.whenReady().then(async () => {
   ipcMain.handle('font:default', (_, choice = '기본체', customPath = '') => {
     const windir = process.env.WINDIR || 'C:\\Windows', system = name => path.join(windir, 'Fonts', name), user = name => path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'Windows', 'Fonts', name);
     const presets = { '기본체': [system('malgun.ttf')], '나눔고딕': [system('NanumGothic.ttf'), user('NanumGothic.ttf')], '명조체': [system('batang.ttc'), system('NanumMyeongjo.ttf'), user('NanumMyeongjo.ttf')] };
-    const candidates = [customPath, ...(presets[choice] || []), system('malgun.ttf'), system('gulim.ttc')].filter(Boolean);
+    let fallback = [system('malgun.ttf'), system('gulim.ttc')];
+    if (process.platform === 'darwin') {
+      const mac = name => ['/Library/Fonts', path.join(app.getPath('home'), 'Library', 'Fonts')].map(dir => path.join(dir, name));
+      presets['기본체'] = ['/System/Library/Fonts/AppleSDGothicNeo.ttc'];
+      presets['나눔고딕'] = [...mac('NanumGothic.ttf'), ...mac('NanumGothic.ttc')];
+      presets['명조체'] = [...mac('NanumMyeongjo.ttf'), '/System/Library/Fonts/Supplemental/AppleMyungjo.ttf'];
+      fallback = ['/System/Library/Fonts/AppleSDGothicNeo.ttc'];
+    }
+    const candidates = [customPath, ...(presets[choice] || []), ...fallback].filter(Boolean);
     // libass picks its fallback font by family name, so the real family name is read from the font file.
     for (const file of candidates) {
       if (!/\.(ttf|otf|ttc)$/i.test(file) || !fs.existsSync(file)) continue;

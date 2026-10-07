@@ -1,5 +1,8 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+// macOS lays the header out around its window buttons at the top left (mac.css).
+if (process.platform === 'darwin') window.addEventListener('DOMContentLoaded', () => document.documentElement.classList.add('mac'));
+
 contextBridge.exposeInMainWorld('lilac', {
   season: () => ipcRenderer.invoke('anime:season'),
   top: () => ipcRenderer.invoke('anime:top'),

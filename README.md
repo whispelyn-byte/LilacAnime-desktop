@@ -7,6 +7,7 @@
 <p align="center">
   <a href="https://github.com/whispelyn-byte/LilacAnime-desktop/releases/latest"><img src="https://img.shields.io/github/v/release/whispelyn-byte/LilacAnime-desktop?label=%EC%B5%9C%EC%8B%A0%20%EB%B2%84%EC%A0%84&color=b98fd6" alt="최신 버전"></a>
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078d4" alt="Windows 10 / 11">
+  <img src="https://img.shields.io/badge/macOS-Apple%20Silicon%20%2F%20Intel-555555" alt="macOS">
   <a href="https://github.com/whispelyn-byte/LilacAnime-desktop/releases/latest/download/LilacAnime-Setup.exe"><img src="https://img.shields.io/badge/%EB%B0%9B%EA%B8%B0-LilacAnime--Setup.exe-c8a2c8" alt="받기"></a>
 </p>
 
@@ -58,6 +59,17 @@
 2. 실행해서 설치 위치를 고르고 설치합니다. 바탕 화면에 바로가기가 생깁니다.
 
 설치한 뒤에는 새 버전이 나오면 앱이 알려 주고, **설정 > 업데이트 · 정보**에서 바로 받아 설치할 수 있습니다. 업데이트하면 바뀐 점이 처음 한 번 표시됩니다.
+
+### macOS
+
+1. 내 Mac에 맞는 파일을 받습니다 (**Apple 메뉴 > 이 Mac에 관하여**에서 칩이 Apple M…이면 Apple Silicon, Intel이면 Intel):
+   - **[Apple Silicon (M1 이상)](https://github.com/whispelyn-byte/LilacAnime-desktop/releases/latest/download/LilacAnime-mac-arm64.dmg)**
+   - **[Intel](https://github.com/whispelyn-byte/LilacAnime-desktop/releases/latest/download/LilacAnime-mac-x64.dmg)**
+2. 받은 `.dmg`를 열고 LilacAnime을 **응용 프로그램** 폴더로 끌어 놓습니다.
+3. 처음 열 때 "Apple은 악성 코드가 없음을 확인할 수 없습니다"라고 나옵니다 (Apple 개발자 인증서로 서명하지 않은 앱이라서). **완료**를 누른 뒤 **시스템 설정 > 개인정보 보호 및 보안** 아래의 **그래도 열기**를 누르고, 한 번 더 **열기**를 누릅니다. 다음부터는 그냥 열립니다.
+   - 그래도 열리지 않으면 터미널에서 `xattr -cr /Applications/LilacAnime.app`을 실행한 뒤 다시 엽니다.
+
+Mac에서는 업데이트를 받아 **지금 설치**를 누르면 새 버전의 `.dmg`가 열리고 앱이 닫힙니다. 2번처럼 응용 프로그램 폴더로 끌어 놓아(**대치**) 바꿉니다.
 
 ## 처음 쓸 때
 
@@ -328,7 +340,7 @@ Horimiya 1화(Jimaku SubsPlease 일본어 자막, 같은 대사를 빼면 425줄
 - Gemini 무료 사용량을 다 쓰면 다른 Gemini 모델이 이어서 번역하고, 그것도 다 쓰면 로컬 AI가 이어받습니다 (받아 둔 모델이 있을 때). 무료 사용량은 다음 날(한국 시간 오후 4~5시쯤) 다시 채워집니다.
 
 **로컬 AI로 번역이 안 돼요**
-- 로컬 AI(llama.cpp)는 Microsoft Visual C++ 런타임으로 실행됩니다. PC에 없으면 "Microsoft Visual C++ 런타임이 없어…"라고 나옵니다. [Visual C++ 재배포 패키지(x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe)를 받아 설치한 뒤 다시 번역하면 됩니다.
+- (Windows) 로컬 AI(llama.cpp)는 Microsoft Visual C++ 런타임으로 실행됩니다. PC에 없으면 "Microsoft Visual C++ 런타임이 없어…"라고 나옵니다. [Visual C++ 재배포 패키지(x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe)를 받아 설치한 뒤 다시 번역하면 됩니다.
 
 **로컬 AI가 메모리가 부족하다고 나와요**
 - **설정 > 자막 자동 번역 > 로컬 AI 모델**에서 더 작은 모델로 바꿉니다: Gemma 4 E4B(5.2GB) → **Gemma 4 E2B**(3.4GB) → **Hy-MT2 1.8B**(1.1GB). 안내 문구에 PC 메모리와 모델 크기가 같이 나옵니다.
@@ -348,8 +360,8 @@ Horimiya 1화(Jimaku SubsPlease 일본어 자막, 같은 대사를 빼면 425줄
 
 | 내용 | 위치 |
 |---|---|
-| 다운로드한 회차 | `동영상\LilacAnime\작품 이름\` (내 목록 > 다운로드 > 저장 폴더 바꾸기로 바꿀 수 있음) |
-| 설정, API 키, 자막·번역, 로컬 AI 모델 | `%APPDATA%\lilacanime-desktop\` |
+| 다운로드한 회차 | `동영상\LilacAnime\작품 이름\` (Mac: `~/Movies/LilacAnime/작품 이름/`) (내 목록 > 다운로드 > 저장 폴더 바꾸기로 바꿀 수 있음) |
+| 설정, API 키, 자막·번역, 로컬 AI 모델 | `%APPDATA%\lilacanime-desktop\` (Mac: `~/Library/Application Support/lilacanime-desktop/`) |
 
 API 키는 이 PC에만 저장되고 다른 곳으로 보내지 않습니다 (각 키는 그 서비스 요청에만 씁니다).
 
@@ -371,6 +383,10 @@ npm run dist
 ```
 
 `dist\LilacAnime-Setup.exe`가 만들어집니다. 앱 버전은 `package.json`의 `version`을 따릅니다.
+
+Mac에서는 `npm run dist:mac`으로 그 Mac의 칩에 맞는 `dist/LilacAnime-mac-arm64.dmg`(또는 `-x64.dmg`)가 만들어집니다.
+
+GitHub Actions(`.github/workflows/build.yml`)로도 만들어집니다. `v0.5.2`처럼 `v`로 시작하는 태그를 올리면 Windows 설치 파일과 Mac용 `.dmg` 두 개(Apple Silicon · Intel)를 만들어 그 태그의 릴리즈에 올립니다. 릴리즈가 아직 없으면 초안(draft)으로 만들어지니, 바뀐 점을 적고 게시하면 됩니다. 이미 있는 릴리즈에 직접 올린 `.exe`는 그대로 둡니다. **Actions > Build > Run workflow**로 돌리면 릴리즈 없이 실행 결과(Artifacts)로만 받을 수 있습니다.
 
 | 폴더 | 내용 |
 |---|---|
