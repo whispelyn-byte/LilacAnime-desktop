@@ -717,10 +717,14 @@ async function resolveLinkaniEpisode(episode){
   const url=player?.url||player?.actual_url||'';
   if(!/^https?:\/\//i.test(url))throw new Error('이 회차의 영상 주소를 찾지 못했습니다.');
   // Most videos have the Korean subtitle in the picture; some come clean with it as a file (subtitle_url, a VTT on the
-  // video's host), saved like the other sites' tracks and applied as the episode's own Korean subtitle.
+  // video's host), saved like the other sites' tracks and applied as the episode's own Korean subtitle. A file made from
+  // the video carries its id (aniplayer1.site/h/da/88/da88f9…/index.m3u8 → /s/da/88/da88f9…/sub.vtt); one with another
+  // id was added to a video that has the subtitle in the picture already (both would show), so it is left out.
   const stream={url,headers:{'User-Agent':LINKKF_UA,Referer:`${LINKANI_WEB}/`},referer:`${LINKANI_WEB}/`,hls:/\.m3u8(?:$|\?)/i.test(url),burnedKorean:true,subtitleTracks:[]};
   const subtitle=/^https?:\/\//i.test(String(player?.subtitle_url||''))?player.subtitle_url:'';
-  if(subtitle){
+  const fileId=value=>String(value||'').match(/\/[hs]\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{16,})\//i)?.[1]||'';
+  const ownFile=!fileId(url)||!fileId(subtitle)||fileId(url)===fileId(subtitle);
+  if(subtitle&&ownFile){
     stream.burnedKorean=false;
     try{
       const response=await net.fetch(subtitle,{signal:AbortSignal.timeout(20000),headers:{'User-Agent':LINKKF_UA,Referer:`${LINKANI_WEB}/`}});
