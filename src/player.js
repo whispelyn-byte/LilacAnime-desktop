@@ -363,7 +363,8 @@ function setPlayerWindowed() { $('#immersivePlayer').classList.toggle('windowed'
 let windowButtonsMode = '';
 function syncWindowButtons() {
   const player = $('#immersivePlayer'), inPlayer = document.body.classList.contains('player-mode') && player.classList.contains('windowed');
-  const mode = !inPlayer ? 'page' : (player.classList.contains('locked') ? !$('#unlockPlayer').classList.contains('hidden') : player.classList.contains('controls-visible')) ? 'player' : 'hidden';
+  // Off the player, a dark page shows them clear over the OTT header and hero.
+  const mode = !inPlayer ? (document.body.classList.contains('light') ? 'page' : 'player') : (player.classList.contains('locked') ? !$('#unlockPlayer').classList.contains('hidden') : player.classList.contains('controls-visible')) ? 'player' : 'hidden';
   if (mode !== windowButtonsMode) { windowButtonsMode = mode; window.lilac.setWindowButtons?.(mode); }
 }
 new MutationObserver(syncWindowButtons).observe($('#immersivePlayer'), { attributes: true, attributeFilter: ['class'] });
