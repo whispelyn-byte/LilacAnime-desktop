@@ -100,7 +100,10 @@ function card(a) {
   rememberAnime(a);const el=document.createElement('article'); el.className='anime-card'; el.dataset.id=a.mal_id;
   el.innerHTML=`<div class="poster"><button class="heart ${saved(a.mal_id)?'saved':''}" title="내 목록">${heartIcon()}</button>${a.score?`<span class="score">★ ${a.score}</span>`:''}</div><h3 ${titleAttr(a)}>${escapeHtml(titleOf(a))}</h3><p>${[a.year,a.type,a.episodes?`${a.episodes}화`:null].filter(Boolean).join(' · ')}</p>`;
   setBackgroundImage(el.querySelector('.poster'),imageOf(a));
-  el.querySelector('.poster').addEventListener('click', e => { if(!e.target.closest('.heart')) openDetail(a.mal_id); });
+  // The whole card opens the anime (its title and facts too, the row in 인기 순위), with Enter or Space as well.
+  el.tabIndex=0;el.setAttribute('role','button');el.setAttribute('aria-label',titleOf(a));
+  el.addEventListener('click', e => { if(!e.target.closest('.heart')) openDetail(a.mal_id); });
+  el.addEventListener('keydown', e => { if((e.key==='Enter'||e.key===' ')&&e.target===el){e.preventDefault();openDetail(a.mal_id)} });
   el.querySelector('.heart').addEventListener('click', e => { e.stopPropagation(); toggleLibrary(a, e.currentTarget); });
   return el;
 }

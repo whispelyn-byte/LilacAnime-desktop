@@ -98,6 +98,8 @@ body.light .rail-arrow{color:var(--text)}
 #homeView .anime-card:hover{z-index:3}
 #homeView .anime-card:hover .poster{transform:scale(1.06);box-shadow:0 14px 34px #000000b3}
 .anime-card h3{margin:9px 1px 3px;font-size:14px;font-weight:600}
+.anime-card:focus{outline:0}
+.anime-card:focus-visible{outline:2px solid var(--lilac);outline-offset:4px;border-radius:var(--ott-radius)}
 .anime-card p{margin:0 1px}
 .score{right:6px;top:6px;padding:3px 6px;border-radius:4px;border:0;background:#000000b3;font-weight:700}
 
