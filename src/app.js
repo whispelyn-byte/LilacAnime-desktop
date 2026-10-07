@@ -444,9 +444,9 @@ const seriesKey=()=>{const anime=currentPlaybackContext.anime;return anime?.id?`
 function aiSeries(){try{return JSON.parse(localStorage.getItem('aiSubtitleSeries')||'{}')||{}}catch{return {}}}
 const prefersAiSubtitle=()=>Boolean(seriesKey()&&aiSeries()[seriesKey()]);
 function preferAiSubtitle(on){const key=seriesKey();if(!key)return;const all=aiSeries();if(on)all[key]=Date.now();else if(all[key])delete all[key];else return;try{localStorage.setItem('aiSubtitleSeries',JSON.stringify(all))}catch{}}
-// The series' last picks, for its next episodes while 설정 > 자막 자동 번역 is on: the side that translated it last (one
-// episode done with 내 PC로 번역 keeps the local AI, also with the API set in 설정, so the episode made ready ahead by
-// it is the one shown) and the Jimaku file picked by hand (the next episodes take the file of the same release).
+// The series' last picks, for its next episodes while 설정 > 자막 자동 번역 is on: the side whose button translated it
+// last (one episode done with 내 PC로 번역 keeps the local AI, also with the API set in 설정, so the episode made ready
+// ahead by it is the one shown) and the Jimaku file picked by hand (the next episodes take the file of the same release).
 function seriesPicks(){try{return JSON.parse(localStorage.getItem('seriesSubtitlePick')||'{}')||{}}catch{return {}}}
 const seriesPick=()=>seriesPicks()[seriesKey()]||{};
 function rememberSeriesPick(change){const key=seriesKey();if(!key)return;const all=seriesPicks();all[key]={...all[key],...change,at:Date.now()};try{localStorage.setItem('seriesSubtitlePick',JSON.stringify(all))}catch{}}
@@ -584,7 +584,7 @@ async function translateAlongside(source,requestId){
     const file=files.length?await window.lilac.jimakuDownload(files[0],anime,episode):await trackFile(track),name=files.length?'Jimaku':track.label;if(requestId!==playbackRequestId)return;
     const run=++backgroundRun;translationEpisodes.set(run,key);
     try{
-      const result=await window.lilac.translateSubtitle({path:file.path,title:currentPlaybackContext.subtitleTitle||$('#skipTitle').value.trim(),id:run,provider,anime});
+      const result=await window.lilac.translateSubtitle({path:file.path,title:currentPlaybackContext.subtitleTitle||$('#skipTitle').value.trim(),id:run,provider,anime,anySide:true});
       await window.lilac.saveSubtitle(key,{source:'gemini',label:translatedLabel(result,name),path:result.path,behind:true,from:file.path,fromName:name});
       if((result.engine==='로컬 AI'||translationSettings?.prepareNextCloud)&&requestId===playbackRequestId&&!currentPlaybackContext.siteKorean)prepareNextEpisode(engineSide(result));
       if(key===subtitleStoreKey()){renderSubtitleSheet();if(!alongsideNoted.has(seriesKey())){alongsideNoted.add(seriesKey());toast('번역본도 만들어 뒀어요. 한국어 자막이 맞지 않으면 플레이어 설정 > 자막 > 저장된 자막에서 골라 보세요.')}}
@@ -673,9 +673,10 @@ async function runTranslation({file,name,button,provider,manual=false,fresh=fals
   try{
     const source=await file();if(!current())return;
     if(translating?.run===run)translating.path=source.path;
-    const result=await window.lilac.translateSubtitle({path:source.path,title,id:run,provider,anime:subtitleSearchAnime(),playing:$('#video').currentTime||0,fresh,only:manual&&provider==='local'});if(!current())return;
+    const result=await window.lilac.translateSubtitle({path:source.path,title,id:run,provider,anime:subtitleSearchAnime(),playing:$('#video').currentTime||0,fresh,only:manual&&provider==='local',anySide:!manual});if(!current())return;
     currentSubtitlePath=result.path;attachSubtitle(fresh?`${result.url}?again=${Date.now()}`:result.url,translatedLabel(result,name),{path:result.path,source:'gemini',from:source.path,fromName:name});
-    rememberSeriesPick({provider:engineSide(result)});
+    // A button pressed: its side goes on for the series (one made by itself that another side finished does not move it).
+    if(manual)rememberSeriesPick({provider:engineSide(result)});
     // The local AI translated this episode (or the API, with 번역 API로도 다음 화 미리 번역 on): the next one is made ready
     // meanwhile by the same side (see prepareNextEpisode).
     // Pressed with a Korean subtitle there: the series goes on in machine translation.

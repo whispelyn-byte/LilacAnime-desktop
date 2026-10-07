@@ -470,7 +470,7 @@ function createTranslator(userData) {
   // (the cue's text in the file, the translated cue's), a few at a time, so the player can show them before the rest is
   // done; control.done() gives all of them. fresh: made again (다시 번역), the saved translation and the lines kept from an
   // earlier run passed over; the new one takes the saved one's place.
-  async function translateOnce({ file, title = '', provider = '', context = {}, signal = null, progress = () => {}, status = () => {}, playing = 0, onLines = () => {}, control = {}, fresh = false, only = false }) {
+  async function translateOnce({ file, title = '', provider = '', context = {}, signal = null, progress = () => {}, status = () => {}, playing = 0, onLines = () => {}, control = {}, fresh = false, only = false, anySide = false }) {
     const settings = read(), wanted = provider || autoProvider() || 'cloud';
     // The engines in the order they are tried: an API's name, or 'local'.
     const apis = [settings.cloud, ...Object.keys(CLOUDS).filter(api => api !== settings.cloud)].filter(api => keyOf(settings, api));
@@ -489,7 +489,10 @@ function createTranslator(userData) {
     // (the picked one's first, then one another API made when it could not be used) for the API, so the two stay apart.
     // The side is the first one set up: the API asked for without any key is the local AI's side.
     const side = order[0] === 'local', sameSide = name => (name === 'local') === side;
-    for (const name of fresh ? [] : order.filter(sameSide)) {
+    // anySide (a translation made by itself, not a button pressed): with none on its own side, a finished one the other
+    // side made is taken too (the next episode made ready by the local AI when the API's allowance ran out, opened on
+    // the API's side).
+    for (const name of fresh ? [] : [...order.filter(sameSide), ...(anySide ? order.filter(name => !sameSide(name)) : [])]) {
       const out = path.join(cacheDir, `${hashOf(name)}.vtt`);
       if (!fs.existsSync(out)) continue;
       const models = modelsIn(out);
