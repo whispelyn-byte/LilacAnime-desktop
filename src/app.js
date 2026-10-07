@@ -929,6 +929,8 @@ $('#mutePlayer').onclick=()=>{const video=$('#video'),wasMuted=video.muted||vide
 $('#playerVolume').oninput=e=>{const video=$('#video');video.volume=Number(e.target.value)/100;video.muted=video.volume===0;localStorage.setItem('playerVolume',String(video.volume));localStorage.setItem('playerMuted',String(video.muted));syncVolumeUI();showPlayerControls()};
 $('#video').addEventListener('volumechange',syncVolumeUI);
 $('#rewindPlayer').onclick=()=>{const seconds=Number(localStorage.getItem('seekSeconds')||10);$('#video').currentTime=Math.max(0,$('#video').currentTime-seconds)};
+// The skip buttons carry no number: the time they move by (설정 > 재생) is in their tooltip.
+for(const [id,way] of [['#rewindPlayer','뒤로'],['#forwardPlayer','앞으로']]){const button=$(id),label=()=>{button.title=`${Number(localStorage.getItem('seekSeconds')||10)}초 ${way}`;button.setAttribute('aria-label',button.title)};label();button.addEventListener('pointerenter',label);button.addEventListener('focus',label)}
 $('#forwardPlayer').onclick=()=>{const seconds=Number(localStorage.getItem('seekSeconds')||10);$('#video').currentTime=Math.min($('#video').duration||Infinity,$('#video').currentTime+seconds)};
 $('#playerSeek').oninput=e=>{const video=$('#video'),duration=playbackDuration();if(duration)video.currentTime=duration*Number(e.target.value)/1000};
 $('#fullscreenPlayer').onclick=async()=>{try{playerWindowFullscreen=!playerWindowFullscreen;setPlayerWindowed();await window.lilac.setPlayerFullscreen(playerWindowFullscreen)}catch(e){toast(`전체 화면 오류: ${e.message}`)}};

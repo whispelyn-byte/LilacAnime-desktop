@@ -190,7 +190,7 @@ body.light #homeView .hero-actions .primary{background:#1c1b1f;color:#fff}
 .player-episode:hover:not(:disabled),.player-skip:hover{background:#ffffff1f}
 .player-episode:disabled{background:transparent;color:#ffffff4d}
 .player-episode svg{width:26px;height:26px}
-.player-skip svg{width:36px;height:36px}
+.player-skip svg{width:30px;height:30px;fill:currentColor;stroke:currentColor;stroke-width:1.6;stroke-linejoin:round}
 .player-play{width:76px;height:76px}
 .player-play .play-shape{transform:translateX(2px)}
 .immersive-player:has(#playerEmpty:not(.hidden)) .player-center{visibility:hidden}
