@@ -444,6 +444,13 @@ const seriesKey=()=>{const anime=currentPlaybackContext.anime;return anime?.id?`
 function aiSeries(){try{return JSON.parse(localStorage.getItem('aiSubtitleSeries')||'{}')||{}}catch{return {}}}
 const prefersAiSubtitle=()=>Boolean(seriesKey()&&aiSeries()[seriesKey()]);
 function preferAiSubtitle(on){const key=seriesKey();if(!key)return;const all=aiSeries();if(on)all[key]=Date.now();else if(all[key])delete all[key];else return;try{localStorage.setItem('aiSubtitleSeries',JSON.stringify(all))}catch{}}
+// The series' last picks, for its next episodes while 설정 > 자막 자동 번역 is on: the side that translated it last (one
+// episode done with 내 PC로 번역 keeps the local AI, also with the API set in 설정, so the episode made ready ahead by
+// it is the one shown) and the Jimaku file picked by hand (the next episodes take the file of the same release).
+function seriesPicks(){try{return JSON.parse(localStorage.getItem('seriesSubtitlePick')||'{}')||{}}catch{return {}}}
+const seriesPick=()=>seriesPicks()[seriesKey()]||{};
+function rememberSeriesPick(change){const key=seriesKey();if(!key)return;const all=seriesPicks();all[key]={...all[key],...change,at:Date.now()};try{localStorage.setItem('seriesSubtitlePick',JSON.stringify(all))}catch{}}
+const engineSide=result=>result.engine==='로컬 AI'?'local':'cloud';
 // Android SubtitleStore parity: subtitles are remembered per episode and source.
 function subtitleStoreKey(){const episode=currentPlaybackContext.episode;return episode?episodeRef(episode):''}
 async function rememberSubtitle(subtitle){const key=subtitleStoreKey();if(!key)return;try{await window.lilac.saveSubtitle(key,{source:subtitle.source,label:subtitle.label,path:subtitle.path,assPath:subtitle.assPath||null,fonts:subtitle.fonts||[],from:subtitle.from||null,fromName:subtitle.fromName||''})}catch{}renderSubtitleSheet()}
@@ -579,7 +586,7 @@ async function translateAlongside(source,requestId){
     try{
       const result=await window.lilac.translateSubtitle({path:file.path,title:currentPlaybackContext.subtitleTitle||$('#skipTitle').value.trim(),id:run,provider,anime});
       await window.lilac.saveSubtitle(key,{source:'gemini',label:translatedLabel(result,name),path:result.path,behind:true,from:file.path,fromName:name});
-      if((result.engine==='로컬 AI'||translationSettings?.prepareNextCloud)&&requestId===playbackRequestId&&!currentPlaybackContext.siteKorean)prepareNextEpisode();
+      if((result.engine==='로컬 AI'||translationSettings?.prepareNextCloud)&&requestId===playbackRequestId&&!currentPlaybackContext.siteKorean)prepareNextEpisode(engineSide(result));
       if(key===subtitleStoreKey()){renderSubtitleSheet();if(!alongsideNoted.has(seriesKey())){alongsideNoted.add(seriesKey());toast('번역본도 만들어 뒀어요. 한국어 자막이 맞지 않으면 플레이어 설정 > 자막 > 저장된 자막에서 골라 보세요.')}}
     }finally{translationEpisodes.delete(run)}
   }catch{/* the Korean subtitle stays; nothing to show */}
@@ -624,10 +631,11 @@ async function loadMissingSubtitleTracks(){
 let translationSettings=null;
 const translationReady=provider=>provider==='local'?(translationSettings?.localModels||[]).some(model=>model.id===translationSettings.localModel&&model.installed):provider==='cloud'?Boolean(translationSettings?.cloudReady):Boolean(autoProvider());
 const autoProvider=()=>translationReady('cloud')?'cloud':translationReady('local')?'local':null;
-// 설정 > 자막 자동 번역's choice for the translations made by themselves, or the other side when only that one is set up
-// (번역 API picked with no key but a local model on disk): no "could not use" note on every episode, and the
-// translation is looked up where it was made (the next episode translated ahead by the local AI).
-const autoTranslateProvider=()=>{const wanted=translationSettings?.jimakuTranslate,other=wanted==='local'?'cloud':'local';return !['cloud','local'].includes(wanted)?null:translationReady(wanted)?wanted:translationReady(other)?other:null};
+// The side for the translations made by themselves (설정 > 자막 자동 번역 on): the one that translated the series last
+// (see seriesPick), else 설정's choice, or the other side when only that one is set up (번역 API picked with no key but a
+// local model on disk): no "could not use" note on every episode, and the translation is looked up where it was made
+// (the next episode translated ahead).
+const autoTranslateProvider=()=>{const wanted=translationSettings?.jimakuTranslate,other=wanted==='local'?'cloud':'local',picked=seriesPick().provider;if(!['cloud','local'].includes(wanted))return null;if(['cloud','local'].includes(picked)&&translationReady(picked))return picked;return translationReady(wanted)?wanted:translationReady(other)?other:null};
 const cloudName=()=>translationSettings?.cloudName||'Gemini';
 const translatedLabel=(result,name)=>`${result.engine||(String(result.model||'').startsWith('local:')?'로컬 AI':'AI')} 번역 (${name})`;
 // A track's file: the copy saved with the download, else fetched.
@@ -667,11 +675,12 @@ async function runTranslation({file,name,button,provider,manual=false,fresh=fals
     if(translating?.run===run)translating.path=source.path;
     const result=await window.lilac.translateSubtitle({path:source.path,title,id:run,provider,anime:subtitleSearchAnime(),playing:$('#video').currentTime||0,fresh,only:manual&&provider==='local'});if(!current())return;
     currentSubtitlePath=result.path;attachSubtitle(fresh?`${result.url}?again=${Date.now()}`:result.url,translatedLabel(result,name),{path:result.path,source:'gemini',from:source.path,fromName:name});
+    rememberSeriesPick({provider:engineSide(result)});
     // The local AI translated this episode (or the API, with 번역 API로도 다음 화 미리 번역 on): the next one is made ready
-    // meanwhile (see prepareNextEpisode; main decides by the settings).
+    // meanwhile by the same side (see prepareNextEpisode).
     // Pressed with a Korean subtitle there: the series goes on in machine translation.
     if(manual&&(currentPlaybackContext.koreanFound||currentPlaybackContext.siteKorean))preferAiSubtitle(true);
-    if((result.engine==='로컬 AI'||translationSettings?.prepareNextCloud)&&(manual||!currentPlaybackContext.siteKorean||prefersAiSubtitle()))prepareNextEpisode();
+    if((result.engine==='로컬 AI'||translationSettings?.prepareNextCloud)&&(manual||!currentPlaybackContext.siteKorean||prefersAiSubtitle()))prepareNextEpisode(engineSide(result));
     if(result.fallbackNote)toast(`${result.fallbackNote}${result.fallbackReason?`: ${result.fallbackReason}`:'.'}`);
     if(result.failed)toast(`${result.failed}줄은 번역하지 못해 원문으로 남겼습니다.`);
   }catch(error){if(current()){if(TRANSLATION_CANCELLED.test(ipcMessage(error)))$('#subtitleState').textContent='번역을 멈췄어요. 다시 누르면 멈춘 곳부터 이어서 번역해요.';else{$('#subtitleState').textContent='자동 번역에 실패했습니다.';toast(`자동 번역 실패: ${ipcMessage(error)}`)}}}
@@ -710,7 +719,7 @@ function loadJimakuList(){
     // A server switch copies the context while the list may still be loading, so the result goes to whichever context
     // holds this listing now.
     const episode=Number($('#skipEpisode').value)||Number(context.episode?.number)||1,settle=(files,error)=>{for(const target of new Set([context,currentPlaybackContext]))if(target.jimakuListing===listing){target.jimakuFiles=files;target.jimakuError=error}if(currentPlaybackContext.jimakuListing===listing)renderJimaku();return files};
-    const listing=window.lilac.jimakuList(anime,episode).then(files=>settle(files,''),error=>settle(null,ipcMessage(error)));
+    const listing=window.lilac.jimakuList(anime,episode,seriesPick().jimaku||'').then(files=>settle(files,''),error=>settle(null,ipcMessage(error)));
     context.jimakuListing=listing;context.jimakuError='';renderJimaku();
   }
   return context.jimakuListing.then(files=>files||[]);
@@ -731,7 +740,7 @@ async function applyJimaku(file,manual=false){
   const context=currentPlaybackContext,requestId=playbackRequestId,episode=Number($('#skipEpisode').value)||Number(context.episode?.number)||1;$('#subtitleState').textContent='Jimaku 자막을 받는 중...';
   try{
     const result=await window.lilac.jimakuDownload(file,subtitleSearchAnime(),episode);if(requestId!==playbackRequestId)return;
-    context.jimakuFile=file.url;context.jimakuSubtitle={path:result.path,name:file.name};context.selectedSubtitleTrack=null;currentSubtitlePath=result.path;
+    context.jimakuFile=file.url;context.jimakuSubtitle={path:result.path,name:file.name};context.selectedSubtitleTrack=null;currentSubtitlePath=result.path;if(manual)rememberSeriesPick({jimaku:file.name});
     const provider=await jimakuAutoProvider();if(requestId!==playbackRequestId)return;
     attachSubtitle(result.url,'Jimaku 자막',{path:result.path,assUrl:result.assUrl,assPath:result.assPath,fonts:result.fonts,source:'jimaku',notice:provider?JIMAKU_TRANSLATING:''});renderJimaku();renderSubtitleTracks();
     if(provider)translateJimaku(provider,manual);
@@ -754,14 +763,14 @@ async function applySavedJimaku(entry){
   currentSubtitlePath=entry.path;attachSubtitle(entry.url,entry.label,{path:entry.path,assUrl:entry.assUrl,assPath:entry.assPath,fonts:entry.fonts,source:entry.source,saved:true,notice:provider?JIMAKU_TRANSLATING:''});renderJimaku();
   if(provider)translateJimaku(provider);
 }
-// The next episode's translation (its Jimaku file, else its Re:Anime / Miruro Japanese or English track), done by the
-// local AI while this one plays, so it opens in Korean at once
-// (or its translation beside a Korean subtitle is there at once). Asked for whenever the local AI has translated an
-// episode, except one with the site's own Korean subtitle that was translated by itself (in the background): pressing
-// 번역 there asks for it too. The API is quick enough to need no head start.
-function prepareNextEpisode(){
+// The next episode's translation (its Jimaku file of the release picked for the series, else its Re:Anime / Miruro
+// Japanese or English track), made while this one plays by the side that translated this one, so it opens in Korean at
+// once (or its translation beside a Korean subtitle is there at once). Asked for whenever the local AI has translated an
+// episode (the API too with 번역 API로도 다음 화 미리 번역 on), except one with the site's own Korean subtitle that was
+// translated by itself (in the background): pressing 번역 there asks for it too.
+function prepareNextEpisode(provider){
   const next=typeof siblingEpisode==='function'?siblingEpisode(1):null,anime=subtitleSearchAnime();if(!next||!anime)return;
-  window.lilac.prepareEpisodeSubtitle({anime,episode:episodeNumberOf(next)||1,item:JSON.parse(JSON.stringify(next)),title:currentPlaybackContext.subtitleTitle||$('#skipTitle').value.trim()}).catch(()=>{});
+  window.lilac.prepareEpisodeSubtitle({anime,episode:episodeNumberOf(next)||1,item:JSON.parse(JSON.stringify(next)),title:currentPlaybackContext.subtitleTitle||$('#skipTitle').value.trim(),provider,jimaku:seriesPick().jimaku||''}).catch(()=>{});
 }
 function translateJimaku(provider='cloud',manual=false){const subtitle=currentPlaybackContext.jimakuSubtitle;if(subtitle)runTranslation({file:async()=>subtitle,name:'Jimaku',button:provider==='local'?$('#translateNowLocal'):$('#translateNow'),provider,manual})}
 // The one 번역 row translates the subtitle on screen: the picked Jimaku file, or the picked track.

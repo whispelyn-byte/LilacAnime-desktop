@@ -1506,16 +1506,25 @@ async function jimakuAnilistId(anime={}){
   const id=Number(anime.anilistId)||null;if(id)return id;
   return anime.title&&!hasHangul(anime.title)?(await anilistMedia(anime.title,anime).catch(()=>null))?.id||null:null;
 }
+// How much a file name looks like one of the same release as another episode's: the same words once the numbers are
+// set aside (episode, CRC), the same group in brackets and the same format. 0.8 or more: the same release (a file
+// named after its episode's title, 呪術廻戦.S01E01.両面宿儺.WEBRip.Netflix…, still is).
+function jimakuRelease(name){const lower=String(name||'').toLowerCase();return {ext:lower.split('.').pop(),group:(lower.match(/^\s*[[【(]([^\]】)]+)[\]】)]/)||[])[1]||'',words:new Set(lower.replace(/\.[^.]+$/,'').replace(/\d+/g,'#').split(/[^\p{L}\p{N}#]+/u).filter(Boolean))}}
+function jimakuLikeness(a,b){const x=jimakuRelease(a),y=jimakuRelease(b),shared=[...x.words].filter(word=>y.words.has(word)).length,all=new Set([...x.words,...y.words]).size||1;return shared/all+(x.group&&x.group===y.group?.5:0)+(x.ext===y.ext?.2:0)}
 // The episode's files, best first (ASS over SRT, furigana / .ja ASS a little ahead, the season's own files ahead). A
-// movie's entry has no numbered files, so all of them are listed.
-async function jimakuEpisodeFiles(anime,episode){
+// movie's entry has no numbered files, so all of them are listed. preferred: the file picked for another episode of the
+// series, whose release goes first when this episode has it.
+async function jimakuEpisodeFiles(anime,episode,preferred=''){
   const anilistId=await jimakuAnilistId(anime);if(!anilistId)throw new Error('AniList 작품을 찾지 못해 Jimaku를 검색할 수 없습니다.');
   const entry=await jimakuEntryId(anilistId);if(!entry)throw new Error('Jimaku에 이 작품의 자막이 없습니다.');
   const files=await jimakuFiles(entry),season=titleSeason(anime.title||'');
   const quality=name=>{const lower=name.toLowerCase(),ext=lower.split('.').pop(),ass=/^(?:ass|ssa)$/.test(ext);return JIMAKU_FORMATS[ext]+(ass?(lower.includes('furigana')?8:lower.includes('.ja')?6:3):lower.includes('.ja')?2:0)+(season>1&&new RegExp(`(?:^|[^a-z0-9])s0*${season}(?:e|[-_ ])`).test(lower)?12:0)};
   const movie=Number(episode)===1&&!files.some(file=>jimakuEpisodeScore(file.name,2)>0);
-  return files.map(file=>({...file,anilistId,score:movie?1:jimakuEpisodeScore(file.name,Number(episode))})).filter(file=>file.score>0)
+  const list=files.map(file=>({...file,anilistId,score:movie?1:jimakuEpisodeScore(file.name,Number(episode))})).filter(file=>file.score>0)
     .sort((a,b)=>(b.score+quality(b.name))-(a.score+quality(a.name))||b.size-a.size||a.name.localeCompare(b.name));
+  if(!preferred)return list;
+  const same=list.map(file=>({file,likeness:jimakuLikeness(file.name,preferred)})).filter(item=>item.likeness>=.8).sort((a,b)=>b.likeness-a.likeness)[0]?.file;
+  return same?[same,...list.filter(file=>file!==same)]:list;
 }
 // Subtitles are kept as UTF-8: UTF-16 by its byte order mark, otherwise UTF-8 when it decodes cleanly, else Shift_JIS.
 function japaneseSubtitleText(buffer){
@@ -2041,7 +2050,8 @@ app.whenReady().then(async () => {
     return findCommunitySubtitleByTitles(source, titles, Number(episode), { originalTitle: anime?.title || '', offsets, maker: String(options?.maker || '') });
   }
   // The next episode made ready while the current one plays (the player asks when the local AI has translated an
-  // episode): the source its own playback would translate, its best Jimaku file or else its Re:Anime / Miruro
+  // episode, or the API with 번역 API로도 다음 화 미리 번역 on): the source its own playback would translate, its best
+  // Jimaku file (of the release picked for the series) or else its Re:Anime / Miruro
   // Japanese track or English dialogue one (the player's translationSourceTrack), is fetched and translated by the
   // local AI into the translation cache, so opening it shows the translation at once (also with a Korean fansub,
   // beside which it is made anyway). One at a time, each episode once; the player leaving does not stop it (it is for
@@ -2058,18 +2068,21 @@ app.whenReady().then(async () => {
     if (item?.provider === 'miruro') { const stream = await resolveProviderEpisode(item); return { tracks: stream.subtitleTracks || [], referer: stream.referer || '' }; }
     return { tracks: [], referer: '' };
   }
-  ipcMain.handle('subtitle:prepare', (_, { anime = null, episode = 1, item = null, title = '' } = {}) => {
-    const key = `${anime?.provider || ''}:${anime?.id || ''}:${Number(episode) || 1}`;
-    // Only by the side the next episode's own translation would use (설정 > 자막 자동 번역 on), or it would not pick this
-    // one up: the local AI when it is picked (or the API is, without a key); the API when it is picked and 번역 API로도
-    // 다음 화 미리 번역 is on.
-    const settings = translator().settings(), local = settings.jimakuTranslate === 'local' ? translator().ready('local') : settings.jimakuTranslate === 'cloud' && !settings.cloudReady;
-    const provider = local ? 'local' : settings.jimakuTranslate === 'cloud' && settings.cloudReady && settings.prepareNextCloud ? 'cloud' : '';
+  ipcMain.handle('subtitle:prepare', (_, { anime = null, episode = 1, item = null, title = '', provider: asked = '', jimaku = '' } = {}) => {
+    // Only while 설정 > 자막 자동 번역 is on, and by the side the next episode's own translation will use, or it would not
+    // pick this one up: the side that translated this episode (asked: the player takes it for the series' next ones too),
+    // the local AI when it is set up, the API when 번역 API로도 다음 화 미리 번역 is on. Without one asked, 설정's: the
+    // local AI when it is picked (or the API is, without a key), the API when it is picked and that switch is on.
+    const settings = translator().settings(), on = ['cloud', 'local'].includes(settings.jimakuTranslate);
+    const local = asked ? asked === 'local' && translator().ready('local') : settings.jimakuTranslate === 'local' ? translator().ready('local') : settings.jimakuTranslate === 'cloud' && !settings.cloudReady;
+    const cloud = (asked ? asked === 'cloud' : settings.jimakuTranslate === 'cloud') && settings.cloudReady && settings.prepareNextCloud;
+    const provider = !on ? '' : local ? 'local' : cloud ? 'cloud' : '';
+    const key = `${anime?.provider || ''}:${anime?.id || ''}:${Number(episode) || 1}:${provider}:${jimaku}`;
     if (!anime?.id || preparedEpisodes.has(key) || !provider) return false;
     preparedEpisodes.add(key);
     preparing = preparing.then(async () => {
       if (!translator().ready(provider)) return;
-      const [file] = await jimakuEpisodeFiles(anime, Number(episode) || 1).catch(() => []);
+      const [file] = await jimakuEpisodeFiles(anime, Number(episode) || 1, String(jimaku || '')).catch(() => []);
       let source = file ? (await jimakuDownload(file, anime, Number(episode) || 1)).path : '';
       if (!source) {
         const { tracks, referer } = await episodeTracks(item), track = sourceTrack(tracks || []); if (!track) return;
@@ -2121,7 +2134,7 @@ app.whenReady().then(async () => {
   // since libass' bundled fallback font has no Hangul glyphs.
   ipcMain.handle('tmdb:get',()=>({key:tmdbKey()}));
   // Gemini translation of subtitle tracks (the user's own key); progress goes to the page that asked.
-  ipcMain.handle('jimaku:list',(_,anime={},episode=1)=>jimakuEpisodeFiles(anime||{},Number(episode)||1));
+  ipcMain.handle('jimaku:list',(_,anime={},episode=1,preferred='')=>jimakuEpisodeFiles(anime||{},Number(episode)||1,String(preferred||'')));
   ipcMain.handle('jimaku:download',(_,file={},anime={},episode=1)=>jimakuDownload(file||{},anime||{},Number(episode)||1));
   ipcMain.handle('gemini:get',()=>translator().settings());
   // Local AI models (설정 > 자막 자동 번역): a preset is downloaded from Hugging Face with progress events, or a GGUF
