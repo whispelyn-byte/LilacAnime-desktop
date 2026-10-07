@@ -706,7 +706,14 @@ async function linkaniDetail(anime){
     });
   });
   episodes.sort((a,b)=>Number(a.dub)-Number(b.dub)||(a.number||0)-(b.number||0));
-  const data={...anime,title,images:{webp:{large_image_url:poster?absoluteUrl(poster,LINKANI_WEB):imageOfMain(anime)}},synopsis:synopsis||anime.synopsis||'',
+  // The original title (원제, under the episode list) and the air year find the AniList entry, as 애니24's do, so AniSkip
+  // has the OP/ED times; a poster taken from AniList (anilist-<id>.png) names it outright.
+  const info=$('.box.tv').first(),infoText=info.text().replace(/\s+/g,' '),native=(infoText.match(/원제\s*[:：]\s*(.+?)$/)?.[1]||'').trim();
+  const airYear=(infoText.match(/방영 정보\s*[:：]\s*(\d{4})/)?.[1])||(field['년']?.text||'').match(/\d{4}/)?.[0]||'';
+  const posterId=Number(String(poster).match(/anilist-(\d+)\./)?.[1])||null;
+  const ids=posterId?{anilistId:posterId,malId:null}:native&&!hasHangul(native)?await ohliAnilist(native,airYear):null;
+  if(ids)for(const episode of episodes)Object.assign(episode,ids);
+  const data={...anime,...(ids||{}),title_japanese:native||anime.title_japanese||'',title,images:{webp:{large_image_url:poster?absoluteUrl(poster,LINKANI_WEB):imageOfMain(anime)}},synopsis:synopsis||anime.synopsis||'',
     score:Number($('.ewave-star').attr('score'))||anime.score||null,genres:(field['장르']?.links||[]).map(name=>({name})),studios:(field['제작사']?.links||[]).map(name=>({name})),
     year:(field['년']?.text||'').match(/\d{4}/)?.[0]||anime.year||'',type:field['분류']?.text||anime.type||'TV',episodes:Number((field['총화수']?.text||'').match(/\d+/)?.[0])||episodes.filter(episode=>!episode.dub).length||null};
   return {data,episodes,unavailable:!episodes.length};
@@ -1909,7 +1916,7 @@ app.whenReady().then(async () => {
   // without them the local analyzer runs over the anime's other downloaded episodes.
   const findDownloadSkips=async job=>{
     let anilistId=job.episode?.anilistId||job.anime?.anilistId||null,malId=job.episode?.malId||job.anime?.malId||null;
-    if(!anilistId&&!malId&&job.anime?.provider==='ohli24')({anilistId=null,malId=null}=await ohliAnilist(String(job.anime.title_japanese||''),job.anime.year)||{});
+    if(!anilistId&&!malId&&['ohli24','linkani'].includes(job.anime?.provider))({anilistId=null,malId=null}=await ohliAnilist(String(job.anime.title_japanese||''),job.anime.year)||{});
     const lookup=()=>androidOnlineSkipTimes({episode:job.episodeNumber,anilistId,malId,duration:job.duration||0}).catch(()=>[]);
     let segments=await lookup();if(!segments.length){await new Promise(resolve=>setTimeout(resolve,500));segments=await lookup()}
     return segments;
