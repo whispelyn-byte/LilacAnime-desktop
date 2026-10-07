@@ -322,7 +322,7 @@ Horimiya 1화(Jimaku SubsPlease 일본어 자막, 같은 대사를 빼면 425줄
 - Gemini 무료 사용량을 다 쓰면 다른 Gemini 모델이 이어서 번역하고, 그것도 다 쓰면 로컬 AI가 이어받습니다 (받아 둔 모델이 있을 때). 무료 사용량은 다음 날(한국 시간 오후 4~5시쯤) 다시 채워집니다.
 
 **로컬 AI로 번역이 안 돼요**
-- 로컬 AI(llama.cpp)는 Microsoft Visual C++ 런타임으로 실행됩니다. PC에 없으면 내 PC 번역을 누를 때 설치할지 묻고, **설치**를 누르면 Microsoft에서 받아 설치합니다 (Windows가 허락을 한 번 물어요). 직접 설치하려면 [Visual C++ 재배포 패키지(x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe)를 받아 실행합니다.
+- 로컬 AI(llama.cpp)는 Microsoft Visual C++ 런타임으로 실행됩니다. PC에 없으면 "Microsoft Visual C++ 런타임이 없어…"라고 나옵니다. [Visual C++ 재배포 패키지(x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe)를 받아 설치한 뒤 다시 번역하면 됩니다.
 
 **로컬 AI가 메모리가 부족하다고 나와요**
 - **설정 > 자막 자동 번역 > 로컬 AI 모델**에서 더 작은 모델로 바꿉니다: Gemma 4 E4B(5.2GB) → **Gemma 4 E2B**(3.4GB) → **Hy-MT2 1.8B**(1.1GB). 안내 문구에 PC 메모리와 모델 크기가 같이 나옵니다.

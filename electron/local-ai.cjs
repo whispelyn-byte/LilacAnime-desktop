@@ -120,8 +120,7 @@ function modelKind(model, template = '') {
 }
 const KANA = /[぀-ゟ゠-ヺヽ-ヿ]/;
 
-// needVcRuntime: asks whether Microsoft's Visual C++ runtime may be installed (see installVcRuntime); true to install.
-function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
+function createLocalAi(userData) {
   const root = path.join(userData, 'local-ai'), modelDir = path.join(root, 'models');
   let server = null, starting = null, idleTimer = null, busy = 0;
   const downloads = new Map(); // model id -> {done, total}
@@ -185,40 +184,13 @@ function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
     }
     // (A mark from before check 3 may be a build wrongly given up on: on a large model before checks were counted, or
     // while another program had the card's memory before a build that reached the card counted as working: not kept.
-    // Nor one for a DLL Windows did not find: the Visual C++ runtime missing, not the build; see installVcRuntime.)
+    // Nor one for a DLL Windows did not find: the Visual C++ runtime missing, not the build; see DLL_NOT_FOUND.)
     return [...list.filter(kind => kind && !(off[kind] && off[kind].driver === driver && off[kind].check === 3 && !String(off[kind].error).includes(String(DLL_NOT_FOUND)))), 'vulkan'];
   }
-  // llama.cpp's Windows builds use Microsoft's Visual C++ runtime (b11303 and b11438 both), which not every PC has: without it
-  // no build starts (Windows does not find its DLLs: exit code 0xC0000135) and every translation went to the API. When
-  // llama.cpp stops for that, the runtime is installed from Microsoft once the person agrees (needVcRuntime, a
-  // question from main; Windows asks for permission too) and it is started again. Only then: Windows also finds the
-  // DLLs outside System32 (a folder on PATH), where llama.cpp runs without it (0.4.28 looked in System32 first and kept
-  // such a PC from translating when it could not install). Declined, the local AI says why it cannot run, and only a
-  // translation asked for by hand (askInstall: 내 PC로 번역 pressed) asks again: the next episode made ready or a
-  // download's translation do not keep asking.
+  // llama.cpp's Windows builds use Microsoft's Visual C++ runtime (b11303 and b11438 both), which not every PC has:
+  // without it no build starts (Windows does not find its DLLs: exit code 0xC0000135). The local AI then says so, with
+  // where to get it (the person installs it; the app does not), rather than trying another build.
   const DLL_NOT_FOUND = 3221225781;
-  const vcError = (why = '') => Object.assign(new Error(`로컬 AI(llama.cpp)를 실행하려면 Microsoft Visual C++ 런타임이 필요합니다${why ? ` (${why})` : ''}. 내 PC 번역을 다시 누르면 설치할 수 있어요.`), { vcRuntime: true });
-  let vcInstall = null, vcDeclined = false;
-  function installVcRuntime(status, ask = false) {
-    if (vcDeclined && !ask) return Promise.reject(vcError('설치하지 않음'));
-    vcInstall ||= (async () => {
-      if (!await needVcRuntime()) { vcDeclined = true; throw vcError('설치하지 않음'); }
-      vcDeclined = false;
-      const exe = path.join(root, 'vc_redist.x64.exe');
-      status('Microsoft Visual C++ 런타임 받는 중');
-      await download('https://aka.ms/vs/17/release/vc_redist.x64.exe', exe, () => {});
-      status('Microsoft Visual C++ 런타임 설치 중 (Windows가 허락을 물어요)');
-      // Started elevated through PowerShell: the installer is for the whole PC. 1638: a newer one is there; 3010: done,
-      // the PC wants a restart (not needed for llama.cpp).
-      const code = await new Promise(resolve => {
-        const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', `try { $p = Start-Process -FilePath '${exe.replace(/'/g, "''")}' -ArgumentList '/install','/passive','/norestart' -Verb RunAs -Wait -PassThru; exit $p.ExitCode } catch { exit 1223 }`], { windowsHide: true });
-        child.once('error', () => resolve(-1)); child.once('exit', resolve);
-      });
-      try { fs.unlinkSync(exe); } catch {}
-      if (![0, 1638, 3010].includes(code)) throw vcError(code === 1223 || code === 1602 ? '설치를 취소함' : `설치하지 못함: ${code}`);
-    })().finally(() => { vcInstall = null; });
-    return vcInstall;
-  }
   async function cardDriver(kind) { return kind.startsWith('cuda') ? (await nvidiaGpu())?.driver || 0 : (await videoCards()).find(card => kind === 'rocm' ? /radeon/i.test(card.name) : /intel/i.test(card.name))?.driver || ''; }
 
   // Into target.part first: a download cut short (network, the app closed, cancelled) keeps what came and goes on
@@ -382,7 +354,7 @@ function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
     const smaller = MODELS.filter(item => !item.legacy && item.size < size * 0.9).sort((a, b) => b.size - a.size).map(item => `${item.label} ${(item.size / 1e9).toFixed(1)}GB`);
     return smaller.length ? `설정 > 자막 자동 번역 > 로컬 AI 모델에서 더 작은 모델(${smaller.join(', ')})로 바꿔 보세요. ${others}도 도움이 됩니다.` : `가장 작은 모델이에요. ${others.replace(/는 것$/, '고')} 다시 해 보세요.`;
   }
-  async function start(model, status = () => {}, ask = false) {
+  async function start(model, status = () => {}) {
     const file = modelPath(model);
     if (server?.model === file && !server.child.killed) { touch(); return server; }
     if (starting?.model === file) return starting.promise;
@@ -440,7 +412,7 @@ function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
         for (;;) {
           const code = await Promise.race([exited, new Promise(resolve => setTimeout(() => resolve(undefined), 500))]);
           if (code !== undefined) {
-            if (code === DLL_NOT_FOUND) throw Object.assign(new Error('llama.cpp에 필요한 DLL(Microsoft Visual C++ 런타임)을 Windows가 찾지 못해 실행되지 않았습니다.'), { dll: true });
+            if (code === DLL_NOT_FOUND) throw Object.assign(new Error('Microsoft Visual C++ 런타임이 없어 로컬 AI(llama.cpp)를 실행하지 못했습니다. https://aka.ms/vs/17/release/vc_redist.x64.exe 를 받아 설치한 뒤 다시 해 보세요.'), { dll: true });
             if (/OutOfDeviceMemory|unable to allocate|failed to allocate|out of memory/i.test(log) || placed()) throw short();
             throw new Error(`llama.cpp가 종료되었습니다: ${log.trim().split('\n').filter(line => / E /.test(line)).pop() || log.trim().split('\n').pop() || code}`);
           }
@@ -484,7 +456,7 @@ function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
           }
         }
       };
-      let started, vcTried = false;
+      let started;
       while (!started) {
         try { started = await load(); }
         catch (failure) {
@@ -496,8 +468,6 @@ function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
             if (swapInUpdate(kind)) { exe = runtimeExe(kind); try { started = await load(); error = null; } catch (again) { error = again; } }
           }
           if (!error) break;
-          // Windows did not find a DLL (the Visual C++ runtime): installed if the person agrees, then started again, once.
-          if (error.dll && !vcTried) { vcTried = true; await installVcRuntime(status, ask); status('모델 불러오는 중'); continue; }
           // A maker's build that does not start on this PC (a driver or card it does not support) is not tried again
           // with this driver; the next build for the PC takes over (Vulkan in the end).
           // (Nor one missing a DLL of Windows': no other build would start either.)
@@ -534,10 +504,10 @@ function createLocalAi(userData, { needVcRuntime = async () => false } = {}) {
   // context: the work's {characters} from AniList, for the names in the terminology list. pick(): the index of the line
   // to translate next (undefined when none is left), asked as each slot frees up, so the lines follow where the episode
   // is playing (and where it jumps to); the lines before a line are still its neighbours. Without it, in order.
-  async function translateLines(texts, { modelId, progress = () => {}, status = () => {}, onLine = () => {}, context = {}, signal = null, pick = null, askInstall = false } = {}) {
+  async function translateLines(texts, { modelId, progress = () => {}, status = () => {}, onLine = () => {}, context = {}, signal = null, pick = null } = {}) {
     const model = models().find(item => item.id === modelId) || models().find(item => item.installed);
     if (!model) throw new Error('로컬 AI 모델이 없습니다. 설정 > 자막 자동 번역에서 모델을 받아 주세요.');
-    const { port, template } = await start(model, status, askInstall);
+    const { port, template } = await start(model, status);
     const names = characterTerms(context.characters || []), kind = modelKind(model, template);
     const cast = (context.characters || []).slice(0, 15).map(character => { const full = names.find(term => term.ja === String(character.native || '').trim()); return full ? `${full.ja} = ${full.ko}${/^(?:male|female)$/i.test(character.gender) ? ` (${character.gender.toLowerCase()})` : ''}` : ''; }).filter(Boolean);
     // An answer is cut off at a few times the line's length (a subtitle line never needs more), so a model stuck

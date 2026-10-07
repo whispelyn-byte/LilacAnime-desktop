@@ -15,9 +15,7 @@ const { Updater } = require('./updater.cjs');
 const { SubtitleStore } = require('./subtitle-store.cjs');
 const { createTranslator } = require('./subtitle-translator.cjs');
 let subtitleTranslator = null;
-// The local AI asks before Microsoft's Visual C++ runtime is installed for it (local-ai.cjs installVcRuntime).
-const askVcRuntime = async () => (await dialog.showMessageBox(...[mainWindow].filter(Boolean), { type: 'question', buttons: ['설치', '취소'], defaultId: 0, cancelId: 1, noLink: true, title: '로컬 AI', message: '로컬 AI에 필요한 Microsoft Visual C++ 런타임을 설치할까요?', detail: '로컬 AI 번역 프로그램(llama.cpp)이 이 런타임으로 실행되는데, 이 PC에는 없습니다. Microsoft에서 받아(약 25MB) 설치하고, Windows가 설치를 허락할지 한 번 묻습니다.' })).response === 0;
-const translator = () => subtitleTranslator ||= createTranslator(app.getPath('userData'), { needVcRuntime: askVcRuntime });
+const translator = () => subtitleTranslator ||= createTranslator(app.getPath('userData'));
 
 app.commandLine.appendSwitch('disable-blink-features','AutomationControlled');
 // Android BackgroundAudioService: playback continues while the window is hidden or minimized.

@@ -25,13 +25,12 @@ const LOCAL_ENGINE = { name: '로컬 AI', eul: '를', ro: '로' };
 const QWEN_API = { international: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', china: 'https://dashscope.aliyuncs.com/compatible-mode/v1' };
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-// options: {needVcRuntime} for the local AI (see local-ai.cjs).
-function createTranslator(userData, options = {}) {
+function createTranslator(userData) {
   const settingsFile = path.join(userData, 'translation.json'), cacheDir = path.join(userData, 'subtitles', 'translated');
   // Kept as gemini.json while Gemini was the only API: moved once, under the name that says what it holds.
   const oldSettingsFile = path.join(userData, 'gemini.json');
   if (!fs.existsSync(settingsFile) && fs.existsSync(oldSettingsFile)) try { fs.renameSync(oldSettingsFile, settingsFile); } catch { /* read from the old name below */ }
-  const local = createLocalAi(userData, options);
+  const local = createLocalAi(userData);
   // The picked model, or the first one on disk when the picked one is not (never downloaded, or deleted).
   const installedModel = id => { const models = local.models(); return models.some(model => model.id === id && model.installed) ? id : models.find(model => model.installed)?.id || id; };
   const read = () => {
@@ -566,7 +565,7 @@ function createTranslator(userData, options = {}) {
           const position = new Map(lines.map((line, index) => [line, index])), left = new Set(lines);
           const pick = () => { const line = nextLine(left); if (!line) return undefined; left.delete(line); return position.get(line); };
           engine.jump = null;
-          await local.translateLines(lines.map(line => line.text), { modelId: localModel.id, progress, status, context, signal, pick, askInstall: only, onLine: (index, text) => { translated.set(lines[index].i, text); lineModel.set(lines[index].i, modelOf(name)); shown([lines[index].i]); keepSoon(name); } });
+          await local.translateLines(lines.map(line => line.text), { modelId: localModel.id, progress, status, context, signal, pick, onLine: (index, text) => { translated.set(lines[index].i, text); lineModel.set(lines[index].i, modelOf(name)); shown([lines[index].i]); keepSoon(name); } });
         } else await translateCloud(settings, name, modelFor(name), lines, translated, { title, ...context }, { progress, signal, onSwitch, order: playingFirst, near, control: engine, saved: (model, ids) => { for (const i of ids) lineModel.set(i, name === 'gemini' ? model : `${name}${model ? `:${model}` : ''}`); shown(ids); keepSoon(name); } });
         lastError = null;
       } catch (error) { lastError = error; }
