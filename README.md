@@ -8,11 +8,16 @@
   <a href="https://github.com/whispelyn-byte/LilacAnime-desktop/releases/latest"><img src="https://img.shields.io/github/v/release/whispelyn-byte/LilacAnime-desktop?label=%EC%B5%9C%EC%8B%A0%20%EB%B2%84%EC%A0%84&color=b98fd6" alt="최신 버전"></a>
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078d4" alt="Windows 10 / 11">
   <img src="https://img.shields.io/badge/macOS-Apple%20Silicon%20%2F%20Intel-555555" alt="macOS">
-  <a href="https://github.com/whispelyn-byte/LilacAnime-desktop/releases/latest/download/LilacAnime-Setup.exe"><img src="https://img.shields.io/badge/%EB%B0%9B%EA%B8%B0-LilacAnime--Setup.exe-c8a2c8" alt="받기"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/dream150/LilacAnime">LilacAnime</a> Android 앱을 Windows에서 쓸 수 있게 옮긴 데스크톱 앱입니다.<br>
+  <a href="https://github.com/whispelyn-byte/LilacAnime-desktop/releases/latest/download/LilacAnime-Setup.exe"><img src="https://img.shields.io/badge/%EB%B0%9B%EA%B8%B0-Windows-c8a2c8" alt="Windows용 받기"></a>
+  <a href="https://github.com/whispelyn-byte/LilacAnime-desktop/releases/latest/download/LilacAnime-mac-arm64.dmg"><img src="https://img.shields.io/badge/%EB%B0%9B%EA%B8%B0-Mac%20%28Apple%20Silicon%29-c8a2c8" alt="Mac(Apple Silicon)용 받기"></a>
+  <a href="https://github.com/whispelyn-byte/LilacAnime-desktop/releases/latest/download/LilacAnime-mac-x64.dmg"><img src="https://img.shields.io/badge/%EB%B0%9B%EA%B8%B0-Mac%20%28Intel%29-c8a2c8" alt="Mac(Intel)용 받기"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/dream150/LilacAnime">LilacAnime</a> Android 앱을 Windows와 macOS에서 쓸 수 있게 옮긴 데스크톱 앱입니다.<br>
   여러 사이트의 애니를 한 화면에서 찾아 보고, 한국어 자막을 자동으로 찾아 입히고,<br>
   없으면 일본어·영어 자막을 한국어로 번역해 줍니다. 회차를 내려받아 오프라인에서도 볼 수 있습니다.
 </p>
@@ -54,6 +59,8 @@
 | **내 목록 > 다운로드** · 작품별로 묶인 회차, 저장 폴더 바꾸기 | |
 
 ## 설치
+
+### Windows
 
 1. **[LilacAnime-Setup.exe 받기](https://github.com/whispelyn-byte/LilacAnime-desktop/releases/latest/download/LilacAnime-Setup.exe)**: 항상 최신 버전이 받아집니다. ([모든 릴리즈](https://github.com/whispelyn-byte/LilacAnime-desktop/releases))
 2. 실행해서 설치 위치를 고르고 설치합니다. 바탕 화면에 바로가기가 생깁니다.
@@ -396,7 +403,7 @@ GitHub Actions(`.github/workflows/build.yml`)로도 만들어집니다. `v0.5.2`
 
 ## 크레딧
 
-- 원작: [dream150/LilacAnime](https://github.com/dream150/LilacAnime) (Android). 원작자의 허락을 받아 Windows 데스크톱(Electron)용으로 포팅한 프로젝트입니다.
+- 원작: [dream150/LilacAnime](https://github.com/dream150/LilacAnime) (Android). 원작자의 허락을 받아 Windows · macOS 데스크톱(Electron)용으로 포팅한 프로젝트입니다.
 - 자막: Kairan, Csora, [Anissia](https://anissia.net)에 등록된 자막 제작자분들, [Jimaku](https://jimaku.cc)
 - 로컬 번역: [llama.cpp](https://github.com/ggml-org/llama.cpp), [Tencent Hy-MT2](https://github.com/Tencent-Hunyuan/Hy-MT2), [Gemma 4](https://huggingface.co/google/gemma-4-E4B-it-qat-q4_0-gguf), [Aya Expanse](https://huggingface.co/CohereLabs/aya-expanse-8b)
 - OP/ED 타임스탬프: [AniSkip](https://aniskip.com)
