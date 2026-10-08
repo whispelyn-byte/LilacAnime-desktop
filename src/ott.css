@@ -150,6 +150,17 @@ body.light .rail-arrow{color:var(--text)}
 .sort-chips button:hover{color:var(--text)}
 .sort-chips button.selected{background:var(--lilac);color:#1c1b1f}
 .sort-chips button:focus-visible{outline:2px solid var(--lilac);outline-offset:2px}
+.catalog-filters{margin:0 0 28px;padding:18px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+.catalog-filter-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
+.catalog-filter-fields{display:flex;align-items:flex-end;flex-wrap:wrap;gap:12px}
+.catalog-filter-fields>label{display:grid;gap:7px;flex:1 1 150px;color:var(--muted);font-size:12px}
+.catalog-filter-fields :is(input,select){width:100%;min-width:0;height:38px;padding:0 10px;border:1px solid var(--line);border-radius:7px;background:var(--panel2);color:var(--text);font:inherit;font-size:13px}
+.catalog-filter-actions{display:flex;gap:8px}
+.catalog-filter-actions button{height:38px;padding:0 16px;border-radius:7px}
+.catalog-filter-note{margin:12px 0 0;color:var(--muted);font-size:12px;line-height:1.6}
+.catalog-filter-note:empty{display:none}
+.catalog-filters .hidden{display:none}
+.catalog-filters :is(input,select,button):focus-visible{outline:2px solid var(--lilac);outline-offset:2px}
 
 /* Detail: a wide sheet with a tall still on top. */
 dialog#detailDialog{width:min(1100px,94vw);border:0;border-radius:10px;background:var(--ott-surface)}

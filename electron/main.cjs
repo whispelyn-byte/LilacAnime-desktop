@@ -9,6 +9,7 @@ const AdmZip = require('adm-zip');
 const { spawn } = require('child_process');
 const { pathToFileURL } = require('url');
 const { createFlixProxyUrl, createFlixAvProxyUrl, closeFlixProxy } = require('./flix-proxy.cjs');
+const { createCatalogBrowser } = require('./catalog-browser.cjs');
 const { detectOpEd } = require('./oped-fingerprint.cjs');
 const { DownloadManager } = require('./download-manager.cjs');
 const { Updater } = require('./updater.cjs');
@@ -134,6 +135,11 @@ function linkkfAnime(item = {}) {
 
 const LINKKF_SCHEDULE_TAGS = [21189, 21190, 21191, 21192, 21193, 21194, 21195]; // 월~일
 const LINKKF_SEASON_TYPES = { pv: 5086, movie: 5061, adult16: 5085 };
+async function linkkfFilterTags() {
+  const load = taxonomy => linkkfFetch(`${LINKKF_API}/link/api.php?taxonomy=${encodeURIComponent(taxonomy)}&limit=200&orderby=name&order=ASC`).then(root => (root.terms || []).map(term => ({ id: Number(term.tag_ID) || 0, name: String(term.name || '').trim(), count: Number(term.count) || 0 })).filter(tag => tag.id > 0 && tag.name)).catch(() => []);
+  const [formats, genres, years] = await Promise.all([load('anime-seasontype'), load('anigenres'), load('anime-seasonys')]);
+  return { formats, genres, years: years.reverse() };
+}
 async function linkkfFilter({ page = 1, limit = 20, seasonTypeIds = [], genreIds = [], yearIds = [] } = {}) {
   const params = new URLSearchParams({ page: String(Number(page) || 1), limit: String(Number(limit) || 20) });
   const ids = list => (Array.isArray(list) ? list : []).map(Number).filter(Boolean).join(',');
@@ -1960,11 +1966,7 @@ app.whenReady().then(async () => {
     const entries = await Promise.all(Object.entries(LINKKF_SEASON_TYPES).map(([key, tag]) => linkkfFilter({ page: 1, limit: 10, seasonTypeIds: [tag] }).then(result => [key, result.data]).catch(() => [key, []])));
     return Object.fromEntries(entries);
   });
-  ipcMain.handle('linkkf:filter-tags', async () => {
-    const load = taxonomy => linkkfFetch(`${LINKKF_API}/link/api.php?taxonomy=${encodeURIComponent(taxonomy)}&limit=200&orderby=name&order=ASC`).then(root => (root.terms || []).map(term => ({ id: Number(term.tag_ID) || 0, name: String(term.name || '').trim(), count: Number(term.count) || 0 })).filter(tag => tag.id > 0 && tag.name)).catch(() => []);
-    const [formats, genres, years] = await Promise.all([load('anime-seasontype'), load('anigenres'), load('anime-seasonys')]);
-    return { formats, genres, years: years.reverse() };
-  });
+  ipcMain.handle('linkkf:filter-tags', () => linkkfFilterTags());
   ipcMain.handle('linkkf:filter', (_, request) => linkkfFilter(request));
   ipcMain.handle('linkkf:search', async (_, query = '') => {
     const key = linkkfSearchKey(query); if (!key) return { data: [] };
@@ -2072,6 +2074,14 @@ app.whenReady().then(async () => {
   }
   ipcMain.handle('provider:season', (_, provider) => homeShows(provider,'season'));
   ipcMain.handle('provider:airing', (_, provider) => homeShows(provider,'airing'));
+  const catalogBrowser = createCatalogBrowser({
+    reanimeBase: REANIME_WEB, reanimeFetch: url => providerFetch(url, { json: true, referer: `${REANIME_WEB}/search` }), reanimeItems,
+    animenosubBase: ANIMENOSUB_WEB, animenosubFetch: url => providerFetch(url, { referer: `${ANIMENOSUB_WEB}/` }), animenosubItems: animenosubList,
+    linkkfTags: linkkfFilterTags, linkkfFilter, miruroApi, miruroItem,
+    linkaniBase: LINKANI_WEB, linkaniFetch, linkaniItems, ohliBase: OHLI24_WEB, ohliFetch, ohliItems
+  });
+  ipcMain.handle('catalog:facets', (_, provider) => catalogBrowser.facets(String(provider || '')));
+  ipcMain.handle('catalog:browse', (_, provider, request) => catalogBrowser.browse(String(provider || ''), request || {}));
   ipcMain.handle('provider:catalog', async (_, provider, query = '', offset = 0, sort = '') => {
     if (sort && !query) return sortedCatalog(provider, String(sort), offset);
     if (provider === 'reanime') {

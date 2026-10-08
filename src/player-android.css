@@ -74,6 +74,9 @@
 .ps-switch input:checked::after { transform: translateX(18px); }
 .ps-state { margin: 2px 0 6px; color: #ffffffa8; font-size: 12px; }
 .ps-label { margin: 10px 0 4px; color: #ffffffb8; font-size: 11px; }
+.ps-sync-input { display: flex; align-items: center; gap: 8px; margin: 8px 0; color: #ffffffb8; font-size: 12px; }
+.ps-sync-input input { width: 140px; padding: 8px; border: 1px solid #ffffff30; border-radius: 8px; background: #ffffff12; color: #fff; font: inherit; }
+.ps-sync-input input:focus-visible { outline: 2px solid #c8a2c8; outline-offset: 2px; }
 .ps-group { margin: 16px 0 2px; font-size: 12px; font-weight: 600; }
 .ps-note { display: block; color: #ffffff80; font-size: 10px; }
 .ps-chips { display: flex; flex-wrap: wrap; gap: 5px; }

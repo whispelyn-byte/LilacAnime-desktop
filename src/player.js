@@ -67,6 +67,7 @@ function syncPlayerSettingsUI() {
   $('#psSubtitlePosition').value = String(position); $('#psPositionLabel').textContent = `${position}%`;
   $('#psVttOutline').value = String(outline); $('#psOutlineLabel').textContent = `${outline.toFixed(1)}px`;
   $('#psSyncLabel').textContent = sync ? `${sync > 0 ? '+' : ''}${(sync / 1000).toFixed(2)}초 (${sync > 0 ? '늦게' : '빠르게'})` : '0초';
+  $('#psSubtitleSync').value = String(sync);
   $('#psVttStyle').checked = playerFlag('vttStyle');
   $('#psVttBold').checked = localStorage.getItem('vttBold') !== 'false';
   const fontFile = localStorage.getItem('subtitleFontPath') || '';
@@ -146,6 +147,13 @@ function setSubtitleSetting(key, value) {
   if (page) { const [input, label, format] = page; if ($(input)) $(input).value = String(value); if ($(label)) $(label).textContent = format(value); }
   if (key === 'vttBold' && $('#vttBold')) $('#vttBold').checked = Boolean(value);
   syncPlayerSettingsUI();
+}
+function setSubtitleSync(value) {
+  if (String(value).trim() === '' || !Number.isFinite(Number(value))) return false;
+  const milliseconds = Math.round(Number(value));
+  setSubtitleSetting('subtitleSync', milliseconds);
+  window.LilacAss?.setOffset(milliseconds); applyVttLayout();
+  return true;
 }
 
 // VTT placement and sync. Android moves the cue baseline up by "자막 위치" percent and shifts every cue by the
@@ -632,8 +640,8 @@ function handlePlayerKey(event) {
   // for moving the focus with a remote.)
   if (letter === 'c') { const box = $('#subtitleEnabled'); box.checked = !box.checked; box.dispatchEvent(new Event('change')); toast(box.checked ? '자막을 켰어요' : '자막을 껐어요'); return; }
   if (letter === 'z' || letter === 'x') {
-    const next = Math.max(-5000, Math.min(5000, Number(localStorage.getItem('subtitleSync') || 0) + (letter === 'z' ? -500 : 500)));
-    setSubtitleSetting('subtitleSync', next); window.LilacAss?.setOffset(next); applyVttLayout();
+    const next = Number(localStorage.getItem('subtitleSync') || 0) + (letter === 'z' ? -500 : 500);
+    setSubtitleSync(next);
     toast(`자막 싱크 ${next > 0 ? '+' : ''}${(next / 1000).toFixed(1)}초 (${next < 0 ? '자막이 빨리 나옴' : next > 0 ? '자막이 늦게 나옴' : '원래대로'})`); return;
   }
   if (letter === 's') { const skip = $('#skipNow'); if (skip && !skip.classList.contains('hidden')) skip.click(); else toast('지금은 건너뛸 OP/ED 구간이 아니에요'); return; }
@@ -685,11 +693,12 @@ $('#psAutoPlay').onchange = event => localStorage.setItem('playerAutoPlay', Stri
 $('#psSkipButton').onchange = event => { localStorage.setItem('playerSkipButton', String(event.target.checked)); updateSkipState($('#video')); };
 $('#psAutoSkip').onchange = event => localStorage.setItem('playerAutoSkip', String(event.target.checked));
 $$('#psSubtitleSources button').forEach(button => button.onclick = () => selectSubtitleSource(button.dataset.source));
+$('#psSubtitleSync').onchange = event => { setSubtitleSync(event.target.value); syncPlayerSettingsUI(); };
 $('#psSubtitleSize').oninput = event => { setSubtitleSetting('subtitleSize', event.target.value); applyCueStyle(); };
 $('#psSubtitlePosition').oninput = event => { setSubtitleSetting('subtitlePosition', event.target.value); applyVttLayout(); };
 $$('[data-ps-sync]').forEach(button => button.onclick = () => {
-  const delta = Number(button.dataset.psSync), current = Number(localStorage.getItem('subtitleSync') || 0), next = delta === 0 ? 0 : Math.max(-5000, Math.min(5000, current + delta));
-  setSubtitleSetting('subtitleSync', next); window.LilacAss?.setOffset(next); applyVttLayout();
+  const delta = Number(button.dataset.psSync), current = Number(localStorage.getItem('subtitleSync') || 0);
+  setSubtitleSync(delta === 0 ? 0 : current + delta);
 });
 $('#psVttStyle').onchange = event => { localStorage.setItem('vttStyle', String(event.target.checked)); applyCueStyle(); };
 $('#psVttBold').onchange = event => { setSubtitleSetting('vttBold', event.target.checked); applyCueStyle(); };

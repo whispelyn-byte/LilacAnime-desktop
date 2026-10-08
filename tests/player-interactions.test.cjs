@@ -101,6 +101,22 @@ test('VTT dialogue stays centered within a safe width and retains sync and top p
   assert.equal(cues[1].line, 5); assert.equal(cues[1].lineAlign, 'start');
 });
 
+test('subtitle sync accepts large positive and negative values without the old 5-second cap', () => {
+  const h = setup(), offsets = [], cue = { startTime: 120, endTime: 125 };
+  h.video.textTracks = [{ cues: [cue] }]; h.context.flattenVttCues = () => {}; h.context.vttBaseline = () => 85;
+  h.context.setSubtitleSetting = (key, value) => h.storage.set(key, String(value));
+  h.context.toast = () => {};
+  h.context.window.LilacAss = { setOffset: value => offsets.push(value) };
+  vm.runInContext(section('function applyVttLayout()', '// Android subtitle source chips'), h.context);
+  vm.runInContext(section('function setSubtitleSync(', '// VTT placement and sync'), h.context);
+  assert.equal(h.context.setSubtitleSync(90000), true); assert.equal(cue.startTime, 210); assert.equal(offsets.at(-1), 90000);
+  assert.equal(h.context.setSubtitleSync(-90000), true); assert.equal(cue.startTime, 30); assert.equal(offsets.at(-1), -90000);
+  assert.equal(h.context.setSubtitleSync(Infinity), false); assert.equal(h.context.setSubtitleSync(''), false); assert.equal(cue.startTime, 30);
+  h.context.setSubtitleSync(5500);
+  h.context.handlePlayerKey({ key: 'x', code: 'KeyX', preventDefault() {} });
+  assert.equal(h.storage.get('subtitleSync'), '6000');
+});
+
 test('PIP wraps long Korean and unspaced Japanese text, including explicit newlines', () => {
   const h = setup(); vm.runInContext(section('function vttLines(', '// VTT cues drawn'), h.context);
   const ctx = { measureText: value => ({ width: [...value].length * 10 }) };
