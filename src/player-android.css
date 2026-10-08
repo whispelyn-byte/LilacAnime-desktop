@@ -120,6 +120,8 @@
 
 /* Video + ASS canvas wrapper. */
 .video-stage { position: absolute; inset: 0; }
+.player-speed-boost { position: absolute; top: 90px; left: 50%; transform: translateX(-50%); z-index: 3; padding: 8px 18px; border-radius: 20px; background: #000b; color: #fff; font-weight: 700; pointer-events: none; }
+.player-speed-boost.hidden { display: none; }
 
 /* Picture-in-picture source: composed frames with subtitles; it only has to exist in the page. */
 .pip-source { position: fixed; left: 0; top: 0; width: 2px; height: 2px; opacity: 0; pointer-events: none; }

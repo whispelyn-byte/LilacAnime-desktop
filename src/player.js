@@ -10,6 +10,25 @@ window.addEventListener('keydown', () => { usingKeyboard = true; }, true);
 window.addEventListener('pointerdown', () => { usingKeyboard = false; }, true);
 const autoSkipState = { enteredKey: null, enteredAt: 0, skippedKey: null };
 
+const PLAYER_ASPECTS = { original: 0, '16:9': 16 / 9, '21:9': 21 / 9, '4:3': 4 / 3, fill: 0 };
+function playerAspect() {
+  const value = localStorage.getItem('playerAspect') || 'original';
+  return Object.hasOwn(PLAYER_ASPECTS, value) ? value : 'original';
+}
+function applyPlayerAspect() {
+  const player = $('#immersivePlayer'), stage = $('#videoStage'), aspect = playerAspect();
+  const ratio = PLAYER_ASPECTS[aspect], width = player.clientWidth, height = player.clientHeight;
+  const fittedWidth = ratio ? Math.min(width, height * ratio) : width;
+  const fittedHeight = ratio ? fittedWidth / ratio : height;
+  stage.style.width = `${fittedWidth}px`; stage.style.height = `${fittedHeight}px`;
+  stage.style.left = `${(width - fittedWidth) / 2}px`; stage.style.top = `${(height - fittedHeight) / 2}px`;
+  $('#video').style.objectFit = aspect === 'original' ? 'contain' : 'fill';
+  $$('#psAspects button').forEach(button => { const selected = button.dataset.aspect === aspect; button.classList.toggle('selected', selected); button.setAttribute('aria-pressed', String(selected)); });
+  window.LilacAss?.resize();
+}
+new ResizeObserver(applyPlayerAspect).observe($('#immersivePlayer'));
+$('#video').addEventListener('loadedmetadata', applyPlayerAspect);
+
 function playerSettingsOpen() { return $('#playerSettings').classList.contains('open'); }
 // The sheet is split into 재생 / 자막 / 자막 모양; the tab used last opens next time.
 function showPlayerSettingsTab(name) {
@@ -22,6 +41,7 @@ function showPlayerSettingsTab(name) {
 $$('[data-ps-tab]').forEach(button => button.onclick = () => showPlayerSettingsTab(button.dataset.psTab));
 showPlayerSettingsTab((() => { try { return localStorage.getItem('playerSettingsTab'); } catch { return null; } })() || 'play');
 function openPlayerSettings(open, focusSection = null) {
+  if (open) finishSpaceHold(false);
   const panel = $('#playerSettings');
   panel.classList.toggle('open', open); panel.setAttribute('aria-hidden', String(!open));
   $('#playerSettingsButton').setAttribute('aria-expanded', String(open));
@@ -184,6 +204,8 @@ function applyVttLayout() {
     cue.startTime = Math.max(0, cue.lilacStart + offset); cue.endTime = Math.max(0, cue.lilacEnd + offset);
     // Top cues (captions, signs) keep a small margin from the top; the rest sit on the subtitle line.
     cue.snapToLines = false; cue.line = cue.lilacTop ? 5 : line; cue.lineAlign = cue.lilacTop ? 'start' : 'end';
+    // Keep dialogue inside the picture even with large text or a narrow window.
+    cue.size = 90; cue.position = 50; cue.positionAlign = 'center'; cue.align = 'center';
   }
 }
 
@@ -348,6 +370,7 @@ function updateSkipState(video) {
 }
 
 function setPlayerLocked(locked) {
+  if (locked) finishSpaceHold(false);
   playerLocked = locked; clearTimeout(unlockTimer);
   $('#immersivePlayer').classList.toggle('locked', locked);
   $('#unlockPlayer').classList.add('hidden');
@@ -405,7 +428,16 @@ function vttLines(ctx, text, maxWidth) {
   return plain.split(/\r?\n/).flatMap(line => {
     const words = line.split(' '), lines = [];
     let current = '';
-    for (const word of words) { const next = current ? `${current} ${word}` : word; if (current && ctx.measureText(next).width > maxWidth) { lines.push(current); current = word; } else current = next; }
+    for (const word of words) {
+      const next = current ? `${current} ${word}` : word;
+      if (ctx.measureText(next).width <= maxWidth) { current = next; continue; }
+      if (current) { lines.push(current); current = ''; }
+      // Long words and Japanese lines without spaces also need to fit.
+      for (const character of word) {
+        if (current && ctx.measureText(current + character).width > maxWidth) { lines.push(current); current = ''; }
+        current += character;
+      }
+    }
     return current ? [...lines, current] : lines;
   });
 }
@@ -428,8 +460,10 @@ function drawPipCues(ctx, width, height, video) {
 }
 function drawPipFrame() {
   const video = $('#video'), canvas = pip.canvas, ctx = canvas.getContext('2d');
-  const sourceWidth = video.videoWidth || 1280, sourceHeight = video.videoHeight || 720, scale = Math.min(1, 1280 / sourceWidth);
-  const width = Math.round(sourceWidth * scale), height = Math.round(sourceHeight * scale);
+  const sourceWidth = video.videoWidth || 1280, sourceHeight = video.videoHeight || 720;
+  const aspect = playerAspect(), player = $('#immersivePlayer');
+  const ratio = PLAYER_ASPECTS[aspect] || (aspect === 'fill' && player.clientHeight ? player.clientWidth / player.clientHeight : sourceWidth / sourceHeight);
+  const width = Math.min(sourceWidth, 1280), height = Math.max(1, Math.round(width / ratio));
   if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
   ctx.fillStyle = '#000'; ctx.fillRect(0, 0, width, height);
   if (video.readyState >= 2) ctx.drawImage(video, 0, 0, width, height);
@@ -519,12 +553,45 @@ function moveFocus(direction, root = document.body) {
   best.focus(); best.scrollIntoView({ block: 'nearest', inline: 'nearest' }); return true;
 }
 
+// Delay the short-press action until release so a hold never pauses the video first.
+let spaceHold = null;
+function startSpaceHold(event) {
+  event.preventDefault();
+  if (event.repeat || spaceHold) return;
+  const video = $('#video'), hold = { boosted: false, rate: video.playbackRate, timer: null };
+  spaceHold = hold;
+  hold.timer = setTimeout(() => {
+    if (spaceHold !== hold || video.paused || video.ended || playerLocked || !document.body.classList.contains('player-mode')) return;
+    hold.boosted = true; video.playbackRate = 2;
+    $('#playerSpeedBoost').classList.remove('hidden');
+  }, 400);
+}
+function finishSpaceHold(toggle = false) {
+  const hold = spaceHold; if (!hold) return;
+  spaceHold = null; clearTimeout(hold.timer);
+  const video = $('#video');
+  $('#playerSpeedBoost').classList.add('hidden');
+  if (hold.boosted) {
+    // A speed selected during a hold takes precedence over the temporary boost.
+    if (video.playbackRate === 2) video.playbackRate = hold.rate;
+  } else if (toggle && !playerLocked && document.body.classList.contains('player-mode')) {
+    video.paused ? video.play().catch(() => {}) : video.pause(); showPlayerControls();
+  }
+}
+window.addEventListener('keyup', event => {
+  if ((event.code === 'Space' || event.key === ' ') && spaceHold) { event.preventDefault(); finishSpaceHold(true); }
+});
+window.addEventListener('blur', () => finishSpaceHold(false));
+document.addEventListener('visibilitychange', () => { if (document.hidden) finishSpaceHold(false); });
+for (const name of ['pause', 'ended', 'emptied', 'loadstart']) $('#video').addEventListener(name, () => finishSpaceHold(false));
+
 function handlePlayerKey(event) {
   const video = $('#video'), key = event.key, player = $('#immersivePlayer');
   if (playerLocked) { event.preventDefault(); flashUnlockButton(); return; }
   const focusInPlayer = player.contains(document.activeElement) && document.activeElement !== video;
-  const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName) && !['checkbox', 'range'].includes(document.activeElement?.type);
+  const typing = document.activeElement?.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName) && !['checkbox', 'range'].includes(document.activeElement?.type);
   if (key === 'Escape' || key === 'BrowserBack' || key === 'GoBack') {
+    finishSpaceHold(false);
     event.preventDefault();
     // Esc steps back one level: the settings sheet, then full screen (to the window), then out of the player. The mouse's
     // back button goes straight out.
@@ -548,7 +615,13 @@ function handlePlayerKey(event) {
     video.currentTime = Math.min(video.duration || Infinity, Math.max(0, video.currentTime + seconds)); showPlayerControls(); return;
   }
   if (arrow) { event.preventDefault(); showPlayerControls(); $('#togglePlayer').focus(); return; }
-  if (key === ' ' || key === 'MediaPlayPause' || ((key === 'Enter') && !focusInPlayer)) { event.preventDefault(); video.paused ? video.play() : video.pause(); showPlayerControls(); return; }
+  if (event.code === 'Space' || key === ' ') {
+    if (event.ctrlKey || event.altKey || event.metaKey || event.isComposing) return;
+    // Settings controls keep their normal keyboard activation.
+    if (playerSettingsOpen() || document.activeElement?.matches('input, select, textarea, [contenteditable]')) return;
+    startSpaceHold(event); return;
+  }
+  if (key === 'MediaPlayPause' || ((key === 'Enter') && !focusInPlayer)) { event.preventDefault(); if (!event.repeat) { video.paused ? video.play() : video.pause(); showPlayerControls(); } return; }
   // Letter keys by where they are on the keyboard (event.code), not the character: with the Korean input on, C gives
   // 'ㅊ' and F 'ㄹ', and the shortcuts did nothing.
   const letter = event.ctrlKey || event.altKey || event.metaKey ? '' : /^Key[A-Z]$/.test(event.code) ? event.code.slice(3).toLowerCase() : /^(?:Digit|Numpad)[0-9]$/.test(event.code) ? event.code.slice(-1) : event.code === 'BracketLeft' ? '[' : event.code === 'BracketRight' ? ']' : key.toLowerCase();
@@ -566,6 +639,7 @@ function handlePlayerKey(event) {
   if (letter === 's') { const skip = $('#skipNow'); if (skip && !skip.classList.contains('hidden')) skip.click(); else toast('지금은 건너뛸 OP/ED 구간이 아니에요'); return; }
   if (/^[0-9]$/.test(letter) && video.duration) { video.currentTime = video.duration * Number(letter) / 10; showPlayerControls(); return; }
   if (letter === '[' || letter === ']') {
+    finishSpaceHold(false);
     const at = SPEED_OPTIONS.indexOf(video.playbackRate), next = SPEED_OPTIONS[Math.max(0, Math.min(SPEED_OPTIONS.length - 1, (at < 0 ? SPEED_OPTIONS.indexOf(1) : at) + (letter === ']' ? 1 : -1)))];
     video.playbackRate = next; $('#speed').value = String(next); if (playerSettingsOpen()) syncPlayerSettingsUI(); toast(`재생 속도 ${next.toFixed(2)}x`); return;
   }
@@ -622,6 +696,7 @@ $('#psVttBold').onchange = event => { setSubtitleSetting('vttBold', event.target
 $('#psVttOutline').oninput = event => { setSubtitleSetting('vttOutline', event.target.value); applyCueStyle(); };
 $('#psChooseFont').onclick = () => $('#chooseSubtitleFont').click();
 $$('#psSpeeds button').forEach(button => button.onclick = () => {
+  finishSpaceHold(false);
   const speed = Number(button.dataset.speed), video = $('#video');
   video.playbackRate = speed; $('#speed').value = String(speed); localStorage.setItem('defaultSpeed', String(speed));
   const index = SPEED_OPTIONS.indexOf(speed); if (index >= 0 && $('#defaultSpeed')) { $('#defaultSpeed').value = String(index); $('#speedLabel').textContent = `${speed.toFixed(2)}x`; }
@@ -631,8 +706,11 @@ $('#previousEpisode').onclick = () => playSiblingEpisode(siblingEpisode(-1));
 $('#nextEpisode').onclick = () => playSiblingEpisode(siblingEpisode(1));
 $('#lockPlayer').onclick = () => setPlayerLocked(true);
 $('#playerBack').addEventListener('click', () => { if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {}); if ('mediaSession' in navigator) { navigator.mediaSession.metadata = null; navigator.mediaSession.playbackState = 'none'; } });
+$('#playerBack').addEventListener('click', () => finishSpaceHold(false));
+$$('#psAspects button').forEach(button => button.onclick = () => { localStorage.setItem('playerAspect', button.dataset.aspect); applyPlayerAspect(); });
 $('#unlockPlayer').onclick = event => { event.stopPropagation(); setPlayerLocked(false); };
 // Settings stay open while the pointer is on them; a click on the video closes them (Android dropdown).
 $('#playerSettings').addEventListener('pointerdown', event => event.stopPropagation());
 $('#video').addEventListener('ratechange', () => { if (playerSettingsOpen()) syncPlayerSettingsUI(); });
 syncPlayerSettingsUI();
+applyPlayerAspect();

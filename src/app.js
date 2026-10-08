@@ -83,6 +83,7 @@ function toast(message) { const el=$('#toast'); el.textContent=message; el.class
 // the player keeps the size it has now.
 function enterPlayer(){const already=$('.view.active')?.id==='playerView';switchView('player');if(!already)playerWindowFullscreen=(localStorage.getItem('playerStart')||'fullscreen')!=='window';setPlayerWindowed();window.lilac.setPlayerFullscreen(playerWindowFullscreen)}
 function switchView(name) {
+  if(name!=='player'&&typeof finishSpaceHold==='function')finishSpaceHold(false);
   const current=$('.view.active')?.id?.replace(/View$/,'');
   if(name==='player'&&current&&current!=='player')viewBeforePlayer=current;
   document.body.classList.toggle('player-mode',name==='player');
@@ -824,13 +825,14 @@ async function loadOpEdSegments(){const title=$('#skipTitle').value.trim(),episo
 // video height at 100%, bold by default. mpv measures the outline in pixels of a 720-line screen, so it grows
 // with the picture. "VTT 원본 스타일" keeps the cue's own italics/bold/colour tags.
 let cueFamily="'Malgun Gothic',sans-serif";
-function vttVideoHeight(){const video=$('#video'),width=video.clientWidth,height=video.clientHeight;return video.videoWidth&&width&&height?Math.min(height,width*video.videoHeight/video.videoWidth):height||720}
+function vttVideoHeight(){const video=$('#video'),width=video.clientWidth,height=video.clientHeight;return video.style.objectFit==='fill'?height||720:video.videoWidth&&width&&height?Math.min(height,width*video.videoHeight/video.videoWidth):height||720}
 function renderCueStyle(){
   let style=$('#cueStyle');if(!style){style=document.createElement('style');style.id='cueStyle';document.head.append(style)}
   const size=Number(localStorage.getItem('subtitleSize')||100),bold=localStorage.getItem('vttBold')!=='false',keepStyle=localStorage.getItem('vttStyle')!=='false';
   const outline=Math.max(0,Number(localStorage.getItem('vttOutline')??2))*vttVideoHeight()/720;
+  const fontSize=vttVideoHeight()*0.05*size/100;
   const ring=outline?[...Array(16)].map((_,i)=>{const a=i*Math.PI/8;return `${(Math.cos(a)*outline).toFixed(2)}px ${(Math.sin(a)*outline).toFixed(2)}px 0 #000`}).join(','):'none';
-  style.textContent=`video::cue{font-family:${cueFamily};font-size:${size}%;font-weight:${bold?'700':'400'};color:#fff;background:transparent;text-shadow:${ring}}${keepStyle?'':'video::cue(i),video::cue(b),video::cue(u),video::cue(c){font-style:normal;font-weight:inherit;text-decoration:none;color:inherit}'}`;
+  style.textContent=`video::cue{font-family:${cueFamily};font-size:${fontSize}px;white-space:pre-line;font-weight:${bold?'700':'400'};color:#fff;background:transparent;text-shadow:${ring}}${keepStyle?'':'video::cue(i),video::cue(b),video::cue(u),video::cue(c){font-style:normal;font-weight:inherit;text-decoration:none;color:inherit}'}`;
 }
 async function applyCueStyle(){let family="'Malgun Gothic',sans-serif";const font=await subtitleFontData();if(font){try{const face=new FontFace('LilacSubtitle',font.data);await face.load();[...document.fonts].filter(font=>font.family==='LilacSubtitle').forEach(font=>document.fonts.delete(font));document.fonts.add(face);family="LilacSubtitle,'Malgun Gothic',sans-serif"}catch{}}cueFamily=family;renderCueStyle()}
 new ResizeObserver(()=>renderCueStyle()).observe($('#video'));$('#video').addEventListener('loadedmetadata',()=>renderCueStyle());

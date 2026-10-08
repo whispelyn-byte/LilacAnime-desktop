@@ -36,8 +36,13 @@ async function attach(video, { subUrl, fonts = [], defaultFont = null, offsetMs 
     options.defaultFont = family;
   }
   const created = new JASSUB(options);
+  // JASSUB assumes object-fit: contain; stretched video uses the entire element.
+  const originalBounds = created._getElementBoundingBox.bind(created);
+  created._getElementBoundingBox = (element, width, height) => element === video && video.style.objectFit === 'fill'
+    ? { x: element.offsetLeft, y: element.offsetTop, width: element.clientWidth, height: element.clientHeight }
+    : originalBounds(element, width, height);
   instance = created; fontUrl = url;
-  try { await created.ready; } catch (error) { if (token === generation) { instance = null; fontUrl = null; } await release(created, url); throw error; }
+  try { await created.ready; if (token === generation) await created.resize(); } catch (error) { if (token === generation) { instance = null; fontUrl = null; } await release(created, url); throw error; }
   if (token !== generation) { await release(created, url); return false; }
   setOffset(offsetMs);
   setVisible(visible);
@@ -63,5 +68,6 @@ function frame(video) {
   return instance._canvas;
 }
 
-window.LilacAss = { attach, destroy, setVisible, setOffset, frame, get active() { return Boolean(instance); } };
+function resize() { const active = instance; active?.ready.then(() => { if (instance === active) return active.resize(); }).catch(() => {}); }
+window.LilacAss = { attach, destroy, setVisible, setOffset, frame, resize, get active() { return Boolean(instance); } };
 window.dispatchEvent(new Event('lilac-ass-ready'));

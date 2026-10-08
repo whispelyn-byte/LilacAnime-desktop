@@ -91,6 +91,7 @@
       <section id="playerView" class="view">
         <div id="immersivePlayer" class="immersive-player controls-visible">
           <div id="videoStage" class="video-stage"><video id="video" playsinline preload="auto"></video></div>
+          <div id="playerSpeedBoost" class="player-speed-boost hidden" role="status">2배속</div>
           <div id="playerEmpty" class="player-loading"><span class="player-spinner"></span><p>영상을 준비하고 있어요</p></div>
           <div class="player-shade player-shade-top"></div><div class="player-shade player-shade-bottom"></div>
           <header class="player-top">
@@ -133,11 +134,12 @@
                 <section id="psServers" class="ps-section hidden"><p class="ps-group">영상 서버</p><small class="ps-note">영상이 안 나오거나 자꾸 끊기면 다른 서버를 골라 보세요. 보통은 자동이 알맞게 고릅니다.</small><small id="psServerNote" class="ps-note ps-playing"></small><div id="psServerList" class="ps-server-list"></div></section><section id="psQuality" class="ps-section hidden"><p class="ps-group">화질</p><small class="ps-note">숫자가 클수록 선명하지만, 인터넷이 느리면 끊길 수 있어요.</small><div id="psQualityList" class="ps-chips"></div></section>
                 <div class="ps-row ps-speed"><span><b>재생 속도</b><small id="psSpeedLabel">1.00x</small></span><div id="psSpeeds" class="ps-chips"><button type="button" data-speed="0.75">0.75x</button><button type="button" data-speed="1">1.00x</button><button type="button" data-speed="1.25">1.25x</button><button type="button" data-speed="1.5">1.50x</button><button type="button" data-speed="2">2.00x</button></div></div>
                 <small id="psSeekNote" class="ps-note">뒤로/앞으로 버튼 이동: 10초</small>
+                <section class="ps-section"><p class="ps-group">화면 비율</p><div id="psAspects" class="ps-chips"><button type="button" data-aspect="original">원본</button><button type="button" data-aspect="16:9">16:9</button><button type="button" data-aspect="21:9">21:9</button><button type="button" data-aspect="4:3">4:3</button><button type="button" data-aspect="fill">화면 채우기</button></div><small class="ps-note">선택한 비율로 영상을 늘립니다. 화면 채우기는 창이나 모니터에 맞춰 여백 없이 늘립니다.</small></section>
                 <p class="ps-group">자동 재생 · 건너뛰기</p>
                 <label class="ps-switch"><span><b>다음 화 자동재생</b><small>영상이 끝나면 다음 화를 재생합니다</small></span><input id="psAutoPlay" type="checkbox"></label>
                 <label class="ps-switch"><span><b>오프닝·엔딩 건너뛰기 버튼</b><small>오프닝(OP)·엔딩(ED) 노래가 나오면 건너뛰기 버튼을 띄웁니다</small></span><input id="psSkipButton" type="checkbox"></label>
                 <label class="ps-switch"><span><b>오프닝·엔딩 자동으로 건너뛰기</b><small>버튼을 누르지 않아도 알아서 넘어갑니다</small></span><input id="psAutoSkip" type="checkbox"></label>
-                <p class="ps-shortcuts"><b>단축키</b> Space 재생/정지 · ←/→ 탐색 · 0~9 위치 · [ ] 속도 · C 자막 켜기/끄기 · Z/X 자막 싱크 · S 오프닝·엔딩 건너뛰기 · F 전체 화면 · M 음소거 · PageUp/PageDown 이전/다음 화</p>
+                <p class="ps-shortcuts"><b>단축키</b> Space 짧게 재생/정지 · 길게 누르는 동안 2배속 · ←/→ 탐색 · 0~9 위치 · [ ] 속도 · C 자막 켜기/끄기 · Z/X 자막 싱크 · S 오프닝·엔딩 건너뛰기 · F 전체 화면 · M 음소거 · PageUp/PageDown 이전/다음 화</p>
               </div>
               <div class="ps-pane" data-ps-pane="subtitle" role="tabpanel">
                 <label class="ps-switch"><span><b>자막 표시</b><small>끄면 자막을 숨깁니다</small></span><input id="subtitleEnabled" type="checkbox" checked></label>
