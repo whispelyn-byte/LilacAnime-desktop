@@ -54,7 +54,7 @@
         <div id="pvSection" class="content-section hidden"><div class="section-title"><div><h2>PV · 트레일러</h2></div></div><div id="pvRail" class="poster-rail"></div></div>
         <div id="movieSection" class="content-section hidden"><div class="section-title"><div><h2>극장판</h2></div></div><div id="movieRail" class="poster-rail"></div></div>
         <div id="adultSection" class="content-section hidden"><div class="section-title"><div><h2>16+ 애니</h2></div></div><div id="adultRail" class="poster-rail"></div></div>
-        <div class="content-section"><div class="section-title"><div><h2 id="seasonTitle">이번 시즌 신작</h2></div><button id="seeAllSeason" class="text-btn">전체 보기 →</button></div><div id="seasonRail" class="poster-rail loading-cards"></div></div>
+        <div class="content-section"><div class="section-title"><div><h2 id="seasonTitle">이번 시즌 신작</h2></div><div id="homeOrder" class="sort-chips" role="radiogroup" aria-label="홈 작품 정렬"><button type="button" data-order="season" role="radio" aria-checked="true" class="selected">이번 시즌</button><button type="button" data-order="updated" role="radio" aria-checked="false">최근 업데이트순</button></div><button id="seeAllSeason" class="text-btn">전체 보기 →</button></div><p id="homeOrderNote" class="catalog-filter-note hidden" role="status"></p><div id="seasonRail" class="poster-rail loading-cards"></div></div>
         <div id="airingSection" class="content-section hidden"><div class="section-title"><div><h2>방영 중</h2></div><button id="seeAllAiring" class="text-btn">전체 보기 →</button></div><div id="airingRail" class="poster-rail"></div></div>
         <div class="content-section"><div class="section-title"><div><h2>인기 순위</h2></div><button id="seeAllTop" class="text-btn">전체 보기 →</button></div><div id="topRail" class="poster-rail loading-cards"></div></div>
       </section>
@@ -97,7 +97,7 @@
       <section id="libraryView" class="view">
         <div class="page-head library-head"><div><h1>내 목록</h1><p>저장한 작품과 오프라인 회차를 관리하세요.</p></div><button id="openDownloadFolder" class="ghost download-folder">다운로드 폴더 열기</button></div>
         <div class="library-tabs" role="tablist"><button class="selected" data-library-tab="saved">내 목록</button><button data-library-tab="downloads">다운로드 완료 <span id="downloadCount">0</span></button></div>
-        <div id="savedLibraryPanel"><div id="libraryGrid" class="poster-grid"></div><div id="emptyLibrary" class="empty-state"><div><svg class="empty-heart-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 9c0 5-8.5 10-8.5 10S3.5 14 3.5 9A4.5 4.5 0 0 1 12 7a4.5 4.5 0 0 1 8.5 2Z"/></svg></div><h2>아직 담은 작품이 없어요</h2><p>작품의 하트 버튼을 눌러 내 목록에 추가해 보세요.</p><button class="primary" data-goto="home">작품 둘러보기</button></div></div>
+        <div id="savedLibraryPanel"><div id="libraryOrder" class="sort-chips" role="radiogroup" aria-label="내 목록 정렬"><button type="button" data-order="saved" role="radio" aria-checked="true" class="selected">저장순</button><button type="button" data-order="updated" role="radio" aria-checked="false">최근 업데이트순</button></div><p id="libraryOrderNote" class="catalog-filter-note hidden" role="status"></p><div id="libraryGrid" class="poster-grid"></div><div id="emptyLibrary" class="empty-state"><div><svg class="empty-heart-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 9c0 5-8.5 10-8.5 10S3.5 14 3.5 9A4.5 4.5 0 0 1 12 7a4.5 4.5 0 0 1 8.5 2Z"/></svg></div><h2>아직 담은 작품이 없어요</h2><p>작품의 하트 버튼을 눌러 내 목록에 추가해 보세요.</p><button class="primary" data-goto="home">작품 둘러보기</button></div></div>
         <div id="downloadsPanel" class="hidden"><div class="download-toolbar"><span id="downloadRootText" class="download-root"></span><div class="download-toolbar-actions"><button id="changeDownloadRoot" type="button" class="text-btn">저장 폴더 바꾸기</button><button id="clearDownloads" type="button" class="text-btn danger-text">목록 비우기</button></div></div><div id="downloadList" class="download-list"></div><div id="emptyDownloads" class="empty-state"><div><svg class="empty-download-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11m0 0 4-4m-4 4-4-4M5 15v4h14v-4"/></svg></div><h2>다운로드한 회차가 없어요</h2><p>작품 상세 화면의 저장 버튼으로 오프라인 회차를 추가하세요.</p></div></div>
       </section>
 
@@ -247,8 +247,10 @@
   <div id="updateBanner" class="update-banner hidden" role="status"><span id="updateBannerText"></span><button id="updateBannerAction" class="primary"></button><button id="updateBannerClose" class="text-btn" aria-label="닫기">×</button></div>
   <div id="toast" class="toast"></div>
   <script src="../node_modules/hls.js/dist/hls.min.js"></script>
+  <script src="anime-metadata.js"></script>
   <script src="app.js"></script>
   <script src="catalog-browser.js"></script>
+  <script src="catalog-updates.js"></script>
   <script src="player.js"></script>
   <script src="ott.js"></script>
   <script type="module" src="ass-renderer.js"></script>

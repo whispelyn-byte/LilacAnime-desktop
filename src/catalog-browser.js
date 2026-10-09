@@ -47,7 +47,7 @@ const catalogBrowser = (() => {
       const genre = taxonomy.genres.find(item => item.value === filters.genre)?.name, format = taxonomy.formats.find(item => item.value === filters.format)?.name;
       const year = taxonomy.yearOptions.find(item => item.value === filters.year)?.name || (filters.year ? `${filters.year}년` : '');
       const season = filters.season ? `${['WINTER', 'SPRING', 'SUMMER', 'FALL'].indexOf(filters.season) + 1}분기` : '';
-      $('#allStatus').textContent = `${[genre, format, year, season].filter(Boolean).join(' · ')} · ${current.items.length}${current.total != null ? ` / ${current.total}` : ''}개 작품`;
+      $('#allStatus').textContent = `${[genre, format, year, season].filter(Boolean).join(' · ')} · ${current.items.length}${current.total != null ? ` / ${current.total}` : ''}개 작품${result.note ? ` · ${result.note}` : ''}`;
     } catch (error) { if (current === currentPage() && active()) $('#allStatus').textContent = `작품을 불러오지 못했습니다: ${error.message}`; }
     finally { current.loading = false; if (current === currentPage() && active()) render(); }
   }

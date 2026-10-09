@@ -95,3 +95,22 @@ test('Ohli format selection continues into its finished archive', async () => {
   await h.browser.browse('ohli24', { format: 'Movie', offset: first.nextOffset });
   assert.equal(h.requests[1], 'https://ohli.test/finished/1-1.html');
 });
+
+test('RE latest filters preserve release order from the complete catalog', async () => {
+  const data = [{ mal_id: 'fall', year: 2026, season: 'FALL', type: 'TV', genres: [{ name: 'Action' }] }, { mal_id: 'winter', year: 2026, season: 'WINTER', type: 'TV', genres: [{ name: 'Comedy' }] }];
+  const h = setup({ reanimeReleaseItems: () => data });
+  const result = await h.browser.browse('reanime', { sort: 'year', year: '2026', genre: 'Action' });
+  assert.deepEqual(result.data.map(item => item.mal_id), ['fall']); assert.equal(result.total, 1);
+  const pending = setup({ reanimeReleaseItems: () => null });
+  await assert.rejects(pending.browser.browse('reanime', { sort: 'year' }), /분기 정보/);
+});
+
+test('filtered updates use native update order and only matching recent episodes', async () => {
+  const h = setup({ updates: { snapshot: async () => [{ mal_id: 'match', year: 2026, season: 'FALL', type: 'TV', genres: [{ name: 'Action' }] }, { mal_id: 'outside', year: 2025, season: 'FALL', type: 'TV', genres: [{ name: 'Action' }] }] } });
+  const result = await h.browser.browse('reanime', { sort: 'updated', year: '2026', genre: 'Action' });
+  assert.deepEqual(result.data.map(item => item.mal_id), ['match']); assert.equal(result.total, 1);
+  await h.browser.browse('animenosub', { sort: 'updated', genre: 'action' });
+  assert.equal(new URL(h.requests.at(-1)).searchParams.get('order'), 'update');
+  await h.browser.browse('miruro', { sort: 'year', year: '2026' });
+  assert.equal(h.requests.at(-1).sort, '-started_on');
+});

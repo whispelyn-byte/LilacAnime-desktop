@@ -8,7 +8,12 @@ body.light{--ott-surface:#ffffff}
 body.ott-scrolled .sidebar,body:not(.ott-home) .sidebar{background-color:color-mix(in srgb,var(--bg) 94%,transparent)}
 .brand{display:flex;height:auto;margin:0;padding:0;flex-shrink:0}
 .brand img{display:block;height:26px;width:auto;user-select:none}
-.sidebar nav{display:flex;flex-direction:row;align-items:center;flex:1;height:auto;gap:2px;-webkit-app-region:no-drag}
+.sidebar nav{display:flex;flex-direction:row;align-items:center;flex:1;min-width:0;height:auto;gap:2px;-webkit-app-region:drag}
+.sidebar .nav{flex-shrink:0;white-space:nowrap;-webkit-app-region:no-drag}
+.sidebar .nav span{display:inline}
+.sidebar .nav[data-view="settings"] span{display:none}
+#homeOrderNote,#libraryOrderNote{margin:10px 0 16px}
+#libraryOrder{margin-top:16px}
 .nav{flex-direction:row;min-height:0;padding:8px 12px;border-radius:var(--ott-radius);font-size:14px;color:#e5e5e5b3;gap:0}
 .nav i{display:none}
 .nav:hover{background:transparent;color:#fff}

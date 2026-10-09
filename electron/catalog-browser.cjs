@@ -25,7 +25,7 @@ function createCatalogBrowser(deps) {
       if (!data?.genres || !data?.format) throw new Error('RE:Anime 분류를 불러오지 못했습니다.');
       return { ...base, genres: Object.keys(data.genres).sort().map(name => option(name, genreName(name))),
         formats: ['TV', 'TV_SHORT', 'MOVIE', 'OVA', 'ONA', 'SPECIAL', 'MUSIC'].filter(name => Object.keys(data.format).some(key => key.toUpperCase() === name)).map(name => option(name, formatName(name))),
-        year: true, season: true, sorts: ['popular', 'year', 'score'] };
+        year: true, season: true, sorts: ['popular', 'year', 'updated', 'score'] };
     }
     if (provider === 'animenosub') {
       const $ = cheerio.load(await deps.animenosubFetch(`${deps.animenosubBase}/anime/`));
@@ -35,7 +35,7 @@ function createCatalogBrowser(deps) {
       if (!genres.length && !seasons.length) throw new Error('Animenosub 분류를 불러오지 못했습니다.');
       const years = [...new Set(seasons.map(value => value.match(/-(\d{4})$/)?.[1]).filter(Boolean))].sort((a, b) => Number(b) - Number(a));
       return { ...base, genres: genres.map(item => option(item.value, genreName(item.name))), formats: values('type').map(item => option(item.value, formatName(item.value))),
-        year: Boolean(years.length), season: Boolean(seasons.length), seasons, yearOptions: years.map(year => option(year, `${year}년`)), sorts: ['popular', 'year', 'score'] };
+        year: Boolean(years.length), season: Boolean(seasons.length), seasons, yearOptions: years.map(year => option(year, `${year}년`)), sorts: ['popular', 'year', 'updated', 'score'] };
     }
     if (provider === 'linkkf') {
       const tags = await deps.linkkfTags();
@@ -43,9 +43,9 @@ function createCatalogBrowser(deps) {
       const convert = list => (list || []).map(tag => option(tag.id, tag.name));
       return { ...base, genres: convert(tags.genres), formats: convert(tags.formats), year: Boolean(tags.years?.length), yearOptions: convert(tags.years), note: '연도는 Linkkf의 분류를 따릅니다. 별도의 분기 정보는 제공하지 않습니다.' };
     }
-    if (provider === 'miruro') return { ...base, year: true, season: true, sorts: ['popular', 'year', 'score'], note: 'Miruro는 연도·분기로 모아 볼 수 있습니다.' };
-    if (provider === 'linkani') return { ...base, year: true, formats: ['TV', 'Movie'].map(name => option(name, formatName(name))), note: '링크애니는 작품 형태·연도로 모아 볼 수 있습니다. 장르·분기 정보는 제공하지 않습니다.' };
-    if (provider === 'ohli24') return { ...base, formats: ['TV', 'Movie'].map(name => option(name, formatName(name))), note: '애니24는 TV 애니·극장판으로 모아 볼 수 있습니다. 연도·분기 정보는 제공하지 않습니다.' };
+    if (provider === 'miruro') return { ...base, year: true, season: true, sorts: ['popular', 'year', 'updated', 'score'], note: 'Miruro는 연도·분기로 모아 볼 수 있습니다.' };
+    if (provider === 'linkani') return { ...base, year: true, formats: ['TV', 'Movie'].map(name => option(name, formatName(name))), sorts: ['default', 'updated'], note: '링크애니는 작품 형태·연도로 모아 볼 수 있습니다. 장르·분기 정보는 제공하지 않습니다.' };
+    if (provider === 'ohli24') return { ...base, formats: ['TV', 'Movie'].map(name => option(name, formatName(name))), sorts: ['default', 'updated'], note: '애니24는 TV 애니·극장판으로 모아 볼 수 있습니다. 연도·분기 정보는 제공하지 않습니다.' };
     throw new Error('이 콘텐츠 소스는 상세 필터를 지원하지 않습니다.');
   }
   async function browse(provider, request = {}) {
@@ -56,6 +56,16 @@ function createCatalogBrowser(deps) {
     if (season && (!taxonomy.season || !SEASONS.includes(season) || !year)) throw new Error('분기와 연도를 함께 선택해 주세요.');
     const sort = taxonomy.sorts.includes(request.sort) ? request.sort : taxonomy.sorts[0];
     const offset = Math.max(0, Math.trunc(Number(request.offset) || 0));
+    if (sort === 'year' && provider === 'reanime') {
+      const catalog = deps.reanimeReleaseItems();
+      if (!catalog) throw new Error('전체 목록의 분기 정보를 불러오는 중입니다. 잠시 뒤 다시 적용해 주세요.');
+      const items = catalog.filter(item => (!genre || item.genres?.some(value => value.name === genre)) && (!format || item.type === format) && (!year || String(item.year) === year) && (!season || item.season === season));
+      return { data: items.slice(offset, offset + 36), total: items.length, nextOffset: offset + 36, done: offset + 36 >= items.length };
+    }
+    if (sort === 'updated' && ['reanime', 'miruro'].includes(provider)) {
+      const items = (await deps.updates.snapshot(provider)).filter(item => (!genre || item.genres?.some(value => value.name === genre)) && (!format || item.type === format) && (!year || String(item.year) === year) && (!season || item.season === season));
+      return { data: items.slice(offset, offset + 36), total: items.length, nextOffset: offset + 36, done: offset + 36 >= items.length, note: '최근 회차 업데이트 목록에 필터를 적용했습니다.' };
+    }
     if (provider === 'reanime') {
       const url = new URL('/api/v1/search', deps.reanimeBase);
       const params = { limit: 36, offset, genre, format, year, season, sort: { popular: 'popularity_desc', year: 'year_desc', score: 'score_desc' }[sort] };
@@ -64,7 +74,7 @@ function createCatalogBrowser(deps) {
       return { data, total: Number.isFinite(total) ? total : null, nextOffset: offset + data.length, done: !data.length || (Number.isFinite(total) ? offset + data.length >= total : data.length < 36) };
     }
     if (provider === 'miruro') {
-      const root = await deps.miruroApi('anime', { season: season || undefined, season_year: year || undefined, sort: { popular: '-popularity', year: '-season_year', score: '-score' }[sort], limit: 15, cursor: request.offset || undefined });
+      const root = await deps.miruroApi('anime', { season: season || undefined, season_year: year || undefined, sort: { popular: '-popularity', year: '-started_on', score: '-score' }[sort], limit: 15, cursor: request.offset || undefined });
       return { data: (root.data || []).map(deps.miruroItem), nextOffset: root.next_cursor || null, done: !root.has_more || !root.next_cursor };
     }
     if (provider === 'linkkf') {
@@ -73,7 +83,7 @@ function createCatalogBrowser(deps) {
     }
     if (provider === 'animenosub') {
       const page = Math.max(1, offset), url = new URL('/anime/', deps.animenosubBase);
-      url.searchParams.set('page', String(page)); url.searchParams.set('order', { popular: 'popular', year: 'latest', score: 'rating' }[sort]);
+      url.searchParams.set('page', String(page)); url.searchParams.set('order', { popular: 'popular', year: 'latest', updated: 'update', score: 'rating' }[sort]);
       if (genre) url.searchParams.set('genre[0]', genre);
       if (format) url.searchParams.set('type', format);
       if (year) {
@@ -85,6 +95,10 @@ function createCatalogBrowser(deps) {
       return { data: deps.animenosubItems(cards.map((_, node) => $.html(node)).get().join('')), nextOffset: page + 1, done: !cards.length };
     }
     const page = Math.max(1, offset);
+    if (sort === 'updated' && provider === 'ohli24') {
+      const result = await deps.updates.page(provider, offset);
+      return { ...result, data: result.data.filter(item => !format || item.type === format) };
+    }
     const raw = provider === 'linkani'
       ? deps.linkaniItems(await deps.linkaniFetch(`${deps.linkaniBase}/list/2/${year ? `year/${year}/` : ''}${page > 1 ? `page/${page}/` : ''}`))
       : deps.ohliItems(await deps.ohliFetch(page === 1 ? `${deps.ohliBase}/` : `${deps.ohliBase}/finished/${page - 1}-1.html`));

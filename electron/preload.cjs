@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('lilac', {
   providerCatalog: (provider, query = '', offset = 0, sort = '') => ipcRenderer.invoke('provider:catalog', provider, query, offset, sort),
   catalogFacets: provider => ipcRenderer.invoke('catalog:facets', provider),
   catalogBrowse: (provider, request) => ipcRenderer.invoke('catalog:browse', provider, request),
+  catalogUpdates: (provider, offset = 0) => ipcRenderer.invoke('catalog:updates', provider, offset),
   providerSeason: provider => ipcRenderer.invoke('provider:season', provider),
   providerAiring: provider => ipcRenderer.invoke('provider:airing', provider),
   providerDetail: anime => ipcRenderer.invoke('provider:detail', anime),
