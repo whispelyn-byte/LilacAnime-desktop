@@ -3,7 +3,7 @@
 const pinnedElements=new Map();
 const $ = s => { if(s==='#video'||s==='#videoStage'){if(!pinnedElements.has(s))pinnedElements.set(s,document.querySelector(s));return pinnedElements.get(s)} return document.querySelector(s); };
 const $$ = s => [...document.querySelectorAll(s)];
-const SPEED_OPTIONS=[.1,.25,.5,.75,1,1.25,1.5,1.75,2];
+const SPEED_OPTIONS=[.1,.25,.5,.75,1,1.25,1.5,1.75,2,3,4];
 const store = {
   get(key, fallback = []) { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } },
   set(key, value) { localStorage.setItem(key, JSON.stringify(value)); }

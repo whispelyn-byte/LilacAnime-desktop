@@ -80,6 +80,40 @@ test('a manually selected speed during a boost is kept', () => {
   assert.equal(h.video.playbackRate, 1.25);
 });
 
+test('speed shortcuts reach 3x and 4x, respect the upper limit and step back', () => {
+  const h = setup(), speed = { value: '2' }, originalSelect = h.context.$;
+  h.context.$ = selector => selector === '#speed' ? speed : originalSelect(selector);
+  h.context.toast = () => {};
+  const appSource = fs.readFileSync(path.join(__dirname, '../src/app.js'), 'utf8');
+  vm.runInContext(appSource.match(/const SPEED_OPTIONS=\[[^\]]+\];/)[0], h.context);
+  h.video.playbackRate = 2;
+  for (const [key, expected] of [[']', 3], [']', 4], [']', 4], ['[', 3], ['[', 2]]) {
+    h.context.handlePlayerKey({ key });
+    assert.equal(h.video.playbackRate, expected); assert.equal(speed.value, String(expected));
+  }
+});
+
+test('3x and 4x settings persist in the playback select and default slider', () => {
+  const h = setup(), originalSelect = h.context.$;
+  const $html = require('cheerio').load(fs.readFileSync(path.join(__dirname, '../src/index.html'), 'utf8'));
+  const buttons = $html('#psSpeeds button').map((_, node) => ({ dataset: { speed: $html(node).attr('data-speed') } })).get();
+  const elements = { '#speed': { value: '1' }, '#defaultSpeed': { value: '4' }, '#speedLabel': { textContent: '' } };
+  h.context.$ = selector => elements[selector] || originalSelect(selector);
+  h.context.$$ = () => buttons; h.context.syncPlayerSettingsUI = () => {};
+  const appSource = fs.readFileSync(path.join(__dirname, '../src/app.js'), 'utf8');
+  vm.runInContext(appSource.match(/const SPEED_OPTIONS=\[[^\]]+\];/)[0], h.context);
+  vm.runInContext(section("$$('#psSpeeds button').forEach(button => button.onclick", "$('#previousEpisode').onclick"), h.context);
+  for (const speed of [3, 4]) {
+    buttons.find(button => Number(button.dataset.speed) === speed).onclick();
+    assert.equal(h.video.playbackRate, speed); assert.equal(h.storage.get('defaultSpeed'), String(speed));
+    assert.equal(elements['#speed'].value, String(speed)); assert.equal(elements['#speedLabel'].textContent, `${speed.toFixed(2)}x`);
+    assert.ok($html(`#speed option[value="${speed}"]`).length);
+    assert.ok(Number(elements['#defaultSpeed'].value) <= Number($html('#defaultSpeed').attr('max')));
+    h.context.handlePlayerKey(h.key()); h.advance(400); h.events.keyup(h.key());
+    assert.equal(h.video.playbackRate, speed); assert.equal(h.storage.get('defaultSpeed'), String(speed));
+  }
+});
+
 test('aspect presets stretch within their ratio; fill uses all of an ultrawide window', () => {
   const h = setup(); vm.runInContext(section('const PLAYER_ASPECTS', 'new ResizeObserver(applyPlayerAspect)'), h.context);
   for (const [aspect, width, height, fit] of [['original', 2100, 900, 'contain'], ['21:9', 2100, 900, 'fill'], ['16:9', 1600, 900, 'fill'], ['4:3', 1200, 900, 'fill'], ['fill', 2100, 900, 'fill'], ['invalid', 2100, 900, 'contain']]) {
