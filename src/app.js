@@ -1014,7 +1014,7 @@ function renderTmdbState(value,message){$('#tmdbKey').value=value?.key||'';$('#t
 window.lilac.tmdbKey().then(value=>renderTmdbState(value)).catch(()=>{});
 // Progress of the catalog Korean title indexes (main process).
 function renderCatalogIndex(value){
-  if(!value?.sources)return;const step={catalog:'목록 받는 중',wikidata:'Wikidata 확인 중',waiting:'TMDB 대기 중',tmdb:'TMDB로 찾는 중',error:'목록을 받지 못했어요. 30분마다 다시 시도해요'};
+  if(!value?.sources)return;const step={catalog:'목록 받는 중',wikidata:'Wikidata 확인 중',waiting:'TMDB 대기 중',tmdb:'TMDB로 찾는 중','tmdb-error':'TMDB 요청에 실패했어요. 30분 뒤 다시 시도해요',error:'목록을 받지 못했어요. 30분마다 다시 시도해요'};
   const lines=value.sources.map(source=>source.total?(source.korean==null?`${source.label} 전체 ${source.total.toLocaleString()}개를 불러왔어요`:`${source.label} ${source.total.toLocaleString()}개 중 ${source.korean.toLocaleString()}개의 한국어 제목을 알고 있어요`)+(step[source.status]?` (${step[source.status]}…)`:''):step[source.status]?`${source.label} ${step[source.status]}…`:'').filter(Boolean);
   const needsTmdb=!value.tmdb&&value.sources.some(source=>source.korean!=null);
   $('#reanimeIndexState').textContent=lines.length?`${lines.join(' · ')}${needsTmdb?' — TMDB 키를 넣으면 나머지도 찾아요.':''}`:'';

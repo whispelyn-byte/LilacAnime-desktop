@@ -123,6 +123,8 @@
 
 /* Video + ASS canvas wrapper. */
 .video-stage { position: absolute; inset: 0; }
+/* Inset the text without shrinking the VTT cue box (percentage cue lines otherwise drift left in Chromium). */
+#video::-webkit-media-text-track-display { padding-inline: 5%; box-sizing: border-box; }
 .player-speed-boost { position: absolute; top: 90px; left: 50%; transform: translateX(-50%); z-index: 3; padding: 8px 18px; border-radius: 20px; background: #000b; color: #fff; font-weight: 700; pointer-events: none; }
 .player-speed-boost.hidden { display: none; }
 

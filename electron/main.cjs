@@ -1146,7 +1146,7 @@ const CATALOGS={
   linkkf:{label:'Linkkf',fetch:downloadLinkkfCatalog,korean:false}
 };
 const catalogIndexes={};
-let catalogIndexRunning=false,catalogRetryTimer=null;
+let catalogIndexRunning=false,catalogRetryTimer=null,catalogTitleRetryTimer=null;
 // activeCatalogSource (declared with the Linkkf catalog): the source in use; only that one loads in the background.
 function catalogIndex(provider){
   if(catalogIndexes[provider])return catalogIndexes[provider];
@@ -1278,29 +1278,38 @@ async function refreshCatalogList(provider){
 }
 // TMDB, six entries at a time (well under its request limit).
 async function lookupCatalogKorean(provider){
-  if(CATALOGS[provider].korean===false)return;
-  const index=catalogIndex(provider),queue=index.items.filter(item=>!indexKorean(provider,item)&&!(Date.now()-(index.tried[item.id]||0)<30*DAY));
-  let done=0,titled=false;
-  while(tmdbKey()&&queue.length&&activeCatalogSource===provider){
+  if(CATALOGS[provider].korean===false)return true;
+  clearTimeout(catalogTitleRetryTimer);catalogTitleRetryTimer=null;
+  // Legacy numeric marks included request failures. Recheck unknown titles once; keep known Korean titles.
+  // Only a completed search gets a {time} mark, including a valid search with no Korean result.
+  const index=catalogIndex(provider),queue=index.items.filter(item=>!indexKorean(provider,item)&&!(Date.now()-(index.tried[item.id]?.time||0)<30*DAY));
+  let done=0,titled=false,failed=false;
+  while(tmdbKey()&&queue.length&&activeCatalogSource===provider&&!failed){
     reportCatalogIndex(provider,'tmdb');
     await Promise.all(queue.splice(0,6).map(async item=>{
-      // A title read from the series page (Animenosub) changes the list itself.
-      try{if(item.slugTitle){await CATALOGS[provider].title?.(item);titled=true}}catch{/* the slug title still works */}
-      const ko=(await tmdbKoreanTitles([item.title],{light:true}).catch(()=>[])).find(hasHangul);
-      index.tried[item.id]=Date.now();if(ko)storeIndexKorean(provider,item,ko,'tmdb');
+      try{
+        // A failed series-page request must not cache a miss for an incomplete slug title.
+        if(item.slugTitle){await CATALOGS[provider].title?.(item);titled=true}
+        const ko=(await tmdbKoreanTitles([item.title],{light:true})).find(hasHangul);
+        index.tried[item.id]={time:Date.now()};if(ko)storeIndexKorean(provider,item,ko,'tmdb');
+      }catch{failed=true}
     }));
     if(++done%50===0){saveDisplayTitles();saveCatalogTried(provider);if(titled){saveCatalogIndex(provider);titled=false}}
     await new Promise(resolve=>setTimeout(resolve,200));
   }
   if(done){saveDisplayTitles();saveCatalogTried(provider);if(titled)saveCatalogIndex(provider)}
+  if(failed&&activeCatalogSource===provider&&tmdbKey()){
+    catalogTitleRetryTimer=setTimeout(()=>buildCatalogIndexes().catch(()=>{}),30*60*1000);catalogTitleRetryTimer.unref?.();
+  }
+  return !failed;
 }
 async function buildCatalogIndexes(){
   if(catalogIndexRunning)return;catalogIndexRunning=true;
   try{
     // Again when the source changed while this ran.
     for(let provider=activeCatalogSource;CATALOGS[provider];provider=activeCatalogSource!==provider?activeCatalogSource:null){
-      await refreshCatalogList(provider);await lookupCatalogKorean(provider);
-      if(activeCatalogSource===provider)reportCatalogIndex(provider,catalogIndex(provider).items.length?'ready':'error');
+      await refreshCatalogList(provider);const complete=await lookupCatalogKorean(provider);
+      if(activeCatalogSource===provider)reportCatalogIndex(provider,!complete?'tmdb-error':catalogIndex(provider).items.length?'ready':'error');
     }
   }finally{catalogIndexRunning=false}
 }

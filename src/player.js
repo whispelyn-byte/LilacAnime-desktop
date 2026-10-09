@@ -212,8 +212,9 @@ function applyVttLayout() {
     cue.startTime = Math.max(0, cue.lilacStart + offset); cue.endTime = Math.max(0, cue.lilacEnd + offset);
     // Top cues (captions, signs) keep a small margin from the top; the rest sit on the subtitle line.
     cue.snapToLines = false; cue.line = cue.lilacTop ? 5 : line; cue.lineAlign = cue.lilacTop ? 'start' : 'end';
-    // Keep dialogue inside the picture even with large text or a narrow window.
-    cue.size = 90; cue.position = 50; cue.positionAlign = 'center'; cue.align = 'center';
+    // Chromium translates percentage-positioned cues horizontally again when size < 100,
+    // shifting a 90% cue 4.5% to the left. Keep the box full-width; CSS supplies safe text margins.
+    cue.size = 100; cue.position = 50; cue.positionAlign = 'center'; cue.align = 'center';
   }
 }
 
@@ -562,33 +563,65 @@ function moveFocus(direction, root = document.body) {
 }
 
 // Delay the short-press action until release so a hold never pauses the video first.
-let spaceHold = null;
-function startSpaceHold(event) {
-  event.preventDefault();
-  if (event.repeat || spaceHold) return;
-  const video = $('#video'), hold = { boosted: false, rate: video.playbackRate, timer: null };
+let spaceHold = null, heldMouseClick = null;
+function startSpeedHold(source, pointer = null) {
+  if (spaceHold) return;
+  const video = $('#video'), hold = { source, pointer, boosted: false, rate: video.playbackRate, timer: null };
   spaceHold = hold;
   hold.timer = setTimeout(() => {
-    if (spaceHold !== hold || video.paused || video.ended || playerLocked || !document.body.classList.contains('player-mode')) return;
+    if (spaceHold !== hold || video.paused || video.ended || playerLocked || playerSettingsOpen() || !document.body.classList.contains('player-mode')) return;
     hold.boosted = true; video.playbackRate = 2;
     $('#playerSpeedBoost').classList.remove('hidden');
   }, 400);
+}
+function startSpaceHold(event) {
+  event.preventDefault();
+  if (!event.repeat) startSpeedHold('keyboard');
 }
 function finishSpaceHold(toggle = false) {
   const hold = spaceHold; if (!hold) return;
   spaceHold = null; clearTimeout(hold.timer);
   const video = $('#video');
   $('#playerSpeedBoost').classList.add('hidden');
+  if (hold.source === 'mouse') {
+    heldMouseClick = hold.boosted ? { pointerId: hold.pointer.id, until: Date.now() + 1000 } : null;
+    if (hold.pointer.target.hasPointerCapture?.(hold.pointer.id)) hold.pointer.target.releasePointerCapture(hold.pointer.id);
+  }
   if (hold.boosted) {
     // A speed selected during a hold takes precedence over the temporary boost.
     if (video.playbackRate === 2) video.playbackRate = hold.rate;
-  } else if (toggle && !playerLocked && document.body.classList.contains('player-mode')) {
+  } else if (toggle && hold.source === 'keyboard' && !playerLocked && document.body.classList.contains('player-mode')) {
     video.paused ? video.play().catch(() => {}) : video.pause(); showPlayerControls();
   }
 }
 window.addEventListener('keyup', event => {
-  if ((event.code === 'Space' || event.key === ' ') && spaceHold) { event.preventDefault(); finishSpaceHold(true); }
+  if ((event.code === 'Space' || event.key === ' ') && spaceHold?.source === 'keyboard') { event.preventDefault(); finishSpaceHold(true); }
 });
+$('#immersivePlayer').addEventListener('pointerdown', event => {
+  if (event.pointerType !== 'mouse' || event.button !== 0 || event.isPrimary === false) return;
+  // A new click always retains its normal action, even just after a cancelled hold.
+  heldMouseClick = null;
+  if (spaceHold || playerLocked || playerSettingsOpen() || !document.body.classList.contains('player-mode')) return;
+  const video = $('#video');
+  if (video.paused || video.ended || ![video, $('#videoStage'), $('#immersivePlayer')].includes(event.target)) return;
+  startSpeedHold('mouse', { id: event.pointerId, target: event.target });
+  // Capture releases outside the picture too; buttons and settings never enter this path.
+  event.target.setPointerCapture?.(event.pointerId);
+});
+function finishMouseHold(event) {
+  if (spaceHold?.source === 'mouse' && event.pointerId === spaceHold.pointer.id) finishSpaceHold(false);
+}
+window.addEventListener('pointerup', finishMouseHold, true);
+window.addEventListener('pointercancel', finishMouseHold, true);
+$('#immersivePlayer').addEventListener('lostpointercapture', finishMouseHold);
+window.addEventListener('pointermove', event => {
+  if (spaceHold?.source === 'mouse' && event.buttons != null && !(event.buttons & 1)) finishMouseHold(event);
+}, true);
+$('#immersivePlayer').addEventListener('click', event => {
+  if (!heldMouseClick || Date.now() > heldMouseClick.until || event.detail === 0 || event.button !== 0) return;
+  if (event.pointerId != null && event.pointerId !== heldMouseClick.pointerId) return;
+  heldMouseClick = null; event.preventDefault(); event.stopImmediatePropagation();
+}, true);
 window.addEventListener('blur', () => finishSpaceHold(false));
 document.addEventListener('visibilitychange', () => { if (document.hidden) finishSpaceHold(false); });
 for (const name of ['pause', 'ended', 'emptied', 'loadstart']) $('#video').addEventListener(name, () => finishSpaceHold(false));
