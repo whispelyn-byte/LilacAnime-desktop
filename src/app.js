@@ -136,9 +136,15 @@ function downloadGroupCard(key,jobs){
   const summary=[`${episodeRanges(jobs.map(job=>job.episodeNumber))}화`,done&&`${done}개 저장됨`,active.length&&`${active.length}개 받는 중`,stopped&&`${stopped}개 멈춤`,missing&&`${missing}개 파일 없음`].filter(Boolean).join(' · ');
   const progress=Math.round(jobs.reduce((sum,job)=>sum+(job.status==='completed'?100:job.progress||0),0)/jobs.length);
   group.className=`download-group${open?' open':''}`;
-  group.innerHTML=`<article class="download-card download-group-card" tabindex="0" role="button" aria-expanded="${open}"><div class="download-cover"${cover?` style="background-image:url('${cover}')"`:''}></div><div class="download-copy"><b ${first.anime?titleAttr(first.anime):''}>${escapeHtml(storedTitle(first))} <small>${jobs.length}개 회차</small></b><span>${escapeHtml(summary)}</span><div class="download-progress"><i style="width:${progress}%"></i></div></div><div class="download-actions"><span class="download-group-toggle" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></span></div></article><div class="download-group-episodes"></div>`;
+  group.innerHTML=`<article class="download-card download-group-card"><div class="download-cover"${cover?` style="background-image:url('${cover}')"`:''}></div><div class="download-copy"><b ${first.anime?titleAttr(first.anime):''}>${escapeHtml(storedTitle(first))} <small>${jobs.length}개 회차</small></b><span>${escapeHtml(summary)}</span><div class="download-progress"><i style="width:${progress}%"></i></div></div><div class="download-actions">${active.length?`<button data-group-action="cancel">${downloadIcon('close')}<span>전체 중지</span></button>`:''}${stopped?`<button data-group-action="resume">${downloadIcon('retry')}<span>이어 받기</span></button>`:''}<button class="danger" data-group-action="remove">${downloadIcon('delete')}<span>전체 삭제</span></button><button class="download-group-toggle" aria-expanded="${open}" aria-label="회차 목록 ${open?'접기':'펼치기'}"><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button></div></article><div class="download-group-episodes"></div>`;
   const head=group.querySelector('.download-group-card'),toggle=()=>{open?openDownloadGroups.delete(key):openDownloadGroups.add(key);renderDownloads()};
-  head.onclick=toggle;head.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();toggle()}};
+  head.onclick=event=>{if(!event.target.closest('[data-group-action]'))toggle()};
+  for(const button of head.querySelectorAll('[data-group-action]'))button.onclick=async event=>{
+    event.stopPropagation();const action=button.dataset.groupAction;
+    if(action==='remove'&&!confirm(`${storedTitle(first)}의 다운로드 ${jobs.length}개를 모두 삭제할까요?\n저장한 영상과 자막도 함께 삭제됩니다.`))return;
+    button.disabled=true;
+    try{if(action==='remove')await Promise.all(jobs.map(removeDownload));else await window.lilac.controlDownloads(action,jobs.filter(job=>(action==='cancel'?['queued','resolving','downloading']:['paused','failed']).includes(job.status)).map(job=>job.id))}catch(error){toast(`다운로드 작업에 실패했습니다: ${ipcMessage(error)}`)}finally{button.disabled=false}
+  };
   if(open)group.querySelector('.download-group-episodes').replaceChildren(...jobs.map(job=>downloadCard(job,true)));
   return group;
 }
@@ -1012,10 +1018,18 @@ $('#applyUpdate').onclick=runUpdateAction;$('#updateBannerAction').onclick=runUp
 // TMDB key (설정 > 한국어 제목 검색): the user's own key overrides the bundled one.
 function renderTmdbState(value,message){$('#tmdbKey').value=value?.key||'';$('#tmdbKeyState').textContent=message||(value?.key?'TMDB API 키를 사용 중입니다.':'키가 없으면 AniList·Wikidata로만 찾아서 못 찾는 작품이 많습니다. themoviedb.org 설정 > API에서 발급한 키를 넣어 주세요.')}
 window.lilac.tmdbKey().then(value=>renderTmdbState(value)).catch(()=>{});
+window.lilac.desktopSettings().then(value=>{$('#trayMode').checked=value.trayEnabled}).catch(()=>{});
+$('#trayMode').onchange=async event=>{const input=event.target;input.disabled=true;try{input.checked=(await window.lilac.setTrayMode(input.checked)).trayEnabled}catch(error){input.checked=!input.checked;toast(`트레이 설정을 바꾸지 못했습니다: ${ipcMessage(error)}`)}finally{input.disabled=false}};
 // Progress of the catalog Korean title indexes (main process).
 function renderCatalogIndex(value){
-  if(!value?.sources)return;const step={catalog:'목록 받는 중',wikidata:'Wikidata 확인 중',waiting:'TMDB 대기 중',tmdb:'TMDB로 찾는 중','tmdb-error':'TMDB 요청에 실패했어요. 30분 뒤 다시 시도해요',error:'목록을 받지 못했어요. 30분마다 다시 시도해요'};
-  const lines=value.sources.map(source=>source.total?(source.korean==null?`${source.label} 전체 ${source.total.toLocaleString()}개를 불러왔어요`:`${source.label} ${source.total.toLocaleString()}개 중 ${source.korean.toLocaleString()}개의 한국어 제목을 알고 있어요`)+(step[source.status]?` (${step[source.status]}…)`:''):step[source.status]?`${source.label} ${step[source.status]}…`:'').filter(Boolean);
+  if(!value?.sources)return;const step={catalog:'목록 받는 중',wikidata:'Wikidata 확인 중',waiting:'TMDB 대기 중',tmdb:'TMDB로 찾는 중',error:'목록을 받지 못했어요. 30분마다 다시 시도해요'};
+  const lines=value.sources.map(source=>{
+    const failure={auth:'TMDB API 키나 사용 권한을 확인해 주세요','rate-limit':'TMDB 요청 제한으로 잠시 쉬는 중',timeout:'TMDB 응답 시간이 초과됐어요',network:'TMDB에 연결하지 못했어요',response:'TMDB 응답을 읽지 못했어요',source:'원본 작품 정보를 받지 못했어요',http:`TMDB 서버 요청에 실패했어요${source.error?.status?` (HTTP ${source.error.status})`:''}`};
+    const retryMinutes=Math.max(1,Math.ceil(((source.retryAt||Date.now()+60000)-Date.now())/60000));
+    const progress=source.status==='tmdb-error'?`${failure[source.error?.code]||'TMDB 요청에 실패했어요'}${source.error?.code==='auth'?'':`. ${retryMinutes}분 뒤 다시 시도해요`}`:step[source.status];
+    const count=source.total?(source.korean==null?`${source.label} 전체 ${source.total.toLocaleString()}개를 불러왔어요`:`${source.label} ${source.total.toLocaleString()}개 중 ${source.korean.toLocaleString()}개의 한국어 제목을 알고 있어요`):'';
+    return count+(progress?`${count?' (':`${source.label} `}${progress}…${count?')':''}`:'');
+  }).filter(Boolean);
   const needsTmdb=!value.tmdb&&value.sources.some(source=>source.korean!=null);
   $('#reanimeIndexState').textContent=lines.length?`${lines.join(' · ')}${needsTmdb?' — TMDB 키를 넣으면 나머지도 찾아요.':''}`:'';
 }

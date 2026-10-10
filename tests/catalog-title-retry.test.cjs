@@ -1,9 +1,10 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+const { createTmdbClient } = require('../electron/tmdb-client.cjs');
 
 const source = fs.readFileSync(path.join(__dirname, '../electron/main.cjs'), 'utf8');
-const DAY = 86400000, RETRY = 30 * 60 * 1000;
+const DAY = 86400000, RETRY = 60 * 1000;
 function section(start, end) {
   const first = source.indexOf(start), last = source.indexOf(end, first);
   assert.ok(first >= 0 && last > first, `Missing section: ${start}`);
@@ -53,10 +54,13 @@ test('actual TMDB lookup propagates HTTP, transport and JSON failures to the ret
       if (failure === 'timeout') throw new DOMException('Timed out', 'TimeoutError');
       return { ok: failure === 'json', status: failure, json: async () => { throw new SyntaxError('Invalid JSON'); } };
     } });
+    let clock = Date.now();
+    h.context.tmdbRequest = createTmdbClient({ fetch: h.context.fetch, interval: 0, now: () => clock, sleep: async ms => { clock += ms; } });
     vm.runInContext(section('async function tmdbFetch(', "// A work's story in Korean"), h.context);
     await h.context.buildCatalogIndexes();
-    assert.equal(requests, 2); assert.equal(Object.keys(h.index.tried).length, 0);
+    assert.equal(requests, failure === 401 ? 2 : 6); assert.equal(Object.keys(h.index.tried).length, 0);
     assert.equal(h.index.status, 'tmdb-error'); assert.equal(h.timers.size, 1);
+    assert.equal(h.context.catalogIndexState().sources[0].error.code, failure === 401 ? 'auth' : failure === 429 ? 'rate-limit' : failure === 'json' ? 'response' : failure === 'timeout' ? 'timeout' : 'http');
   }
 });
 
@@ -65,6 +69,7 @@ test('valid empty TMDB search responses are completed searches, not retry errors
   Object.assign(h.context, { URL, AbortSignal, titleCompareKey: value => String(value).toLowerCase(), fetch: async () => {
     requests++; return { ok: true, json: async () => ({ results: [] }) };
   } });
+  h.context.tmdbRequest = createTmdbClient({ fetch: h.context.fetch, interval: 0 });
   vm.runInContext(section('async function tmdbFetch(', "// A work's story in Korean"), h.context);
   await h.context.buildCatalogIndexes(); await h.context.buildCatalogIndexes();
   assert.equal(requests, 4); assert.equal(Object.keys(h.index.tried).length, 1);
@@ -124,5 +129,17 @@ test('settings show request failures separately from the Korean title count', ()
   vm.runInContext(appSource.slice(first, last), context);
   context.renderCatalogIndex({ tmdb: true, sources: [{ label: 'Re:Anime', korean: 10206, total: 20707, status: 'tmdb-error' }] });
   assert.match(label.textContent, /10,206/); assert.match(label.textContent, /20,707/);
-  assert.match(label.textContent, /요청.*실패/); assert.match(label.textContent, /30분/);
+  assert.match(label.textContent, /요청.*실패/); assert.match(label.textContent, /1분/);
+  for (const [code, message] of [['auth', /키나 사용 권한/], ['rate-limit', /요청 제한/], ['timeout', /시간이 초과/], ['network', /연결하지 못/], ['response', /응답을 읽지 못/], ['source', /원본 작품 정보/], ['http', /HTTP 503/]]) {
+    context.renderCatalogIndex({ tmdb: true, sources: [{ label: 'Re:Anime', korean: 10206, total: 20707, status: 'tmdb-error', error: { code, status: 503 } }] });
+    assert.match(label.textContent, message);
+    assert.equal(label.textContent.includes('다시 시도'), code !== 'auth');
+  }
+});
+
+test('catalog retry respects a longer server cooldown and exposes no raw exception text', async () => {
+  const h = setup({ lookup: async () => { throw Object.assign(Error('secret URL with API key'), { code: 'rate-limit', status: 429, retryAfterMs: 120000 }); } });
+  await h.context.buildCatalogIndexes();
+  assert.equal([...h.timers.values()][0].ms, 120000);
+  assert.equal(JSON.stringify(h.context.catalogIndexState()).includes('secret'), false);
 });

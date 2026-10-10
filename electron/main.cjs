@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, session, net } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, session, net, Tray, Menu, screen, nativeImage } = require('electron');
 const path = require('path');
 const zlib = require('zlib');
 const cheerio = require('cheerio');
@@ -11,6 +11,10 @@ const { pathToFileURL } = require('url');
 const { createFlixProxyUrl, createFlixAvProxyUrl, closeFlixProxy } = require('./flix-proxy.cjs');
 const { createCatalogBrowser } = require('./catalog-browser.cjs');
 const { createCatalogUpdates } = require('./catalog-updates.cjs');
+const { createTmdbClient } = require('./tmdb-client.cjs');
+const { DesktopState } = require('./desktop-state.cjs');
+const { communityEpisodes, selectCommunityFile } = require('./community-matching.cjs');
+let desktopState;
 const { compareRelease, releaseDate } = require('../src/anime-metadata.js');
 let catalogUpdates;
 const { detectOpEd } = require('./oped-fingerprint.cjs');
@@ -938,15 +942,9 @@ function koreanTitleCacheFile(){return path.join(app.getPath('userData'),'korean
 function readKoreanTitleCache(){try{return JSON.parse(fs.readFileSync(koreanTitleCacheFile(),'utf8'))||{}}catch{return {}}}
 function tmdbSettingsFile(){return path.join(app.getPath('userData'),'tmdb.json')}
 function tmdbKey(){try{return String(JSON.parse(fs.readFileSync(tmdbSettingsFile(),'utf8')).key||'').trim()}catch{return ''}}
-// A v4 "API Read Access Token" is a JWT sent as a bearer token; a v3 "API Key" goes in the query string.
+const tmdbRequest=createTmdbClient();
 async function tmdbFetch(pathname,params={},key=tmdbKey()){
-  if(!key)throw new Error('TMDB API 키가 없습니다.');
-  const url=new URL(`https://api.themoviedb.org/3${pathname}`),bearer=key.includes('.');
-  for(const [name,value] of Object.entries(params))url.searchParams.set(name,value);
-  if(!bearer)url.searchParams.set('api_key',key);
-  const response=await fetch(url,{signal:AbortSignal.timeout(20000),headers:{Accept:'application/json',...(bearer?{Authorization:`Bearer ${key}`}:{})}});
-  if(!response.ok)throw new Error(response.status===401?'TMDB API 키가 올바르지 않습니다.':`TMDB HTTP ${response.status}`);
-  return response.json();
+  return tmdbRequest(pathname,params,key);
 }
 // TMDB keeps seasons inside one series, so season words are dropped; a subtitle after ":" is dropped on a
 // second try ("Ascendance of a Bookworm: Adopted Daughter of an Archduke" is listed as the series).
@@ -1208,7 +1206,7 @@ async function sortedCatalog(provider,sort,offset){
   throw new Error('이 소스는 정렬을 지원하지 않습니다.');
 }
 const indexKorean=(provider,item)=>withSeason(displayTitleStore()[`${provider}:${item.id}`]?.ko||'',item.title,item.type);
-function catalogIndexState(){return {tmdb:Boolean(tmdbKey()),sources:Object.entries(CATALOGS).filter(([provider])=>provider===activeCatalogSource).map(([provider,{label,korean}])=>{const index=catalogIndex(provider);return {provider,label,status:index.status,total:index.items.length,korean:korean===false?null:index.items.filter(item=>indexKorean(provider,item)).length}})}}
+function catalogIndexState(){return {tmdb:Boolean(tmdbKey()),sources:Object.entries(CATALOGS).filter(([provider])=>provider===activeCatalogSource).map(([provider,{label,korean}])=>{const index=catalogIndex(provider);return {provider,label,status:index.status,error:index.tmdbError||null,retryAt:index.tmdbRetryAt||0,total:index.items.length,korean:korean===false?null:index.items.filter(item=>indexKorean(provider,item)).length}})}}
 function reportCatalogIndex(provider,status){
   catalogIndex(provider).status=status;const state=catalogIndexState();
   BrowserWindow.getAllWindows().forEach(win=>{if(!win.isDestroyed())win.webContents.send('catalog-index:state',state)});
@@ -1276,30 +1274,39 @@ async function refreshCatalogList(provider){
   }
   reportCatalogIndex(provider,index.items.length?'waiting':'error');
 }
-// TMDB, six entries at a time (well under its request limit).
+// Six entries at a time; the shared TMDB client spaces individual HTTP requests.
 async function lookupCatalogKorean(provider){
   if(CATALOGS[provider].korean===false)return true;
   clearTimeout(catalogTitleRetryTimer);catalogTitleRetryTimer=null;
   // Legacy numeric marks included request failures. Recheck unknown titles once; keep known Korean titles.
   // Only a completed search gets a {time} mark, including a valid search with no Korean result.
   const index=catalogIndex(provider),queue=index.items.filter(item=>!indexKorean(provider,item)&&!(Date.now()-(index.tried[item.id]?.time||0)<30*DAY));
+  index.tmdbError=null;index.tmdbRetryAt=0;
   let done=0,titled=false,failed=false;
   while(tmdbKey()&&queue.length&&activeCatalogSource===provider&&!failed){
     reportCatalogIndex(provider,'tmdb');
     await Promise.all(queue.splice(0,6).map(async item=>{
+      let stage='source';
       try{
         // A failed series-page request must not cache a miss for an incomplete slug title.
         if(item.slugTitle){await CATALOGS[provider].title?.(item);titled=true}
+        stage='tmdb';
         const ko=(await tmdbKoreanTitles([item.title],{light:true})).find(hasHangul);
         index.tried[item.id]={time:Date.now()};if(ko)storeIndexKorean(provider,item,ko,'tmdb');
-      }catch{failed=true}
+      }catch(error){
+        failed=true;
+        // Only fixed codes/statuses reach the renderer; network errors can contain a URL with the API key.
+        const code=stage==='source'?'source':['auth','rate-limit','timeout','network','response','http'].includes(error.code)?error.code:'network';
+        if(!index.tmdbError||code==='auth')index.tmdbError={code,status:Number(error.status)||0};
+        index.tmdbRetryAt=Math.max(index.tmdbRetryAt,Date.now()+Math.max(code==='auth'?30*60*1000:60*1000,Number(error.retryAfterMs)||0));
+      }
     }));
     if(++done%50===0){saveDisplayTitles();saveCatalogTried(provider);if(titled){saveCatalogIndex(provider);titled=false}}
     await new Promise(resolve=>setTimeout(resolve,200));
   }
   if(done){saveDisplayTitles();saveCatalogTried(provider);if(titled)saveCatalogIndex(provider)}
   if(failed&&activeCatalogSource===provider&&tmdbKey()){
-    catalogTitleRetryTimer=setTimeout(()=>buildCatalogIndexes().catch(()=>{}),30*60*1000);catalogTitleRetryTimer.unref?.();
+    catalogTitleRetryTimer=setTimeout(()=>buildCatalogIndexes().catch(()=>{}),Math.max(0,index.tmdbRetryAt-Date.now()));catalogTitleRetryTimer.unref?.();
   }
   return !failed;
 }
@@ -1351,6 +1358,9 @@ async function lookupTitleVariants(text){
 }
 // Tries each Korean title until a Kairan/Csora post matches.
 async function findCommunitySubtitleByTitles(source,titles,episode,options){
+  if(!['kairan','csora','anissia'].includes(source))throw new Error('지원하지 않는 자막 소스입니다.');
+  if(!Number.isFinite(Number(episode))||Number(episode)<=0)throw new Error('자막 회차가 올바르지 않습니다.');
+  titles=[...new Set((Array.isArray(titles)?titles:[]).map(title=>String(title||'').trim()).filter(Boolean))];
   let lastError=null;
   for(const title of titles){try{return {...await (source==='anissia'?findAnissiaSubtitle(title,episode,options):findCommunitySubtitle(source,title,episode,options)),searchTitle:title}}catch(error){lastError=error}}
   throw lastError||new Error('자막 게시물을 찾지 못했습니다.');
@@ -1358,32 +1368,33 @@ async function findCommunitySubtitleByTitles(source,titles,episode,options){
 // Blogger feeds return at most 150 posts per request, so the whole blog is paged in. Like Android the index is
 // kept on disk for a day, a failed refresh falls back to the stale copy, and a miss refreshes once (below).
 const communityPostCache=new Map();
+const communityPostRequests=new Map(),communityPostRetryAt=new Map();
 async function communityPosts(blog,{force=false}={}){
+  blog=new URL(blog).origin;
   const file=path.join(app.getPath('userData'),`community-${new URL(blog).hostname.split('.')[0]}.json`);
   let cached=communityPostCache.get(blog);if(!cached){try{cached=JSON.parse(fs.readFileSync(file,'utf8'))}catch{cached=null}}
   const age=cached?.posts?.length?Date.now()-cached.time:Infinity;
-  if(age<(force?10*60*1000:24*60*60*1000)){communityPostCache.set(blog,cached);return cached.posts}
-  try{
+  if(age<(force?10*60*1000:24*60*60*1000)||cached?.posts?.length&&Date.now()<(communityPostRetryAt.get(blog)||0)){communityPostCache.set(blog,cached);return cached.posts}
+  if(communityPostRequests.has(blog))return communityPostRequests.get(blog);
+  const work=(async()=>{try{
     const page=start=>providerFetch(`${blog}/feeds/posts/default?alt=json&max-results=150&start-index=${start}`,{json:true,referer:`${blog}/`});
-    const first=await page(1),total=Number(first.feed?.openSearch$totalResults?.$t)||0,rest=[];
-    for(let start=151;start<=total;start+=150)rest.push(page(start).catch(()=>null));
-    const posts=[first,...await Promise.all(rest)].flatMap(root=>root?.feed?.entry||[]).map(entry=>({title:entry.title?.$t||'',url:(entry.link||[]).find(x=>x.rel==='alternate')?.href||'',html:entry.content?.$t||entry.summary?.$t||''}));
-    if(!posts.length)throw new Error('empty feed');
+    const first=await page(1),total=Number(first.feed?.openSearch$totalResults?.$t)||0,roots=[first],starts=[];
+    for(let start=151;start<=total;start+=150)starts.push(start);
+    let next=0,failure=null;
+    await Promise.all(Array.from({length:Math.min(3,starts.length)},async()=>{while(next<starts.length&&!failure){const at=next++;try{roots[at+1]=await page(starts[at])}catch(error){failure=error}}}));
+    if(failure)throw failure;
+    const seen=new Map();for(const entry of roots.flatMap(root=>root?.feed?.entry||[])){const url=(entry.link||[]).find(x=>x.rel==='alternate')?.href||'';if(url&&!seen.has(url))seen.set(url,{title:entry.title?.$t||'',url,html:entry.content?.$t||entry.summary?.$t||''})}
+    const posts=[...seen.values()];if(!posts.length||total&&posts.length<total)throw new Error('자막 게시물 목록을 다 받지 못했습니다.');
     const fresh={time:Date.now(),posts};communityPostCache.set(blog,fresh);try{fs.writeFileSync(file,JSON.stringify(fresh))}catch{}
+    communityPostRetryAt.delete(blog);
     return posts;
-  }catch(error){if(cached?.posts?.length){communityPostCache.set(blog,cached);return cached.posts}throw error}
-}
-// Episode numbers written as "12화", "9, 10화", "1 ~ 12화" or "EP 3". Bare digits ("2기", "무직전생3") are not episodes.
-function communityEpisodes(text=''){
-  const list=[],ranges=[];const value=String(text).normalize('NFKC');
-  for(const m of value.matchAll(/(\d+)\s*[~∼\-]\s*(\d+)\s*(?:화|회|편)/g))ranges.push([Number(m[1]),Number(m[2])]);
-  for(const m of value.replace(/(\d+)\s*[~∼\-]\s*(\d+)\s*(?:화|회|편)/g,' ').matchAll(/((?:\d+\s*,\s*)*\d+)\s*(?:화|회|편)/g))list.push(...m[1].split(',').map(Number));
-  for(const m of value.matchAll(/\bep(?:isode)?\s*\.?\s*(\d+)/gi))list.push(Number(m[1]));
-  return {list,ranges,has:ep=>list.includes(ep)||ranges.some(([a,b])=>ep>=a&&ep<=b),any:list.length+ranges.length>0};
+  }catch(error){communityPostRetryAt.set(blog,Date.now()+60000);if(cached?.posts?.length){communityPostCache.set(blog,cached);return cached.posts}throw error}})();
+  communityPostRequests.set(blog,work);try{return await work}finally{communityPostRequests.delete(blog)}
 }
 function communitySeason(text=''){
   const value=String(text).normalize('NFKC'),m=value.match(/(?:season|시즌)\s*(\d+)|(\d+)\s*기(?![가-힣])|(\d+)(?:st|nd|rd|th)(?:\s*season)?\b|[가-힣](\d)(?=\s|$)/i);
-  return m?Number(m[1]||m[2]||m[3]||m[4]):null;
+  if(m)return Number(m[1]||m[2]||m[3]||m[4]);
+  const roman=value.trim().match(/(?:^|\s)(II|III|IV|V|VI)\s*$/i);return roman?{II:2,III:3,IV:4,V:5,VI:6}[roman[1].toUpperCase()]:null;
 }
 // Provider (English) titles also number a later season with a bare digit or a roman numeral at the end
 // ("The Angel Next Door Spoils Me Rotten 2", Re:Anime's "…Rotten2", "Overlord IV"), but "Kaiju No. 8",
@@ -1447,36 +1458,30 @@ function communityScore(target,candidate){
   return best;
 }
 // Older Kairan titles end in a bare episode number ("히로아카7 20", "... 12(완)").
-const COMMUNITY_TRAILING_EPISODE=/(?<!season|시즌|part|파트|vol\.?|제)\s+(\d{1,3})\s*(?:\((?:끝|완)\))?\s*(?:자막)?\s*$/i;
+const COMMUNITY_TRAILING_EPISODE=/(?<!season|시즌|part|파트|vol\.?|제)\s+(\d{1,3}(?:\.\d+)?)\s*(?:\((?:끝|완|完)\))?\s*(?:자막)?\s*$/i;
 function communityPostEpisodes(title=''){const episodes=communityEpisodes(title);if(episodes.any)return episodes;const m=String(title).normalize('NFKC').match(COMMUNITY_TRAILING_EPISODE);return m?communityEpisodes(`${m[1]}화`):episodes}
 function communityPostTitle(title=''){return communityTitle(String(title).normalize('NFKC').replace(COMMUNITY_TRAILING_EPISODE,' '))}
-function communityTitle(text=''){return String(text).replace(/(\d+)\s*[~∼\-,]\s*(?=\d)/g,'').replace(/\d+\s*(?:화|회|편)|\((?:끝|완)\)|작업\s*중|블루레이판|자막/g,' ').trim()}
+function communityTitle(text=''){return String(text).normalize('NFKC').replace(/\d+(?:\.\d+)?\s*[~∼〜～–—\-,、&/]\s*(?=\d)/g,'').replace(/\d+(?:\.\d+)?\s*(?:화|회|편)|\bep(?:isode)?\s*\.?\s*\d+(?:\.\d+)?|\((?:끝|완|完)\)|작업\s*중|블루레이판|자막/gi,' ').trim()}
 // Picks the post's download links for one episode: per-episode posts (Kairan) carry the number in the
 // title, series posts (Csora) label each link ("13화", "1 ~ 12화") and add a separate "폰트" link.
-function communityLinks(post,episode){
+function communityLinks(post,episode,{offsets=[],allowOffset=false}={}){
   const $=cheerio.load(post.html),anchors=[];
   $('a[href]').each((_,a)=>{const href=absoluteUrl($(a).attr('href'),post.url);if(/drive\.google\.com|docs\.google\.com|\.zip(?:$|\?)|\.(?:ass|ssa|srt|vtt|smi)(?:$|\?)/i.test(href))anchors.push({href,label:$(a).text().trim()})});
   const fonts=anchors.filter(a=>/폰트|font/i.test(a.label)),subs=anchors.filter(a=>!fonts.includes(a)),withFonts=list=>list.length?[...new Set([...list,...fonts].map(a=>a.href))]:[];
   const titleEpisodes=communityPostEpisodes(post.title);
-  if(titleEpisodes.any)return titleEpisodes.has(episode)?{links:withFonts(subs),episode}:{links:[],episode};
+  if(titleEpisodes.any){const bundle=titleEpisodes.ranges.length>0||titleEpisodes.list.length>1;return titleEpisodes.has(episode)?{links:withFonts(subs),episode,strict:bundle,bundle}:{links:[],episode}}
   const labeled=subs.map(a=>({...a,episodes:communityEpisodes(a.label)})).filter(a=>a.episodes.any);
   // No numbers at all: a movie or a whole-season bundle, whose file has to be matched by episode.
   if(!labeled.length)return {links:withFonts(subs),episode,strict:true};
-  const pick=ep=>labeled.find(a=>a.episodes.list.includes(ep))||labeled.find(a=>a.episodes.has(ep));
+  const pick=ep=>{const exact=labeled.filter(a=>a.episodes.list.includes(ep));return exact.length?exact:labeled.filter(a=>a.episodes.has(ep))};
   // Later seasons often continue the numbering (2기 = 13~24화) while the player counts from 1.
-  const first=Math.min(...labeled.flatMap(a=>[...a.episodes.list,...a.episodes.ranges.map(r=>r[0])]));
-  const direct=pick(episode),shifted=!direct&&first>1?pick(episode+first-1):null,chosen=direct||shifted;
-  const number=direct?episode:shifted?episode+first-1:episode;
+  const direct=pick(episode),number=direct.length?episode:allowOffset?offsets.map(offset=>episode+Number(offset)).find(number=>Number.isFinite(number)&&number>episode&&pick(number).length)??episode:episode;
+  const chosen=direct.length?direct:pick(number),bundle=chosen.some(a=>a.episodes.ranges.length>0||a.episodes.list.length>1);
   // A range link ("1 ~ 12화") is a bundle, so its file must be matched by episode number.
-  return {links:chosen?withFonts([chosen]):[],episode:number,strict:Boolean(chosen&&!chosen.episodes.list.includes(number))};
-}
-// "S02E05" counts as episode 5 only, and a CRC tag ("[5A2B3C4D]") is not an episode number.
-function communityFileMatches(file,episode){
-  const name=path.basename(file).normalize('NFKC').replace(/\.[^.]+$/,'').replace(/\b(?:s\d+|season\s*\d+|\d{3,4}p|x26[45]|h\.?26[45]|(?:19|20)\d{2})\b|\bs\d{1,2}(?=e\d)|\[[0-9a-f]{8}\]|\d+\s*기/gi,' ');
-  return new RegExp(`(?:^|[^0-9])(?:e|ep|episode)?\\s*0*${episode}(?:v\\d)?(?:[^0-9]|$)`,'i').test(name);
+  return {links:withFonts(chosen),episode:number,strict:bundle,bundle};
 }
 const COMMUNITY_FILE=/\.(ass|ssa|srt|vtt|smi|ttf|otf|ttc)$/i;
-function communityFileName(name){return path.basename(String(name).replace(/\\/g,'/')).normalize('NFC').replace(/[^\p{L}\p{N}._ -]/gu,'_')}
+function communityFileName(name){return path.basename(String(name).replace(/\\/g,'/')).normalize('NFC').replace(/[^\p{L}\p{N}._ ()\[\]-]/gu,'_')}
 // Large Drive files answer with a "virus scan warning" page (always when a foreign Referer is sent);
 // its form holds the real download URL.
 async function downloadDriveBuffer(url,referer){
@@ -1513,7 +1518,7 @@ function communitySubtitleExt(buffer){const bom=buffer[0]===0xff&&buffer[1]===0x
 function rankCommunityPosts(posts,title,episode,originalTitle='',{offsets=[]}={}){
   const season=searchSeason(title,originalTitle)??1,wanted=communityTitle(title);
   const rank=(list,name,number)=>list.map(post=>({post,score:communityScore(name,communityPostTitle(post.title))})).filter(x=>x.score>=.52) // Android MIN_SIMILARITY
-    .map(x=>({...x,...communityLinks(x.post,number)})).filter(x=>x.links.length)
+    .map(x=>({...x,season,...communityLinks(x.post,number,{offsets,allowOffset:season>1})})).filter(x=>x.links.length)
     // Per-episode links beat bundles of a similarly named post; newer posts come first in the feed.
     .sort((a,b)=>Math.round((b.score-a.score)*20)||Number(Boolean(a.strict))-Number(Boolean(b.strict)));
   const usable=posts.filter(post=>!/작업\s*중|하차/.test(post.title));
@@ -1533,33 +1538,42 @@ function rankCommunityPosts(posts,title,episode,originalTitle='',{offsets=[]}={}
 // Episodes of the previous seasons, from AniList's prequel chain (TV series only): the direct prequel alone and
 // the whole chain, since makers restart either per franchise or per season.
 const prequelEpisodeCache=new Map();
+const prequelEpisodeRequests=new Map();
 async function previousSeasonEpisodes(anime={},title=''){
   const season=searchSeason(title,anime.title||'')??1;if(season<2)return [];
   let id=Number(anime.anilistId)||null;
   if(!id&&anime.title&&!hasHangul(anime.title))id=(await anilistMedia(anime.title,anime).catch(()=>null))?.id||null;
-  if(!id)return [];if(prequelEpisodeCache.has(id))return prequelEpisodeCache.get(id);
-  const counts=[];let current=id;
+  if(!id)return [];const cached=prequelEpisodeCache.get(id);if(cached&&Date.now()-cached.time<10*60*1000)return cached.offsets;
+  if(prequelEpisodeRequests.has(id))return prequelEpisodeRequests.get(id);
+  const work=(async()=>{const counts=[],seen=new Set();let current=id;
   for(let depth=0;depth<8&&current;depth++){
+    if(seen.has(current))break;seen.add(current);
     const query=`query($id:Int){Media(id:$id,type:ANIME){relations{edges{relationType node{id format episodes}}}}}`;
-    const response=await fetch('https://graphql.anilist.co',{signal:AbortSignal.timeout(25000),method:'POST',headers:{Accept:'application/json','Content-Type':'application/json','User-Agent':'LilacAnime Android'},body:JSON.stringify({query,variables:{id:current}})}).catch(()=>null);
-    const edges=response?.ok?(await response.json())?.data?.Media?.relations?.edges||[]:[];
+    const response=await fetch('https://graphql.anilist.co',{signal:AbortSignal.timeout(25000),method:'POST',headers:{Accept:'application/json','Content-Type':'application/json','User-Agent':'LilacAnime Android'},body:JSON.stringify({query,variables:{id:current}})});
+    if(!response.ok)throw new Error(`AniList HTTP ${response.status}`);
+    const root=await response.json();if(root.errors?.length||!Array.isArray(root.data?.Media?.relations?.edges))throw new Error('이전 시즌 회차 정보를 읽지 못했습니다.');
+    const edges=root.data.Media.relations.edges;
     const prequel=edges.find(edge=>edge.relationType==='PREQUEL'&&['TV','TV_SHORT','ONA'].includes(edge.node?.format)&&edge.node?.episodes);
-    if(!prequel)break;counts.push(prequel.node.episodes);current=prequel.node.id;
+    if(!prequel||seen.has(Number(prequel.node.id)))break;const count=Number(prequel.node.episodes);if(!Number.isFinite(count)||count<=0)break;counts.push(count);current=Number(prequel.node.id);
   }
   const offsets=[...new Set([counts[0],counts.reduce((sum,count)=>sum+count,0)].filter(value=>value>0))];
-  prequelEpisodeCache.set(id,offsets);return offsets;
+  prequelEpisodeCache.set(id,{time:Date.now(),offsets});if(prequelEpisodeCache.size>128)prequelEpisodeCache.delete(prequelEpisodeCache.keys().next().value);return offsets})();
+  prequelEpisodeRequests.set(id,work);try{return await work}finally{prequelEpisodeRequests.delete(id)}
 }
 async function findCommunitySubtitle(source,title,episode,{originalTitle='',offsets=[]}={}){
   const blog=source==='kairan'?'https://kairan03.blogspot.com':'https://csora556.blogspot.com',label=source==='kairan'?'Kairan':'Csora';
   // A cached index can predate the episode (Csora adds links to existing posts), so a miss refreshes once.
-  let match=rankCommunityPosts(await communityPosts(blog),title,episode,originalTitle,{offsets})[0];
-  if(!match)match=rankCommunityPosts(await communityPosts(blog,{force:true}),title,episode,originalTitle,{offsets})[0];
-  if(!match)throw new Error(`${label} 자막 게시물을 찾지 못했습니다.`);
-  return downloadCommunityMatch(match,source,title,episode);
+  const attempted=new Set();let lastError;
+  for(const force of [false,true]){
+    const matches=rankCommunityPosts(await communityPosts(blog,{force}),title,episode,originalTitle,{offsets}).filter(match=>!attempted.has(JSON.stringify([match.post.url,match.links]))).slice(0,5);
+    for(const match of matches){attempted.add(JSON.stringify([match.post.url,match.links]));try{return await downloadCommunityMatch(match,source,title,episode)}catch(error){lastError=error}}
+  }
+  throw lastError||new Error(`${label} 자막 게시물을 찾지 못했습니다.`);
 }
 // Downloads a ranked post's links (Drive, zip/7z/RAR, subtitle files) and picks the episode's file.
 async function downloadCommunityMatch(match,source,title,episode){
-  const dir=path.join(app.getPath('userData'),'subtitles',simpleTitle(title).replace(/\s+/g,'_')||'anime',String(episode));fs.mkdirSync(dir,{recursive:true});const candidates=[];
+  const root=path.join(app.getPath('userData'),'subtitles',simpleTitle(title).replace(/\s+/g,'_')||'anime',String(episode));fs.mkdirSync(root,{recursive:true});
+  const dir=fs.mkdtempSync(path.join(root,`${source}-`)),candidates=[];
   for(const original of match.links){
     try{
       const id=driveId(original),url=id?`https://drive.usercontent.google.com/download?id=${encodeURIComponent(id)}&export=download&confirm=t`:original,buffer=await downloadDriveBuffer(url,id?undefined:match.post.url);
@@ -1567,12 +1581,14 @@ async function downloadCommunityMatch(match,source,title,episode){
       const unpacked=await extractCommunityArchive(buffer,dir);
       if(unpacked){candidates.push(...unpacked.filter(file=>/\.(ass|ssa|srt|vtt|smi)$/i.test(file)));continue}
       const ext=communitySubtitleExt(buffer);if(!ext)continue;
-      const out=path.join(dir,`${source}_${Date.now()}_${candidates.length}${ext}`);fs.writeFileSync(out,buffer);candidates.push(out);
+      let name='';try{name=decodeURIComponent(new URL(original).pathname.split('/').pop()||'')}catch{}
+      const base=/\.(?:ass|ssa|srt|vtt|smi)$/i.test(name)?`raw${candidates.length}_${communityFileName(name).replace(/\.[^.]+$/,'')}`:`${source}_file${candidates.length}`;
+      const out=path.join(dir,`${base}${ext}`);fs.writeFileSync(out,buffer);candidates.push(out);
     }catch{/* Try remaining links. */}
   }
-  // A movie bundle has no numbered files (the main script, an MV, an older version...): take the largest.
-  const unnumbered=episode===1&&!candidates.some(x=>communityFileMatches(x,2)),largest=()=>candidates.slice().sort((a,b)=>fs.statSync(b).size-fs.statSync(a).size)[0];
-  const selected=candidates.find(x=>communityFileMatches(x,match.episode))||(!match.strict?candidates[0]:unnumbered?largest():null);if(!selected)throw new Error('사용 가능한 자막 파일을 추출하지 못했습니다.');return subtitleResult(selected,{source,post:match.post.url,postTitle:match.post.title,all:candidates});
+  // Match the episode before preferring ASS and newer revisions; do not substitute another numbered file.
+  const selected=selectCommunityFile(candidates.map(file=>({file,name:path.basename(file),size:fs.statSync(file).size})),{episode:match.episode,strict:match.strict,bundle:match.bundle,season:match.season});
+  if(!selected)throw new Error('이 회차에 맞는 자막 파일을 추출하지 못했습니다.');return subtitleResult(selected.file,{source,post:match.post.url,postTitle:match.post.title,all:candidates});
 }
 // Some makers pack their subtitles into the post's image instead of linking a file (WinPNG,
 // https://github.com/harnenim/WinPNG). The blog's own viewer decodes the image and converts Jamaker projects (.jmk) to
@@ -1612,14 +1628,12 @@ async function winPngEntries(pageUrl){
 const WINPNG_EXTRA=/non-?telop|\bNC(?:OP|ED)\b|tokuten|\bSP\d|\bPV\b|\bCM\b|menu|preview|trailer/i;
 async function winPngSubtitle(pageUrl,title,episode,{matched=false}={}){
   const entries=(await winPngEntries(pageUrl)).filter(entry=>entry.ass||entry.raw||entry.smi);if(!entries.length)return null;
-  const dir=path.join(app.getPath('userData'),'subtitles',simpleTitle(title).replace(/\s+/g,'_')||'anime',String(episode));fs.mkdirSync(dir,{recursive:true});
+  const root=path.join(app.getPath('userData'),'subtitles',simpleTitle(title).replace(/\s+/g,'_')||'anime',String(episode));fs.mkdirSync(root,{recursive:true});const dir=fs.mkdtempSync(path.join(root,'anissia-winpng-'));
   const files=entries.map((entry,index)=>{
     const ext=entry.ass?'.ass':entry.raw?path.extname(entry.name).toLowerCase():'.smi',out=path.join(dir,`winpng_${index}_${communityFileName(entry.name.replace(/\.[^.]+$/,''))}${ext}`);
-    fs.writeFileSync(out,String(entry.ass||entry.raw||entry.smi).replace(/^﻿/,''),'utf8');return {file:out,name:entry.name};
+    fs.writeFileSync(out,String(entry.ass||entry.raw||entry.smi).replace(/^﻿/,''),'utf8');return {file:out,name:entry.name.replace(/\.[^.]+$/,'')+ext,size:fs.statSync(out).size};
   });
-  const main=files.filter(item=>!WINPNG_EXTRA.test(item.name)),pool=main.length?main:files,largest=()=>pool.slice().sort((a,b)=>fs.statSync(b.file).size-fs.statSync(a.file).size)[0];
-  const unnumbered=!pool.some(item=>Array.from({length:60},(_,index)=>index+1).some(number=>communityFileMatches(item.name,number)));
-  const selected=pool.find(item=>communityFileMatches(item.name,episode))||(unnumbered||(matched&&pool.length===1)?largest():null);
+  const selected=selectCommunityFile(files.filter(item=>!WINPNG_EXTRA.test(item.name)),{episode,strict:!matched});
   return selected?subtitleResult(selected.file,{source:'anissia',post:pageUrl,postTitle:title,all:files.map(item=>item.file)}):null;
 }
 // --- Jimaku (Japanese subtitles, jimaku.cc) ------------------------------------------------------------------------
@@ -1721,11 +1735,19 @@ const ANISSIA_API='https://api.anissia.net';
 // Online subtitle sources in their default search order.
 const COMMUNITY_SOURCES=['kairan','csora','anissia'];
 function communitySubtitleLabel(source,result={}){return source==='anissia'?`Anissia${result.maker?` · ${result.maker}`:''} 자막`:`${source==='kairan'?'Kairan':'Csora'} 자막`}
+const anissiaResponseCache=new Map(),anissiaRequests=new Map();
 async function anissiaFetch(pathname){
-  const response=await fetch(`${ANISSIA_API}${pathname}`,{signal:AbortSignal.timeout(20000),headers:{Accept:'application/json','User-Agent':'LilacAnime/1.0'}});
-  if(!response.ok)throw new Error(`Anissia HTTP ${response.status}`);
-  const root=await response.json();if(root?.code&&root.code!=='ok')throw new Error(`Anissia ${root.code}`);
-  return root?.data;
+  const cached=anissiaResponseCache.get(pathname);if(cached&&Date.now()-cached.time<60000)return cached.data;
+  if(anissiaRequests.has(pathname))return anissiaRequests.get(pathname);
+  const work=(async()=>{
+    const response=await fetch(`${ANISSIA_API}${pathname}`,{signal:AbortSignal.timeout(20000),headers:{Accept:'application/json','User-Agent':'LilacAnime/1.0'}});
+    if(!response.ok)throw new Error(`Anissia HTTP ${response.status}`);
+    const root=await response.json();if(root?.code&&root.code!=='ok')throw new Error(`Anissia ${root.code}`);
+    if(root?.data==null)throw new Error('Anissia 응답을 읽지 못했습니다.');
+    anissiaResponseCache.set(pathname,{time:Date.now(),data:root.data});if(anissiaResponseCache.size>256)anissiaResponseCache.delete(anissiaResponseCache.keys().next().value);
+    return root.data;
+  })();
+  anissiaRequests.set(pathname,work);try{return await work}finally{anissiaRequests.delete(pathname)}
 }
 // The Anissia entry for a Korean title, with the season required to match ("2기", "Season 3").
 async function anissiaAnime(title,originalTitle=''){
@@ -1734,13 +1756,18 @@ async function anissiaAnime(title,originalTitle=''){
   // Anissia's search misses titles typed with their punctuation ("명탐정 프리큐어!").
   const plain=bare.replace(/[!?！？.,:;·'"“”‘’♡♥☆★]+/g,' ').replace(/\s+/g,' ').trim();
   const queries=[...new Set([bare,plain,plain.split(' ').slice(0,2).join(' ')])].filter(query=>query.length>=2);
-  const seen=new Map();
+  const seen=new Map();let best=null,lastError=null,answered=false;
   for(const query of queries){
-    for(const item of (await anissiaFetch(`/anime/list/0?q=${encodeURIComponent(query)}`).catch(()=>null))?.content||[])seen.set(item.animeNo,item);
-    const best=[...seen.values()].filter(item=>(communitySeason(item.subject)??1)===season).map(item=>({item,score:communityScore(wanted,item.subject)})).filter(x=>x.score>=.52).sort((a,b)=>b.score-a.score)[0];
-    if(best)return best.item;
+    for(let page=0;page<3;page++){
+      let result;try{result=await anissiaFetch(`/anime/list/${page}?q=${encodeURIComponent(query)}`);if(!Array.isArray(result?.content))throw new Error('Anissia 검색 응답을 읽지 못했습니다.');answered=true}catch(error){lastError=error;break}
+      for(const item of result.content)seen.set(item.animeNo,item);
+      best=[...seen.values()].filter(item=>(communitySeason(item.subject)??1)===season).map(item=>({item,score:communityScore(wanted,item.subject)})).filter(x=>x.score>=.52).sort((a,b)=>b.score-a.score)[0];
+      if(best?.score>=.98)return best.item;
+      if(result.last===true||page+1>=Number(result.totalPages||1)||!result.content.length)break;
+    }
   }
-  return null;
+  if(!answered&&lastError)throw lastError;
+  return best?.item||null;
 }
 // Tistory: the RSS feed carries the latest posts; the blog search finds older ones. Post pages are fetched
 // only for the few candidates whose title matches, since attachments are not in the listing.
@@ -1824,14 +1851,16 @@ async function findAnissiaSubtitle(title,episode,{originalTitle='',offsets=[],ma
     // Kairan and Csora have their own sources.
     if(/^(?:kairan03|csora556)\.blogspot\.com$/i.test(host))continue;
     try{
-      let match=null;
+      let matches=[];
       // The post Anissia links belongs to this anime even when the maker spells the title differently
       // ("후리렌 1기(完)" for 장송의 프리렌), so it is ranked under the Anissia title.
       const naver=naverBlogRef(caption.website);
-      const linked=naver?(naver.logNo?await naverPost(naver.blogId,naver.logNo).then(post=>({...post,title:`${anime.subject} ${post.pageTitle}`.trim()})).catch(()=>null):null):await anissiaLinkedPost(caption.website,anime.subject,origin);
+      let linked=naver?(naver.logNo?await naverPost(naver.blogId,naver.logNo).then(post=>({...post,title:`${anime.subject} ${post.pageTitle}`.trim()})).catch(()=>null):null):await anissiaLinkedPost(caption.website,anime.subject,origin);
+      const linkedSeason=communitySeason(communityPostTitle(linked?.pageTitle||'')),wrongLinkedSeason=linkedSeason!=null&&linkedSeason!==(searchSeason(title,originalTitle)??1);if(wrongLinkedSeason)linked=null;
       if(/\.blogspot\.com$/i.test(host)){
         const posts=[...await communityPosts(origin),...(linked?[linked]:[])];
-        for(const name of [anime.subject,title])if(!match)match=rankCommunityPosts(posts,name,episode,originalTitle,{offsets})[0];
+        for(const name of [anime.subject,title])if(!matches.length)matches=rankCommunityPosts(posts,name,episode,originalTitle,{offsets});
+        if(!matches.length){const refreshed=[...await communityPosts(origin,{force:true}),...(linked?[linked]:[])];for(const name of [anime.subject,title])if(!matches.length)matches=rankCommunityPosts(refreshed,name,episode,originalTitle,{offsets})}
       }else if(/\.tistory\.com$/i.test(host)||naver){
         // Some makers use their own short name ("츠레카노 12"); the post Anissia links gives it away, so it is
         // searched too and its posts count as this anime's.
@@ -1845,18 +1874,18 @@ async function findAnissiaSubtitle(title,episode,{originalTitle='',offsets=[],ma
         const likely=listed.filter(post=>numbered(post)&&Math.max(communityScore(base(anime.subject),communityPostTitle(post.title)),communityScore(base(title),communityPostTitle(post.title)))>=.52).slice(0,4);
         for(const post of likely){try{post.html=naver?(await naverPost(naver.blogId,post.logNo)).html:await providerFetch(post.url,{referer:`${origin}/`})}catch{post.html=''}}
         const posts=[...likely.filter(post=>post.html),...(linked&&!likely.some(post=>post.url===linked.url)?[linked]:[])];
-        for(const name of [anime.subject,title])if(!match)match=rankCommunityPosts(posts,name,episode,originalTitle,{offsets})[0];
+        for(const name of [anime.subject,title])if(!matches.length)matches=rankCommunityPosts(posts,name,episode,originalTitle,{offsets});
         // No download link: the files may be packed into the post's image (WinPNG). The episode's own posts first,
         // then the one Anissia links.
-        if(!match&&/\.tistory\.com$/i.test(host)){
+        if(!matches.length&&/\.tistory\.com$/i.test(host)){
           const episodePosts=new Set(likely.map(post=>post.url));
-          for(const url of [...new Set([...episodePosts,linked?.url||caption.website].filter(Boolean))].slice(0,3)){
+          for(const url of [...new Set([...episodePosts,linked?.url||(!wrongLinkedSeason&&caption.website)].filter(Boolean))].slice(0,3)){
             const result=await winPngSubtitle(url,anime.subject,episode,{matched:episodePosts.has(url)}).catch(()=>null);
             if(result)return {...result,maker:caption.name,anissiaTitle:anime.subject};
           }
         }
       }
-      if(match){const result=await downloadCommunityMatch(match,'anissia',anime.subject,episode);return {...result,maker:caption.name,anissiaTitle:anime.subject}}
+      for(const match of matches.slice(0,5)){try{const result=await downloadCommunityMatch(match,'anissia',anime.subject,episode);return {...result,maker:caption.name,anissiaTitle:anime.subject}}catch{/* next ranked post of this maker */}}
     }catch{/* next maker */}
   }
   throw new Error('Anissia 자막을 찾지 못했습니다.');
@@ -1871,10 +1900,7 @@ async function downloadHls(url,filePath,event){
 
 function createWindow() {
   const win = new BrowserWindow({
-    width: 1440,
-    height: 900,
-    minWidth: 980,
-    minHeight: 680,
+    ...desktopState.bounds(),
     icon: path.join(__dirname, '..', 'build', 'icon.png'),
     backgroundColor: '#121212',
     titleBarStyle: 'hidden',
@@ -1889,11 +1915,18 @@ function createWindow() {
     }
   });
   mainWindow = win;
+  desktopState.attach(win);
   win.on('closed', () => { if (mainWindow === win) mainWindow = null; });
   win.loadFile(path.join(__dirname, '..', 'src', 'index.html'));
 }
 
 app.whenReady().then(async () => {
+  desktopState=new DesktopState({app,screen,Tray,Menu,nativeImage,icon:path.join(__dirname,'..','build',process.platform==='win32'?'icon.ico':'icon.png'),show:()=>{
+    if(!mainWindow||mainWindow.isDestroyed())createWindow();
+    if(mainWindow.isMinimized())mainWindow.restore();mainWindow.show();mainWindow.focus();
+  }});
+  ipcMain.handle('desktop:settings',()=>desktopState.settings());
+  ipcMain.handle('desktop:tray',(_,enabled)=>desktopState.setTray(Boolean(enabled)));
   const broadcast=(channel,value)=>BrowserWindow.getAllWindows().forEach(win=>{if(!win.isDestroyed())win.webContents.send(channel,value)});
   const subtitleStore=new SubtitleStore({app});
   // Same order as the player's ensureSubtitle: the preferred source's saved file, the stream's own
@@ -2176,6 +2209,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('downloads:list',()=>downloadManager.list());
   ipcMain.handle('downloads:add',(_,request)=>downloadManager.enqueue(request));
   ipcMain.handle('downloads:cancel',(_,id)=>downloadManager.cancel(id));
+  ipcMain.handle('downloads:group',(_,action,ids=[])=>{
+    if(!['cancel','resume'].includes(action))throw new Error('지원하지 않는 다운로드 작업입니다.');
+    return [...new Set(Array.isArray(ids)?ids:[])].map(id=>downloadManager[action](id));
+  });
   ipcMain.handle('downloads:resume',(_,id)=>downloadManager.resume(id));
   ipcMain.handle('downloads:remove',(_,id)=>downloadManager.remove(id));
   ipcMain.handle('downloads:play',(_,id)=>downloadManager.localPlayback(id));
@@ -2418,8 +2455,8 @@ app.whenReady().then(async () => {
   // The selected source's catalog index refreshes in the background (started by the page, see catalog:activate).
   setInterval(()=>buildCatalogIndexes().catch(()=>{}),6*60*60*1000).unref?.();
   if(app.isPackaged){setTimeout(()=>updater.check(),5000);setInterval(()=>updater.check(),3*60*60*1000).unref?.()}
-  app.on('activate', () => { if (!mainWindow || mainWindow.isDestroyed()) createWindow(); });
+  app.on('activate', () => desktopState.show());
 });
 
-app.on('before-quit', () => { closeFlixProxy(); subtitleTranslator?.local?.stop(); updater?.installOnQuit(); });
-app.on('window-all-closed', () => { if (process.env.LILAC_SMOKE_REANIME==='1')return;if (process.platform !== 'darwin') app.quit(); });
+app.on('before-quit', () => { desktopState?.beforeQuit();downloadManager?.shutdown();closeFlixProxy(); subtitleTranslator?.local?.stop(); updater?.installOnQuit(); });
+app.on('window-all-closed', () => { if (process.env.LILAC_SMOKE_REANIME==='1'||desktopState?.settings().trayEnabled&&!desktopState.quitting)return;if (process.platform !== 'darwin') app.quit(); });

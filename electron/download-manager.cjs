@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { pathToFileURL, fileURLToPath } = require('url');
+const { downloadFile } = require('./download-transfer.cjs');
 
 function safeName(value = '') {
   return String(value).normalize('NFKC').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/[. ]+$/g, '').trim().slice(0, 120) || 'episode';
@@ -36,7 +37,7 @@ class DownloadManager {
     this.analyzeOpEd = analyzeOpEd;
     this.broadcast = broadcast;
     this.resolving = Promise.resolve();
-    this.active = new Map(); // job id -> {job, process}; Android runs up to 2 downloads at once.
+    this.active = new Map(); // job id -> {job, process, controller, finished}; up to two downloads.
     this.jobs = this.read().map(job => ['downloading', 'resolving'].includes(job.status) ? {...job, status:'queued'} : job.stage ? {...job, stage:''} : job);
     fs.mkdirSync(this.root, { recursive: true });
     this.relink();
@@ -88,65 +89,88 @@ class DownloadManager {
     if (existing && existing.status === 'completed' && fs.existsSync(existing.filePath)) { if (!existing.subtitlePath) { existing.subtitleChecked = false; this.backfillSubtitles(); } return existing; }
     if (existing && ['queued','resolving','downloading'].includes(existing.status)) return existing;
     const now = Date.now(), job = existing || { id:`dl_${now}_${Math.random().toString(36).slice(2,8)}`, key, created:now };
-    Object.assign(job, request, { title:request.title || request.anime?.title || '애니메이션', episodeNumber:Number(request.episodeNumber || request.episode?.number || request.episode?.name || 1), image:request.image || '', status:'queued', progress:0, error:'', updated:now });
+    Object.assign(job, request, { title:request.title || request.anime?.title || '애니메이션', episodeNumber:Number(request.episodeNumber || request.episode?.number || request.episode?.name || 1), image:request.image || '', status:'queued', progress:existing?.progress||0, error:'', updated:now });
     if (!existing) this.jobs.push(job);
     this.save(); this.pump(); return job;
   }
 
   cancel(id) {
-    const job = this.jobs.find(item => item.id === id); if (!job) return false;
+    const job = this.jobs.find(item => item.id === id); if (!job || job.status==='completed') return false;
+    clearTimeout(this.retryTimers?.get(id));
+    this.active.get(id)?.controller?.abort();
     this.active.get(id)?.process?.kill?.();
     job.status = 'paused'; job.updated = Date.now(); this.save(); return true;
   }
 
-  resume(id) { const job=this.jobs.find(item=>item.id===id); if(!job)return false; clearTimeout(this.retryTimers?.get(id)); job.status='queued';job.error='';job.retries=0;job.updated=Date.now();this.save();this.pump();return true; }
+  resume(id) { const job=this.jobs.find(item=>item.id===id); if(!job||!['paused','failed'].includes(job.status))return false; clearTimeout(this.retryTimers?.get(id)); job.status='queued';job.error='';job.retries=0;job.updated=Date.now();this.save();this.pump();return true; }
 
-  remove(id) {
+  async remove(id) {
     const job = this.jobs.find(item => item.id === id); if (!job) return false;
-    this.active.get(id)?.process?.kill?.();
+    clearTimeout(this.retryTimers?.get(id));
+    const active=this.active.get(id);active?.controller?.abort();active?.process?.kill?.();
+    this.jobs = this.jobs.filter(item => item.id !== id);this.save();
+    await active?.finished;
     for (const file of [job.filePath, job.subtitlePath, job.subtitleAssPath, job.partialPath, ...(job.subtitleOriginals || [])]) { if (file) try { fs.unlinkSync(file); } catch {} }
-    if (job.partialPath) try { fs.rmSync(`${job.partialPath}.hls`, { recursive: true, force: true }); } catch {} // mirrorHls copy
-    if (job.filePath && job.subtitleTracks) try { fs.rmSync(trackDir(job), { recursive: true, force: true }); } catch {}
-    this.jobs = this.jobs.filter(item => item.id !== id);
+    this.cleanTransfer(job);
+    if (job.filePath) removeOwnedFolder(trackDir(job),path.dirname(job.filePath));
     // The series poster goes with its last episode.
     if (job.posterPath && !this.jobs.some(item => item.posterPath === job.posterPath)) try { fs.unlinkSync(job.posterPath); } catch {}
     this.save(); return true;
   }
 
+  cleanTransfer(job) {
+    if(!job.filePath)return;
+    const partial=`${job.filePath}.part`;
+    removeOwnedFolder(`${partial}.hls`,path.dirname(job.filePath));
+    for(const file of [`${partial}.source`,`${partial}.source.json`])try{fs.unlinkSync(file)}catch{}
+  }
+  shutdown() {
+    if(this.stopping)return;this.stopping=true;
+    for(const timer of this.retryTimers?.values()||[])clearTimeout(timer);
+    for(const active of this.active.values()){
+      active.controller.abort();active.process?.kill?.();
+      if(['downloading','resolving'].includes(active.job.status))active.job.status='queued';
+    }
+    this.save();
+  }
+
   pump() {
+    if(this.stopping)return;
     while (this.active.size < MAX_CONCURRENT_DOWNLOADS) {
       // A job resumed while its previous run is still winding down (or still resolving) is left to that run.
       const job = this.jobs.find(item => item.status === 'queued' && !this.active.has(item.id)); if (!job) return;
-      job.status='resolving';job.updated=Date.now();this.active.set(job.id,{job,process:null});this.save();
-      this.run(job);
+      job.status='resolving';job.updated=Date.now();const active={job,process:null,controller:new AbortController()};this.active.set(job.id,active);this.save();
+      active.finished=this.run(job,active);
     }
   }
 
-  async run(job) {
+  async run(job,active) {
+    const stopped=()=>active.controller.signal.aborted||this.stopping||!this.jobs.includes(job);
     try {
       // Stream resolution shares one browser session whose request hooks are swapped per call, so only the
-      // ffmpeg transfers run in parallel.
-      const resolving = this.resolving.then(() => job.resolveKind === 'linkkf' ? this.resolveLinkkf(job.episode) : this.resolveEpisode(job.episode, job));
+      // transfers run in parallel.
+      const resolving = this.resolving.then(() => stopped()?null:job.resolveKind === 'linkkf' ? this.resolveLinkkf(job.episode) : this.resolveEpisode(job.episode, job));
       this.resolving = resolving.catch(() => {});
       const stream = await resolving;
-      // Paused while resolving; a pause and resume in that time just carries on.
-      if(job.status==='paused'||!this.jobs.some(item=>item.id===job.id))return;
+      if(stopped())return;
       if(stream?.server)job.videoServer=stream.server; // Animenosub: which server the video came from
       const animeDir=path.join(this.root,safeName(job.title)), base=`${String(job.episodeNumber).padStart(3,'0')}화`;
-      fs.mkdirSync(animeDir,{recursive:true});job.filePath=path.join(animeDir,`${base}.mp4`);job.partialPath=`${job.filePath}.part`;job.status='downloading';job.updated=Date.now();this.save();
-      const local=stream?.mirror?await this.mirrorHls(job,stream):null;
-      if(job.status==='paused')return;
+      fs.mkdirSync(animeDir,{recursive:true});job.filePath||=path.join(animeDir,`${base}.mp4`);job.partialPath=`${job.filePath}.part`;fs.mkdirSync(path.dirname(job.filePath),{recursive:true});job.status='downloading';job.updated=Date.now();this.save();
+      const hls=stream?.mirror||stream?.hls||/\.m3u8(?:$|\?)/i.test(stream.url)||new URL(stream.url).pathname.startsWith('/__flix/');
+      const local=hls?await this.mirrorHls(job,stream):await this.mirrorFile(job,stream);
+      if(stopped())return;
       await this.runFfmpeg(job,stream,local);
-      if(job.status==='paused')return;
-      try{fs.unlinkSync(job.filePath)}catch{}fs.renameSync(job.partialPath,job.filePath);if(local)try{fs.rmSync(local.dir,{recursive:true,force:true})}catch{}job.partialPath='';job.status='completed';job.retries=0;job.progress=100;job.completed=Date.now();job.updated=Date.now();
+      if(stopped())return;
+      try{fs.unlinkSync(job.filePath)}catch{}fs.renameSync(job.partialPath,job.filePath);this.cleanTransfer(job);job.partialPath='';job.status='completed';job.retries=0;job.progress=100;job.completed=Date.now();job.updated=Date.now();
       job.stage='subtitle';this.save();await this.attachSubtitle(job,stream);job.stage='';job.updated=Date.now();this.save();
+      if(stopped())return;
       await this.attachSkips(job);
       await this.attachTitles(job);
       await this.attachPoster(job);
-      this.queueTracks(job, stream);
+      if(!stopped())this.queueTracks(job, stream);
     } catch (error) {
       // A job resumed while this run was stopping stays queued and starts again below.
-      if(!['paused','queued'].includes(job.status)){
+      if(!stopped()&&!['paused','queued'].includes(job.status)){
         job.status='failed';job.error=error?.message||String(error);job.updated=Date.now();
         // A server that did not answer or a dropped connection: tried again by itself twice (after half a minute, then
         // two minutes), keeping what was downloaded; then it waits for 다시 시작.
@@ -166,7 +190,7 @@ class DownloadManager {
       let ffmpeg=require('ffmpeg-static');if(ffmpeg.includes('app.asar'))ffmpeg=ffmpeg.replace('app.asar','app.asar.unpacked');
       const args=['-y'];
       if(local){
-        for(const input of local.inputs)args.push('-allowed_extensions','ALL','-i',input);
+        for(const input of local.inputs){args.push('-protocol_whitelist','file,crypto,data');if(input.endsWith('.m3u8'))args.push('-allowed_extensions','ALL');args.push('-i',input)}
         args.push('-map','0:v?','-map',local.inputs.length>1?'1:a?':'0:a?');
       }else{
         const headers={...(stream?.headers||{})};if(stream?.referer&&!headers.Referer)headers.Referer=stream.referer;
@@ -178,31 +202,31 @@ class DownloadManager {
       }
       args.push('-c','copy','-movflags','+faststart','-f','mp4',job.partialPath);
       const [from,span]=local?[95,4]:[0,99];
-      const child=spawn(ffmpeg,args,{windowsHide:true});this.active.set(job.id,{job,process:child});let duration=0,stderr='';
+      const child=spawn(ffmpeg,args,{windowsHide:true});this.active.get(job.id).process=child;let duration=0,stderr='';
       child.stderr.on('data',chunk=>{const text=chunk.toString();stderr=(stderr+text).slice(-12000);const d=text.match(/Duration:\s*([^,]+)/)?.[1];if(d){duration=seconds(d);job.duration=duration}const t=[...text.matchAll(/time=\s*([^\s]+)/g)].pop()?.[1];if(t&&duration){const progress=from+Math.max(0,Math.min(span,Math.round(seconds(t)/duration*span)));if(progress!==job.progress){job.progress=progress;job.updated=Date.now();this.save();}}});
       child.once('error',reject);child.once('close',code=>{if(job.status==='paused')return resolve();if(code===0&&fs.existsSync(job.partialPath))resolve();else reject(new Error((stderr.match(/([^\r\n]+)$/)?.[1]||`FFmpeg 종료 코드 ${code}`).trim()));});
     });
   }
 
-  // Hosts that serve each segment from another random subdomain make FFmpeg's one-at-a-time HLS reader crawl (a new
-  // connection per segment, well under real time). For such streams (stream.mirror, Miruro) the chosen variant
-  // (stream.program, else the highest) and its separate audio rendition are fetched here, six files at a time, into a
-  // folder next to the file, with the playlists rewritten to the local copies. Files already there are kept, so a
-  // paused download continues where it stopped.
+  // Persist the chosen HLS variant and its separate audio six files at a time. Atomic segment files survive pause,
+  // application exit, and a new stream URL; the playlists are rewritten for local FFmpeg remuxing.
   async mirrorHls(job,stream) {
-    const dir=`${job.partialPath}.hls`,controller=new AbortController();fs.mkdirSync(dir,{recursive:true});
-    this.active.set(job.id,{job,process:{kill:()=>controller.abort()}});
+    const dir=`${job.partialPath}.hls`,controller=new AbortController(),signal=AbortSignal.any([controller.signal,this.active.get(job.id).controller.signal]);fs.mkdirSync(dir,{recursive:true});
     const headers={'User-Agent':HLS_USER_AGENT,...(stream.headers||{})};if(stream.referer&&!headers.Referer)headers.Referer=stream.referer;
-    const get=async(url,binary=false)=>{
+    const get=async(url,binary=false,range=null)=>{
       for(let attempt=0;;attempt++){
         try{
-          const response=await fetch(url,{headers,signal:AbortSignal.any([controller.signal,AbortSignal.timeout(60000)])});
+          const response=await fetch(url,{headers:{...headers,...(range?{Range:`bytes=${range.start}-${range.start+range.length-1}`}:{})},signal:AbortSignal.any([signal,AbortSignal.timeout(60000)])});
           if(!response.ok)throw new Error(`HTTP ${response.status}`);
-          return binary?Buffer.from(await response.arrayBuffer()):await response.text();
-        }catch(error){if(controller.signal.aborted||attempt>=3)throw error;await new Promise(resolve=>setTimeout(resolve,1500*(attempt+1)))}
+          if(!binary)return await response.text();
+          const data=Buffer.from(await response.arrayBuffer());
+          if(range){if(response.status!==206||!response.headers.get('content-range')?.startsWith(`bytes ${range.start}-`)||data.length!==range.length)throw new Error('영상 조각의 바이트 범위가 일치하지 않습니다.')}
+          return data;
+        }catch(error){if(signal.aborted||attempt>=3)throw error;await new Promise((resolve,reject)=>{const abort=()=>{clearTimeout(timer);reject(signal.reason)};const timer=setTimeout(()=>{signal.removeEventListener('abort',abort);resolve()},1500*(attempt+1));signal.addEventListener('abort',abort,{once:true});if(signal.aborted)abort()})}
       }
     };
     const master=await get(stream.url),lists=[];
+    if(!master.trimStart().startsWith('#EXTM3U'))throw new Error('HLS 재생목록이 올바르지 않습니다.');
     const variants=[...master.matchAll(/#EXT-X-STREAM-INF:([^\r\n]*)\r?\n\s*([^\r\n#][^\r\n]*)/g)].map(match=>({attrs:match[1],uri:match[2].trim(),height:Number(match[1].match(/RESOLUTION=\d+x(\d+)/)?.[1])||0,bandwidth:Number(match[1].match(/BANDWIDTH=(\d+)/)?.[1])||0}));
     if(variants.length){
       const pick=variants[Number.isInteger(stream.program)&&variants[stream.program]?stream.program:variants.reduce((best,item,index)=>(item.height-variants[best].height||item.bandwidth-variants[best].bandwidth)>0?index:best,0)];
@@ -214,27 +238,52 @@ class DownloadManager {
     }else lists.push({name:'video',url:stream.url,text:master});
     // A resumed download can land on another server, whose segments must not be mixed with the kept ones (addresses
     // are compared without their per-request tokens).
-    const source=JSON.stringify(lists.map(list=>{const url=new URL(list.url);return url.origin+url.pathname})),sourceFile=path.join(dir,'source.json');
+    const source=JSON.stringify(lists.map(list=>({name:list.name,text:list.text.split(/\r?\n/).map(line=>line.startsWith('#')?line.replace(/URI="([^"]+)"/g,(_,uri)=>`URI="${stableMediaUrl(new URL(uri,list.url).href)}"`):line.trim()?stableMediaUrl(new URL(line.trim(),list.url).href):'')}))),sourceFile=path.join(dir,'source.json');
     let kept='';try{kept=fs.readFileSync(sourceFile,'utf8')}catch{/* new folder */}
-    if(kept!==source){fs.rmSync(dir,{recursive:true,force:true});fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(sourceFile,source)}
+    if(kept!==source){removeOwnedFolder(dir,path.dirname(job.filePath));fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(sourceFile,source)}
     const files=new Map(),tasks=[];
     for(const list of lists){
       const fmp4=/#EXT-X-MAP/.test(list.text);
-      const local=(uri,ext)=>{const url=new URL(uri,list.url).href;if(!files.has(url)){const file=`${list.name}_${String(files.size).padStart(5,'0')}${ext}`;files.set(url,file);tasks.push({url,file:path.join(dir,file)})}return files.get(url)};
-      const text=list.text.split(/\r?\n/).map(line=>!line.trim()?line:line.startsWith('#')?line.replace(/URI="([^"]+)"/g,(_,uri)=>`URI="${local(uri,line.startsWith('#EXT-X-MAP')?'.mp4':'.key')}"`):local(line.trim(),fmp4?'.m4s':'.ts')).join('\n');
+      const encrypted=/#EXT-X-KEY:(?![^\n]*METHOD=NONE)/.test(list.text);
+      let pendingRange=null,lastEnd=0,lastUri='';
+      const local=(uri,ext,range=null)=>{const url=new URL(uri,list.url).href,key=`${url}:${range?`${range.start}:${range.length}`:''}`;if(!files.has(key)){const file=`${list.name}_${String(files.size).padStart(5,'0')}${ext}`;files.set(key,file);tasks.push({url,range,encrypted,file:path.join(dir,file)})}return files.get(key)};
+      const text=list.text.split(/\r?\n/).map(raw=>{
+        const line=raw.trim();if(!line)return '';
+        if(line.startsWith('#EXT-X-BYTERANGE:')){pendingRange=line.split(':')[1];return ''}
+        if(line.startsWith('#')){
+          const spec=line.startsWith('#EXT-X-MAP')?line.match(/BYTERANGE="(\d+)(?:@(\d+))?"/):null;
+          const range=spec?{length:Number(spec[1]),start:Number(spec[2]||0)}:null;
+          return line.replace(/,?BYTERANGE="[^"]+"/g,'').replace(/URI="([^"]+)"/g,(_,uri)=>`URI="${local(uri,line.startsWith('#EXT-X-MAP')?'.mp4':'.key',range)}"`);
+        }
+        let range=null;
+        if(pendingRange){const [length,start]=pendingRange.split('@');if(start==null&&lastUri!==line)throw new Error('HLS 바이트 범위의 시작 위치가 없습니다.');range={length:Number(length),start:start==null?lastEnd:Number(start)};lastEnd=range.start+range.length;pendingRange=null}
+        lastUri=line;return local(line,fmp4?'.m4s':'.ts',range);
+      }).join('\n');
       fs.writeFileSync(path.join(dir,`${list.name}.m3u8`),text);
     }
-    let done=0,next=0;
+    let done=tasks.filter(task=>fs.existsSync(task.file)&&fs.statSync(task.file).size>0).length,next=0;
     if(!tasks.length)throw new Error('영상 재생목록이 비어 있습니다.');
     const report=()=>{const progress=Math.min(95,Math.floor(done/tasks.length*95));if(progress!==job.progress){job.progress=progress;job.updated=Date.now();this.save()}};
-    await Promise.all(Array.from({length:HLS_PARALLEL},async()=>{
-      while(next<tasks.length&&!controller.signal.aborted){
+    report();
+    const results=await Promise.allSettled(Array.from({length:HLS_PARALLEL},async()=>{
+      try{while(next<tasks.length&&!signal.aborted){
         const task=tasks[next++];
-        if(!(fs.existsSync(task.file)&&fs.statSync(task.file).size>0)){const data=await get(task.url,true);fs.writeFileSync(`${task.file}.tmp`,task.file.endsWith('.ts')?transportStream(data):data);fs.renameSync(`${task.file}.tmp`,task.file)}
-        done++;report();
-      }
-    })).catch(error=>{controller.abort();if(job.status!=='paused')throw error});
+        if(!(fs.existsSync(task.file)&&fs.statSync(task.file).size>0)){const data=await get(task.url,true,task.range);signal.throwIfAborted();fs.writeFileSync(`${task.file}.tmp`,task.file.endsWith('.ts')&&!task.encrypted?transportStream(data):data);fs.renameSync(`${task.file}.tmp`,task.file);done++;report()}
+      }}catch(error){controller.abort();throw error}
+    }));
+    const failure=results.find(result=>result.status==='rejected');if(failure)throw failure.reason;
+    signal.throwIfAborted();
     return {dir,inputs:lists.map(list=>path.join(dir,`${list.name}.m3u8`))};
+  }
+
+  async mirrorFile(job,stream) {
+    const file=`${job.partialPath}.source`,signal=this.active.get(job.id).controller.signal;
+    const headers={'User-Agent':HLS_USER_AGENT,...stream.headers};if(stream.referer&&!headers.Referer)headers.Referer=stream.referer;
+    await downloadFile({url:stream.url,file,headers,signal,identity:stableMediaUrl(stream.url),progress:(received,total)=>{
+      const progress=total?Math.min(95,Math.floor(received/total*95)):job.progress||0;
+      if(progress!==job.progress){job.progress=progress;job.updated=Date.now();this.save()}
+    }});
+    return {inputs:[file]};
   }
 
   // Subtitles are fetched right after the video so the episode also plays offline with them.
@@ -243,6 +292,7 @@ class DownloadManager {
     if (stream?.burnedKorean || job.episode?.provider === 'ohli24') { job.subtitleChecked = true; return; }
     let found = null;
     try { found = await this.findSubtitle?.(job, stream); } catch { /* fall back to the stream's own subtitle */ }
+    if(!this.jobs.includes(job)||this.stopping)return;
     job.subtitleChecked = true;
     // The Jimaku file (and its translation) comes too: as the subtitle when nothing Korean was found, else next to a
     // Kairan / Csora / Anissia one (a fansub can be another episode's), saved for the episode so the player offers it.
@@ -258,6 +308,7 @@ class DownloadManager {
     if (!job.siteKorean) await this.attachJimaku(job, stream, false);
   }
   copySubtitle(job, found) {
+    if(!this.jobs.includes(job)||this.stopping)return;
     const base = job.filePath.replace(/\.mp4$/i, '');
     try {
       if (found.path && fs.existsSync(found.path)) { job.subtitlePath = base + path.extname(found.path); fs.copyFileSync(found.path, job.subtitlePath); }
@@ -309,7 +360,8 @@ class DownloadManager {
         const type = response.headers.get('content-type') || '';
         if (!response.ok || !/^image\//i.test(type)) return;
         file = path.join(dir, `poster${/png/i.test(type) ? '.png' : /webp/i.test(type) ? '.webp' : '.jpg'}`);
-        fs.writeFileSync(file, Buffer.from(await response.arrayBuffer()));
+        const data=Buffer.from(await response.arrayBuffer());if(!this.jobs.includes(job)||this.stopping)return;
+        fs.writeFileSync(file, data);
       } catch { return; }
     }
     job.posterPath = file; job.posterUrl = pathToFileURL(file).href; this.save();
@@ -329,6 +381,7 @@ class DownloadManager {
     for (const [index, track] of stream.subtitleTracks.entries()) {
       try {
         const file = await this.saveTrack(track.url, stream.referer), name = `${String(index + 1).padStart(2, '0')}_${safeName(track.label || 'track')}`;
+        if(!this.jobs.includes(job)||this.stopping)return;
         const entry = { label: track.label || `트랙 ${index + 1}`, format: track.format || 'vtt', language: track.language || '', url: track.url, path: path.join(dir, `${name}${path.extname(file.path)}`) };
         fs.copyFileSync(file.path, entry.path);
         if (file.assPath && fs.existsSync(file.assPath)) { entry.assPath = path.join(dir, `${name}${path.extname(file.assPath)}`); fs.copyFileSync(file.assPath, entry.assPath); }
@@ -398,7 +451,7 @@ class DownloadManager {
   }
 
   async saveSubtitle(job, url) {
-    if(!url)return;try{let data,ext='.vtt';if(url.startsWith('file:')){const source=fileURLToPath(url);ext=path.extname(source)||ext;data=fs.readFileSync(source)}else{const response=await fetch(url);if(!response.ok)return;data=Buffer.from(await response.arrayBuffer())}job.subtitlePath=job.filePath.replace(/\.mp4$/i,ext);fs.writeFileSync(job.subtitlePath,data)}catch{}
+    if(!url)return;try{let data,ext='.vtt';if(url.startsWith('file:')){const source=fileURLToPath(url);ext=path.extname(source)||ext;data=fs.readFileSync(source)}else{const response=await fetch(url);if(!response.ok)return;data=Buffer.from(await response.arrayBuffer())}if(!this.jobs.includes(job)||this.stopping)return;job.subtitlePath=job.filePath.replace(/\.mp4$/i,ext);fs.writeFileSync(job.subtitlePath,data)}catch{}
   }
 
   localPlayback(id) { const job=this.jobs.find(item=>item.id===id);if(!job||job.status!=='completed'||!fs.existsSync(job.filePath))throw new Error('다운로드 파일을 찾지 못했습니다.');return {url:pathToFileURL(job.filePath).href,subtitleUrl:job.subtitlePath&&fs.existsSync(job.subtitlePath)?pathToFileURL(job.subtitlePath).href:null,subtitleAss:job.subtitleAssPath&&fs.existsSync(job.subtitleAssPath)?{url:pathToFileURL(job.subtitleAssPath).href,path:job.subtitleAssPath,fonts:(job.subtitleFonts||[]).filter(file=>fs.existsSync(file)).map(file=>pathToFileURL(file).href)}:null,subtitleLabel:job.subtitleLabel||'',subtitleTracks:offlineTracks(job),job}; }
@@ -419,3 +472,16 @@ function offlineTracks(job) {
 function trackDir(job) { return job.filePath.replace(/\.mp4$/i, '_자막트랙'); }
 
 module.exports = { DownloadManager };
+
+function removeOwnedFolder(target,parent) {
+  const resolved=path.resolve(target),root=path.resolve(parent);
+  if(path.dirname(resolved)!==root||resolved===root)throw new Error('다운로드 임시 폴더 경로가 올바르지 않습니다.');
+  fs.rmSync(resolved,{recursive:true,force:true});
+}
+function stableMediaUrl(value) {
+  let url=new URL(value);
+  const proxy=url.hostname==='127.0.0.1'&&url.pathname.match(/^\/__flix\/[^/]+\/(.+)$/);
+  if(proxy&&proxy[1]!=='master.m3u8')url=new URL(Buffer.from(proxy[1],'base64url').toString());
+  for(const key of [...url.searchParams.keys()])if(/^(?:token|expires?|exp|signature|sig|auth|policy|key-pair-id|hdnts|hmac)$/i.test(key))url.searchParams.delete(key);
+  return url.href;
+}
