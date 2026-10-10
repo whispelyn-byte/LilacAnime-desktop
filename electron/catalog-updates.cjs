@@ -74,7 +74,7 @@ function createCatalogUpdates(deps) {
         const $ = cheerio.load(await deps.animenosubFetch(`${deps.animenosubBase}/anime/?order=update&page=${number}`));
         data = deps.animenosubItems($('article.bs').map((_, node) => $.html(node)).get().join(''));
       } else if (provider === 'linkani') data = deps.linkaniItems(await deps.linkaniFetch(`${deps.linkaniBase}/list/2/${number > 1 ? `page/${number}/` : ''}`));
-      else data = deps.ohliItems(await deps.ohliFetch(`${deps.ohliBase}/ing`));
+      else data = await deps.ohliAiring();
       return { data, nextOffset: number + 1, done: provider === 'ohli24' || !data.length, note: '소스의 최근 회차 업데이트 목록입니다.' };
     })();
     const entry = { time: Date.now(), promise }; cache.set(key, entry);

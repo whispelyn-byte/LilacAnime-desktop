@@ -5,7 +5,7 @@ const { createCatalogBrowser } = require('../electron/catalog-browser.cjs');
 function setup(overrides = {}) {
   const requests = [];
   const deps = {
-    reanimeBase: 'https://reanime.test', animenosubBase: 'https://animenosub.test', linkaniBase: 'https://linkani.test', ohliBase: 'https://ohli.test',
+    reanimeBase: 'https://reanime.test', animenosubBase: 'https://animenosub.test', linkaniBase: 'https://linkani.test',
     reanimeFetch: async url => { requests.push(url); return url.includes('facets=true') ? { facets: { genres: { Action: 100, Comedy: 200 }, format: { TV: 100, MOVIE: 30 } } } : { results: Array.from({ length: 36 }, (_, at) => ({ mal_id: String(Number(new URL(url).searchParams.get('offset')) + at), title: `작품 ${at}` })), total: 80 }; },
     reanimeItems: root => root.results,
     animenosubFetch: async url => { requests.push(url); return '<input name="genre[]" value="action"><input name="type" value="tv"><input name="type" value="movie"><input name="season[]" value="winter-2026"><input name="season[]" value="spring-2026"><input name="season[]" value="fall-2025">'; },
@@ -14,7 +14,7 @@ function setup(overrides = {}) {
     linkkfFilter: async request => { requests.push(request); return { data: [{ mal_id: 'linkkf:1' }], total: 100, totalPages: 3 }; },
     miruroApi: async (name, request) => { requests.push(request); return { data: [{ id: 'show' }], next_cursor: 'next:cursor', has_more: true }; }, miruroItem: raw => ({ mal_id: `miruro:${raw.id}` }),
     linkaniFetch: async url => { requests.push(url); return 'page'; }, linkaniItems: () => [{ mal_id: 'linkani:tv', type: 'TV' }],
-    ohliFetch: async url => { requests.push(url); return 'page'; }, ohliItems: () => [{ mal_id: 'ohli:tv', type: 'TV' }, { mal_id: 'ohli:movie', type: 'Movie' }],
+    ohliBrowse: async (page, format) => { requests.push({ ohli: page, format }); return { data: [{ mal_id: 'ohli:tv', type: 'TV' }, { mal_id: 'ohli:movie', type: 'Movie' }], done: page >= 3 }; },
     ...overrides
   };
   return { browser: createCatalogBrowser(deps), requests, deps };
@@ -89,11 +89,12 @@ test('Linkani year requests use its full year archive, and a page without format
   await h.browser.browse('linkani', { format: 'Movie', year: '2026', offset: 2 }); assert.equal(h.requests[1], 'https://linkani.test/list/2/year/2026/page/2/');
 });
 
-test('Ohli format selection continues into its finished archive', async () => {
+test('애니24 format selection asks its board page by page until the last', async () => {
   const h = setup(), first = await h.browser.browse('ohli24', { format: 'Movie' });
   assert.equal(first.data.length, 1); assert.equal(first.data[0].mal_id, 'ohli:movie');
-  await h.browser.browse('ohli24', { format: 'Movie', offset: first.nextOffset });
-  assert.equal(h.requests[1], 'https://ohli.test/finished/1-1.html');
+  const second = await h.browser.browse('ohli24', { format: 'Movie', offset: first.nextOffset });
+  assert.deepEqual(h.requests, [{ ohli: 1, format: 'Movie' }, { ohli: 2, format: 'Movie' }]);
+  assert.equal(second.done, false); assert.equal((await h.browser.browse('ohli24', { offset: 3 })).done, true);
 });
 
 test('RE latest filters preserve release order from the complete catalog', async () => {

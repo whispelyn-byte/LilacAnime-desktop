@@ -99,9 +99,12 @@ function createCatalogBrowser(deps) {
       const result = await deps.updates.page(provider, offset);
       return { ...result, data: result.data.filter(item => !format || item.type === format) };
     }
-    const raw = provider === 'linkani'
-      ? deps.linkaniItems(await deps.linkaniFetch(`${deps.linkaniBase}/list/2/${year ? `year/${year}/` : ''}${page > 1 ? `page/${page}/` : ''}`))
-      : deps.ohliItems(await deps.ohliFetch(page === 1 ? `${deps.ohliBase}/` : `${deps.ohliBase}/finished/${page - 1}-1.html`));
+    if (provider === 'ohli24') {
+      // Movies come from their own board; the rest is the airing shows, then the finished ones.
+      const result = await deps.ohliBrowse(page, format);
+      return { data: result.data.filter(item => !format || item.type === format), nextOffset: page + 1, done: result.done || !result.data.length };
+    }
+    const raw = deps.linkaniItems(await deps.linkaniFetch(`${deps.linkaniBase}/list/2/${year ? `year/${year}/` : ''}${page > 1 ? `page/${page}/` : ''}`));
     return { data: raw.filter(item => !format || item.type === format), nextOffset: page + 1, done: !raw.length };
   }
   return { facets, browse };

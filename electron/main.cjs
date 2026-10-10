@@ -583,28 +583,59 @@ async function hlsProbe(url,headers={}){
   return {program:variants.length>1?program:null,speed:size/1024/Math.max(.05,(Date.now()-started)/1000)};
 }
 
-// --- Ohli24 (애니24) -------------------------------------------------------------------------------------------------
-// A Korean site whose videos have the Korean subtitle burned in. Its pages are read with Chromium's network stack
-// (Electron's net): the connection Node's own TLS makes to it is cut off on Korean lines, Chromium's is not.
-// Lists: the home page (recommended), /ing (airing, all on one page), /finished/N-1.html (finished, 25 a page), and
-// /search/keyword-…html. A series page has the original (Japanese) title, genres, air date, the story and its episodes
-// (newest first); an episode page embeds the cdndania (FirePlayer) player.
-const OHLI24_WEB='https://www.ohli24.net';
+// --- 애니24 (ani.ohli24.com) ----------------------------------------------------------------------------------------
+// A Korean site whose videos mostly have the Korean subtitle burned in. Its pages are read with Chromium's network
+// stack (Electron's net): the connection Node's own TLS makes to it is cut off on Korean lines, Chromium's is not.
+// It is a Laravel + Inertia app: each page carries what it shows as JSON (<script data-page="app">), read here
+// rather than its markup. Boards: /방영중 (every airing show on one page; a keyword is not applied there), /완결 and
+// /극장판 (24 a page, ?page=N, ?keyword= searches the board). A series is /c/<title> (its info rows, story and
+// episodes, 100 a page); an episode is /e/<title N화>, its player (cdndania / michealcdn, FirePlayer) in
+// playing.body.url.
+// It took the place of www.ohli24.net, a copy no longer kept up (episodes missing, dates off): a series or episode
+// saved from there (내 목록, 시청 기록, downloads) is found again here by its title.
+const OHLI24_WEB='https://ani.ohli24.com',OHLI24_OLD=/^https?:\/\/(?:www\.)?ohli24\.net\//i;
 async function ohliFetch(url){
   const response=await net.fetch(url,{signal:AbortSignal.timeout(30000),headers:{'User-Agent':LINKKF_UA,Accept:'text/html,application/xhtml+xml','Accept-Language':'ko-KR,ko;q=0.9',Referer:`${OHLI24_WEB}/`}});
   if(!response.ok)throw new Error(`애니24 HTTP ${response.status}`);
   return response.text();
 }
-function ohliItems(html){
-  const $=cheerio.load(html),found=new Map();
-  $('.show-item').each((_,node)=>{
-    const el=$(node),link=el.find('a.show-item-img-link').attr('href')||el.find('a[href*=".html"]').attr('href')||'',id=String(link).match(/\/(\d+)\/[^/]+\.html/)?.[1];
-    const img=el.find('img').first(),title=(el.find('.show-item-title').first().text()||img.attr('title')||'').trim();
-    if(!id||!title||found.has(id))return;
-    found.set(id,{provider:'ohli24',id,mal_id:`ohli24:${id}`,title,title_english:'',images:{webp:{large_image_url:absoluteUrl(img.attr('src')||'',OHLI24_WEB)}},score:null,year:'',type:/극장판/.test(title)?'Movie':'TV',
-      episodes:Number(el.find('.show-item-eps').first().text().match(/\d+/)?.[0])||null,availableEpisodes:Number(el.find('.show-item-eps').first().text().match(/\d+/)?.[0])||null,totalEpisodes:null,status:el.find('.cat-tag').first().text().trim(),synopsis:'',
-      genres:el.find('.top-list-body-genre a').map((_,a)=>({name:$(a).text().trim()})).get().filter(genre=>genre.name),studios:[],url:absoluteUrl(link,OHLI24_WEB)});
-  });
+async function ohliPage(url){
+  const json=(await ohliFetch(url)).match(/<script data-page="app" type="application\/json">([\s\S]*?)<\/script>/)?.[1];
+  if(!json)throw new Error('애니24 페이지를 읽지 못했습니다.');
+  return JSON.parse(json).props||{};
+}
+const ohliPath=(...parts)=>`${OHLI24_WEB}/${parts.map(part=>encodeURIComponent(part)).join('/')}`;
+const ohliText=html=>String(html||'').replace(/<br\s*\/?>/gi,'\n').replace(/<[^>]+>/g,'').replace(/&nbsp;/g,' ').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&amp;/g,'&').split('\n').map(line=>line.trim()).filter(Boolean).join('\n');
+const ohliInfo=item=>Object.fromEntries(Array.isArray(item?.metadata?.info_rows)?item.metadata.info_rows:[]);
+// "2025-10-29T10:14:25+09:00" / "2025-10-25T08:49:54.000000Z" → the day in Korea.
+const ohliDay=value=>{const time=Date.parse(value||'');return Number.isFinite(time)?new Date(time+9*3600000).toISOString().slice(0,10):''};
+// A series as the app lists it, from a board's card (comics.data) or the airing list's shorter one (title, thumbnail,
+// date, eps "63화").
+function ohliAnime(item){
+  const slug=String(item.slug||item.title||''),info=ohliInfo(item),count=Number(item.episodes_count)||Number(String(item.eps||'').match(/\d+/)?.[0])||null;
+  return {provider:'ohli24',id:slug,mal_id:`ohli24:${slug}`,title:String(item.title||slug),title_english:'',title_japanese:String(item.original_title||info['원제']||''),
+    images:{webp:{large_image_url:item.thumbnail?`${OHLI24_WEB}/storage/${item.thumbnail}`:''}},score:Number(item.rating)||null,year:String(info['방영일']||item.published_at||'').match(/\d{4}/)?.[0]||'',
+    type:item.category==='극장판'?'Movie':'TV',episodes:Number(item.episode_total)||count,availableEpisodes:count,totalEpisodes:Number(item.episode_total)||null,status:String(item.category||(item.eps?'방영중':'')),
+    synopsis:ohliText(item.description),genres:String(item.tags_string||'').split(',').map(name=>name.trim()).filter(Boolean).map(name=>({name})),studios:[],url:ohliPath('c',slug)};
+}
+async function ohliBoard(board,page=1,keyword=''){
+  const url=new URL(ohliPath(board));if(page>1)url.searchParams.set('page',String(page));if(keyword)url.searchParams.set('keyword',keyword);
+  const comics=(await ohliPage(url.href)).comics||{};
+  return {data:(comics.data||[]).map(ohliAnime),done:!comics.next_page_url};
+}
+async function ohliAiring(){return ((await ohliPage(ohliPath('방영중'))).items||[]).map(ohliAnime)}
+// The whole catalog: the airing shows first, then the finished ones a page at a time (latest update first); movies
+// from their own board.
+async function ohliBrowse(page=1,format=''){
+  if(format==='Movie')return ohliBoard('극장판',page);
+  return page<=1?{data:await ohliAiring(),done:false}:ohliBoard('완결',page-1);
+}
+// A search: the finished and movie boards search themselves; the airing board lists every airing show, matched here.
+async function ohliSearch(query){
+  const key=value=>String(value||'').normalize('NFKC').toLowerCase().replace(/\s+/g,''),wanted=key(query);
+  const [airing,finished,movies]=await Promise.all([ohliAiring().catch(()=>[]),ohliBoard('완결',1,query).then(result=>result.data,()=>[]),ohliBoard('극장판',1,query).then(result=>result.data,()=>[])]);
+  const found=new Map();
+  for(const item of [...airing.filter(item=>key(item.title).includes(wanted)),...finished,...movies])if(!found.has(item.mal_id))found.set(item.mal_id,item);
   return [...found.values()];
 }
 // The AniList entry of a 애니24 series, by its original (Japanese) title and air year: AniSkip finds OP/ED times by it
@@ -637,26 +668,28 @@ function episodeLabelInfo(label){
   const number=Number(text.match(/(\d+(?:\.\d+)?)\s*화/)?.[1]||text.match(/\d+(?:\.\d+)?/)?.[0])||null;
   return {name:number?String(number):text||'1',number};
 }
+// A series: what it is (원제, 장르, 방영일, 총화수 in its info rows), its story and every episode (100 a page). One saved
+// from www.ohli24.net (its url there) is opened here by its title, or found by a search for it.
 async function ohliDetail(anime){
-  const $=cheerio.load(await ohliFetch(anime.url)),meta={};
-  $('.article-box-meta li').each((_,li)=>{const spans=$(li).find('span');meta[$(spans[0]).text().replace(/[:：]\s*$/,'').trim()]=spans.slice(1).map((_,span)=>$(span).text()).get().join('').replace(/\s+/g,' ').trim()});
-  const title=String($('meta[property="og:title"]').attr('content')||'').replace(/\s*자막\s*다시보기\s*$/,'').trim()||anime.title;
-  const poster=$('.article-box-img img').attr('src')||$('meta[property="og:image"]').attr('content')||imageOfMain(anime);
-  const episodes=[];
-  $('.eps-item a[href]').each((_,a)=>{
-    const el=$(a),date=el.find('.eps-date').text().replace(/\s+/g,' ').trim(),label=el.clone().children().remove().end().text().trim();
-    episodes.push({...episodeLabelInfo(label),url:absoluteUrl(el.attr('href'),OHLI24_WEB),dub:false,provider:'ohli24',...(/^\d{4}-\d{2}-\d{2}$/.test(date)?{airedDate:date}:{})});
-  });
-  // Listed newest first; a movie's page has no list and plays itself. A special between episodes keeps its own number
-  // (9.5화 is 9.5, not 5), so it is listed, played and saved apart from the episode its number ends in.
-  episodes.reverse();if(episodes.every(episode=>episode.number))episodes.sort((a,b)=>a.number-b.number);
-  if(!episodes.length)episodes.push({name:'1',number:1,url:anime.url,dub:false,provider:'ohli24'});
-  const native=meta['원제']||anime.title_japanese||'',ids=native&&!hasHangul(native)?await ohliAnilist(native,(meta['방영일']||'').match(/\d{4}/)?.[0]):null;
+  const own=/^https?:\/\/ani\.ohli24\.com\/c\//i.test(anime.url||''),slug=own?decodeURIComponent(new URL(anime.url).pathname.slice(3)):String(anime.title||anime.id||'');
+  let props;
+  try{props=await ohliPage(ohliPath('c',slug));if(!props.comic)throw new Error('애니24에서 이 작품을 찾지 못했습니다.')}
+  catch(error){if(own)throw error;const hit=(await ohliSearch(slug)).find(item=>titleCompareKey(item.title)===titleCompareKey(slug));if(!hit)throw error;props=await ohliPage(hit.url)}
+  const comic=props.comic,info=ohliInfo(comic),list=[...(props.episodes?.data||[])];
+  for(let page=2;page<=Number(props.episodes?.last_page||1);page++)list.push(...((await ohliPage(`${ohliPath('c',comic.slug)}?page=${page}`)).episodes?.data||[]));
+  // The site's order (sort: 100 a numbered episode) is kept for what it cannot tell apart; the numbered episodes come
+  // first by number, the specials (OVA, SP) after them. A special between episodes keeps its own number (9.5화 is
+  // 9.5, not 5), so it is listed, played and saved apart from the episode its number ends in.
+  const episodes=list.map(item=>({...episodeLabelInfo(item.title),url:ohliPath('e',item.slug),dub:false,provider:'ohli24',order:Number(item.sort)||0,...(ohliDay(item.published_at)?{airedDate:ohliDay(item.published_at)}:{})}))
+    .sort((a,b)=>Number(Boolean(a.special))-Number(Boolean(b.special))||(a.number||0)-(b.number||0)||a.order-b.order).map(({order,...episode})=>episode);
+  // A movie is its one episode, whatever the site calls it ("14기", the movie's own title): 1화, as before.
+  if(comic.category==='극장판'&&episodes.length===1){const [only]=episodes;delete only.special;Object.assign(only,{name:'1',number:1})}
+  const native=String(comic.original_title||info['원제']||anime.title_japanese||''),ids=native&&!hasHangul(native)?await ohliAnilist(native,String(info['방영일']||'').match(/\d{4}/)?.[0]):null;
   if(ids)for(const episode of episodes)if(!episode.special)Object.assign(episode,ids);
-  const data={...anime,...(ids||{}),title,title_japanese:native,images:{webp:{large_image_url:absoluteUrl(poster,OHLI24_WEB)}},
-    synopsis:$('.movie-coment').first().text().replace(/\s+/g,' ').trim()||anime.synopsis||'',genres:(meta['장르']||'').split(/[,/·]/).map(name=>name.trim()).filter(Boolean).map(name=>({name})),
-    year:(meta['방영일']||'').match(/\d{4}/)?.[0]||anime.year||'',aired:meta['방영일']||'',availableEpisodes:Math.max(...episodes.map(episode=>Number.isInteger(episode.number)?episode.number:0)),totalEpisodes:Number((meta['총화수']||'').match(/\d+/)?.[0])||null,episodes:Number((meta['총화수']||'').match(/\d+/)?.[0])||episodes.length};
-  return {data,episodes,unavailable:false};
+  const card=ohliAnime({...comic,episodes_count:episodes.length});
+  const data={...anime,...(ids||{}),title:card.title,title_japanese:native,images:card.images.webp.large_image_url?card.images:anime.images,synopsis:card.synopsis||anime.synopsis||'',genres:card.genres.length?card.genres:(String(info['장르']||'').split(',').map(name=>name.trim()).filter(Boolean).map(name=>({name}))),
+    year:card.year||anime.year||'',aired:String(info['방영일']||''),type:card.type,status:card.status,url:card.url,availableEpisodes:Math.max(0,...episodes.map(episode=>Number.isInteger(episode.number)?episode.number:0)),totalEpisodes:card.totalEpisodes,episodes:card.totalEpisodes||episodes.length};
+  return {data,episodes,unavailable:!episodes.length};
 }
 // The cdndania player hands its master playlist (master.txt) only to its own page: the request needs the cookie the
 // page sets and the page's own headers (no Referer). The variant playlist and the segments it lists are open, so the
@@ -705,10 +738,13 @@ async function ohliCaption(win,playerUrl){
   }
   return null;
 }
+// An episode's player: from its page's data, or the iframe of a www.ohli24.net page (saved in 시청 기록 before 애니24
+// moved) while that site still answers.
 async function resolveOhliEpisode(episode){
-  const $=cheerio.load(await ohliFetch(episode.url));
-  const player=absoluteUrl($('iframe#video').attr('src')||$('iframe[src*="cdndania"]').attr('src')||$('iframe[src]').first().attr('src')||'',episode.url);
-  if(!player)throw new Error('이 회차의 영상 플레이어를 찾지 못했습니다.');
+  let player='';
+  if(OHLI24_OLD.test(episode.url||'')){const $=cheerio.load(await ohliFetch(episode.url));player=absoluteUrl($('iframe#video').attr('src')||$('iframe[src*="cdndania"]').attr('src')||$('iframe[src]').first().attr('src')||'',episode.url)}
+  else player=String((await ohliPage(episode.url)).playing?.body?.url||'');
+  if(!/^https?:\/\//i.test(player))throw new Error('이 회차의 영상 플레이어를 찾지 못했습니다.');
   const {subtitle,...stream}=await ohliStream(player);
   if(!subtitle)return {...stream,burnedKorean:true,subtitleTracks:[]};
   // Saved like the other sites' tracks and applied (and downloaded) as the episode's own Korean subtitle.
@@ -2176,7 +2212,7 @@ app.whenReady().then(async () => {
       }
     } else if (provider === 'ohli24') {
       // 이번 시즌 신작: the airing list (updated first); it has no separate "airing" rail.
-      if(current)data.push(...ohliItems(await ohliFetch(`${OHLI24_WEB}/ing`)));
+      if(current)data.push(...await ohliAiring());
     } else if (provider === 'linkani') {
       // 이번 시즌 신작: this year's shows, newest update first (two pages); 방영 중: today's weekday.
       if(current){for(let page=1;page<=2;page++)data.push(...linkaniItems(await linkaniFetch(`${LINKANI_WEB}/list/2/year/${year}/${page>1?`page/${page}/`:''}`)).filter(item=>!data.some(known=>known.mal_id===item.mal_id)));return {data,label:`${year}년`}}
@@ -2189,14 +2225,14 @@ app.whenReady().then(async () => {
   catalogUpdates = createCatalogUpdates({
     reanimeBase: REANIME_WEB, reanimeFetch: url => providerFetch(url, { json: true, referer: `${REANIME_WEB}/` }), reanimeItems, miruroApi, miruroItem,
     animenosubBase: ANIMENOSUB_WEB, animenosubFetch: url => providerFetch(url, { referer: `${ANIMENOSUB_WEB}/` }), animenosubItems: animenosubList,
-    linkaniBase: LINKANI_WEB, linkaniFetch, linkaniItems, ohliBase: OHLI24_WEB, ohliFetch, ohliItems
+    linkaniBase: LINKANI_WEB, linkaniFetch, linkaniItems, ohliAiring, ohliBrowse
   });
   ipcMain.handle('catalog:updates', (_, provider, offset) => catalogUpdates.page(String(provider || ''), offset));
   const catalogBrowser = createCatalogBrowser({
     reanimeBase: REANIME_WEB, reanimeFetch: url => providerFetch(url, { json: true, referer: `${REANIME_WEB}/search` }), reanimeItems, reanimeReleaseItems: () => sortedFromIndex('reanime', 'year'),
     animenosubBase: ANIMENOSUB_WEB, animenosubFetch: url => providerFetch(url, { referer: `${ANIMENOSUB_WEB}/` }), animenosubItems: animenosubList,
     linkkfTags: linkkfFilterTags, linkkfFilter, miruroApi, miruroItem, updates: catalogUpdates,
-    linkaniBase: LINKANI_WEB, linkaniFetch, linkaniItems, ohliBase: OHLI24_WEB, ohliFetch, ohliItems
+    linkaniBase: LINKANI_WEB, linkaniFetch, linkaniItems, ohliAiring, ohliBrowse
   });
   ipcMain.handle('catalog:facets', (_, provider) => catalogBrowser.facets(String(provider || '')));
   ipcMain.handle('catalog:browse', (_, provider, request) => catalogBrowser.browse(String(provider || ''), request || {}));
@@ -2209,10 +2245,10 @@ app.whenReady().then(async () => {
       const page=Math.max(1,Number(offset)||1),base=query?`${ANIMENOSUB_WEB}/?s=${encodeURIComponent(query)}`:(page===1?`${ANIMENOSUB_WEB}/`:`${ANIMENOSUB_WEB}/page/${page}/`),url=query&&page>1?`${ANIMENOSUB_WEB}/page/${page}/?s=${encodeURIComponent(query)}`:base;const data=animenosubList(await providerFetch(url,{referer:`${ANIMENOSUB_WEB}/`}),undefined,{onlyResults:Boolean(query)});return {data,offset:page,nextOffset:page+1,done:data.length===0};
     }
     if (provider === 'ohli24') {
-      // A search is one page; the list is the home page's (recommended), then the finished shows page by page.
-      if(query)return {data:ohliItems(await ohliFetch(`${OHLI24_WEB}/search/keyword-${encodeURIComponent(query)}.html`)),offset:1,nextOffset:null,done:true};
-      const page=Math.max(1,Number(offset)||1),data=ohliItems(await ohliFetch(page===1?`${OHLI24_WEB}/`:`${OHLI24_WEB}/finished/${page-1}-1.html`));
-      return {data,offset:page,nextOffset:page+1,done:page>1&&!data.length};
+      // A search is one page; the list is the airing shows, then the finished ones page by page.
+      if(query)return {data:await ohliSearch(query),offset:1,nextOffset:null,done:true};
+      const page=Math.max(1,Number(offset)||1),result=await ohliBrowse(page);
+      return {data:result.data,offset:page,nextOffset:page+1,done:result.done};
     }
     if (provider === 'linkani') {
       const page=Math.max(1,Number(offset)||1),url=query?`${LINKANI_WEB}/view/${page>1?`page/${page}/`:''}?wd=${encodeURIComponent(query)}`:`${LINKANI_WEB}/list/2/${page>1?`page/${page}/`:''}`;

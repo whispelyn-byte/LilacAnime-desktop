@@ -167,10 +167,18 @@ function episodeRef(episode){return encodeURIComponent(String(episode.url||episo
 // Linkkf episodes saved before they carried a number (history, downloads) only have their name ("12", "12화").
 function episodeNumberOf(episode){if(episode?.special)return null;return Number(episode?.number)||Number(String(episode?.name??'').match(/\d+/)?.[0])||null}
 // How an episode is named: "12화", or a special's own label ("OVA 1화", "SP 노벨 히로인즈").
-function episodeTitle(episode){const name=String(episode?.name??'');return episode?.special&&!/\d$/.test(name)?name:`${name}화`}
+function episodeTitle(episode){const name=String(episode?.name??'');return /\d$/.test(name)?`${name}화`:name}
 // A download's episode: its label when it is a special, else its number.
 function jobEpisodeText(job){return job.episodeLabel||`${job.episodeNumber}화`}
-function jobByRef(ref){return state.downloads.find(job=>episodeRef(job.episode||{})===ref)}
+function jobByRef(ref){return state.downloads.find(job=>episodeRef(job.episode||{})===ref)||(legacyEpisodeRefs.has(ref)?state.downloads.find(job=>episodeRef(job.episode||{})===legacyEpisodeRefs.get(ref)):undefined)}
+// 애니24 moved from www.ohli24.net to ani.ohli24.com: an episode downloaded from the old site is the same series'
+// episode of the same number (or special label) on the new one, so it shows as downloaded there.
+const legacyEpisodeRefs=new Map();
+function linkLegacyDownloads(anime,episodes){
+  const key=value=>String(value||'').normalize('NFKC').replace(/\s+/g,'');
+  const old=state.downloads.filter(job=>job.episode?.provider==='ohli24'&&/ohli24\.net\//i.test(job.episode.url||'')&&[job.title,job.anime?.title].some(title=>key(title)===key(anime.title)));
+  for(const episode of episodes||[]){const job=old.find(item=>episode.special?item.episodeLabel===episodeTitle(episode):!item.episodeLabel&&Number(item.episodeNumber)===Number(episode.number));if(job)legacyEpisodeRefs.set(episodeRef(episode),episodeRef(job.episode))}
+}
 function downloadedSeries(reference){const identity=reference?.anime?.mal_id||reference?.anime?.id||reference?.title;return state.downloads.filter(job=>job.status==='completed'&&(job.anime?.mal_id||job.anime?.id||job.title)===identity).sort((a,b)=>a.episodeNumber-b.episodeNumber).map(job=>job.episode)}
 function episodeDownloadMarkup(job){if(job?.status==='completed')return downloadIcon('delete');if(job&&['downloading','resolving','queued'].includes(job.status))return `<span class="download-ring" style="--progress:${job.progress||0}">${downloadIcon('close')}</span>`;if(job&&['paused','failed'].includes(job.status))return downloadIcon('retry');return downloadIcon('download')}
 function refreshEpisodeDownloadButtons(){$$('.episode-download').forEach(button=>{const job=jobByRef(button.dataset.downloadRef);button.classList.toggle('active',Boolean(job));button.classList.toggle('completed',job?.status==='completed');button.classList.toggle('downloading',Boolean(job&&['downloading','resolving','queued'].includes(job.status)));button.innerHTML=episodeDownloadMarkup(job);button.title=job?.status==='completed'?'다운로드 삭제':job&&['downloading','resolving','queued'].includes(job.status)?'다운로드 취소':job&&['paused','failed'].includes(job.status)?'다운로드 다시 시작':'다운로드'})}
@@ -273,7 +281,7 @@ async function openDetail(id) {
   try {
     const isLinkkf=String(id).startsWith('linkkf:'); const isExternal=/^(animenosub|reanime|miruro|ohli24|linkani):/.test(String(id));
     const known=animeById(id);if(isExternal&&!known)throw new Error('작품 정보를 찾지 못했습니다. 목록에서 다시 선택해 주세요.');
-    const providerResult=isExternal?await window.lilac.providerDetail(known):null;
+    const providerResult=isExternal?await window.lilac.providerDetail(known):null;if(providerResult?.data?.provider==='ohli24')linkLegacyDownloads(providerResult.data,providerResult.episodes);
     const {data:a}=isLinkkf?await window.lilac.linkkfDetail(String(id).slice(7)):isExternal?providerResult:await window.lilac.detail(id);if(openDetail.token!==token)return;const isSaved=saved(a.mal_id),isReAnime=a.provider==='reanime';
     const native=a.title_japanese&&a.title_japanese!==titleOf(a)?a.title_japanese:'';
     const meta=[a.type,a.year,a.status,a.aired,(a.studios||[]).slice(0,2).map(x=>x.name).join(', ')].filter(Boolean).map(x=>escapeHtml(String(x))).join(' · ');
