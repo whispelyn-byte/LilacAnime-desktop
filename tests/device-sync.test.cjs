@@ -134,3 +134,11 @@ test('an error from Vercel itself (no such function, a crash) is shown as words,
   reply = { ok: false, status: 502, json: async () => { throw new Error('not JSON'); } };
   await assert.rejects(client.connect('my-server.vercel.app', 'pw'), error => /HTTP 502/.test(error.message));
 });
+
+test('a deployment behind Vercel Authentication says how to reach it', async t => {
+  const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
+  const { DeviceSync } = require('../electron/device-sync.cjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lilac-device-sync-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const client = new DeviceSync({ app: { getPath: () => dir }, fetchImpl: async () => ({ ok: false, status: 401, json: async () => ({ message: 'Protected by Vercel Authentication', error: { message: 'Protected deployment', code: '401' }, protection: { vercel_auth_enabled: true } }) }) });
+  await assert.rejects(client.connect('test-2j058o2n4-team.vercel.app', 'pw'), error => /Deployment Protection/.test(error.message) && /Production/.test(error.message));
+});

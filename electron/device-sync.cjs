@@ -20,6 +20,9 @@ function serverAddress(value) {
 // such function, a function that crashed) answers {error: {code, message}}.
 function serverError(data, status) {
   if (typeof data?.error === 'string') return data.error;
+  // Vercel's Deployment Protection: a deployment's own address (…-<hash>-<team>.vercel.app) asks for a Vercel login.
+  if (data?.protection || /Protected (?:by Vercel|deployment)/i.test(`${data?.message || ''} ${data?.error?.message || ''}`))
+    return 'Vercel 보호 기능이 이 주소를 막고 있습니다. Vercel 프로젝트의 Domains에 있는 고정 주소(Production)를 넣거나, Settings > Deployment Protection에서 Vercel Authentication을 끄세요.';
   const code = String(data?.error?.code || '');
   if (code === 'NOT_FOUND' || status === 404) return '이 주소에 LilacAnime 서버가 없습니다. Vercel에 배포한 주소가 맞는지, 배포가 끝났는지 확인하세요.';
   if (/FUNCTION_INVOCATION|INTERNAL|DEPLOYMENT/.test(code) || status >= 500) return `서버가 요청을 처리하지 못했습니다 (${code || `HTTP ${status}`}). Vercel 프로젝트의 Logs에서 오류를 확인하세요.`;
