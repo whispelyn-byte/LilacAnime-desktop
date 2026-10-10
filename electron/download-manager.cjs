@@ -290,8 +290,8 @@ class DownloadManager {
 
   // Subtitles are fetched right after the video so the episode also plays offline with them.
   async attachSubtitle(job, stream) {
-    // 애니24: the Korean subtitle is in the video itself.
-    if (stream?.burnedKorean || job.episode?.provider === 'ohli24') { job.subtitleChecked = true; return; }
+    // 애니24: the Korean subtitle is in the video itself, unless the player put it over a raw video from a file.
+    if (stream?.burnedKorean || (job.episode?.provider === 'ohli24' && !stream?.subtitleUrl)) { job.subtitleChecked = true; return; }
     let found = null;
     try { found = await this.findSubtitle?.(job, stream); } catch { /* fall back to the stream's own subtitle */ }
     if(!this.jobs.includes(job)||this.stopping)return;
@@ -300,7 +300,7 @@ class DownloadManager {
     // Kairan / Csora / Anissia one (a fansub can be another episode's), saved for the episode so the player offers it.
     // Not when the site has its own Korean subtitle (a RE:Anime / Miruro Korean track, Linkkf's), which is the
     // episode's: no Jimaku file and no translation beside it (see attachTracks too).
-    job.siteKorean = Boolean(stream?.subtitleUrl) && (job.resolveKind === 'linkkf' || ['reanime', 'miruro', 'linkani'].includes(job.episode?.provider));
+    job.siteKorean = Boolean(stream?.subtitleUrl) && (job.resolveKind === 'linkkf' || ['reanime', 'miruro', 'linkani', 'ohli24'].includes(job.episode?.provider));
     if (!found || found.stream) {
       await this.saveSubtitle(job, stream?.subtitleUrl); this.saveAssSubtitle(job, stream?.subtitleAss?.path);
       if (!job.siteKorean) await this.attachJimaku(job, stream, !found && !job.subtitlePath);

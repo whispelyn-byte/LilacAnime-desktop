@@ -2,6 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), http = require('node:http');
 const { spawnSync } = require('node:child_process');
+const { pathToFileURL } = require('node:url');
 const { DownloadManager } = require('../electron/download-manager.cjs');
 const ffmpeg = require('ffmpeg-static');
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -71,6 +72,22 @@ test('progress ticks do not move a downloading episode to the top of the list', 
   assert.equal(manager.jobs[0].status, 'completed', manager.jobs[0].error);
   assert.equal(seen.size, 1, 'the order timestamp changes only when the episode changes state');
   assert.ok([...seen.values()][0].size > 2, 'progress was reported while downloading');
+});
+
+test('애니24 keeps the subtitle file of a raw video with the download, and none for a burned-in one', async t => {
+  const { dir, app } = fixture(t), subtitle = path.join(dir, 'ohli24.vtt'); fs.writeFileSync(subtitle, 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n봄이에요!\n');
+  const streams = { raw: { url: 'https://example/raw.mp4', burnedKorean: false, subtitleUrl: pathToFileURL(subtitle).href }, burned: { url: 'https://example/burned.mp4', burnedKorean: true } };
+  let searched = 0;
+  const manager = new DownloadManager({ app, broadcast() {}, resolveEpisode: async episode => streams[episode.id],
+    findSubtitle: async (job, stream) => { searched++; return stream?.subtitleUrl ? { stream: true } : null } }); t.after(() => manager.shutdown());
+  manager.mirrorFile = async () => ({ inputs: [] });
+  manager.runFfmpeg = async job => fs.writeFileSync(job.partialPath, 'video');
+  const raw = manager.enqueue({ title: 'New Game', episode: { id: 'raw', provider: 'ohli24' }, episodeNumber: 1 });
+  const burned = manager.enqueue({ title: 'Burned', episode: { id: 'burned', provider: 'ohli24' }, episodeNumber: 1 });
+  await finished(manager);
+  assert.equal(raw.status, 'completed', raw.error); assert.ok(raw.subtitlePath && fs.readFileSync(raw.subtitlePath, 'utf8').includes('봄이에요!'));
+  assert.equal(raw.siteKorean, true, 'the site\'s own subtitle: no Jimaku file or translation beside it');
+  assert.equal(burned.status, 'completed', burned.error); assert.equal(burned.subtitlePath, undefined); assert.equal(searched, 1, 'a burned-in video is not searched for');
 });
 
 test('pause followed by immediate resume while resolving cannot let the abandoned run write files', async t => {
