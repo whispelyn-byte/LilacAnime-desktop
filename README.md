@@ -200,7 +200,7 @@ AI 번역 자막이나 영어 · 일본어 자막이 떠 있으면 **자막 표�
 
 **내 목록**과 **시청 기록**(이어 보기 위치 포함)을 휴대폰 앱과 맞춥니다. 데이터는 내가 직접 만든 서버에만 저장됩니다.
 
-1. **서버 만들기 (한 번만):** LilacAnime 서버(lilacanimeserver)를 내 Vercel 계정에 배포하고, Vercel 프로젝트의 **Storage** 탭에서 **Upstash Redis**를 연결한 뒤 환경 변수 **LILAC_PASSWORD**(8자 이상)를 정하고 다시 배포합니다. 자세한 방법은 서버 저장소의 README에 있습니다.
+1. **서버 만들기 (한 번만):** [LilacAnime 서버](https://github.com/whispelyn-byte/LilacAnime-server)를 내 Vercel 계정에 배포하고, Vercel 프로젝트의 **Storage** 탭에서 **Upstash Redis**를 연결한 뒤 환경 변수 **LILAC_PASSWORD**(8자 이상)를 정하고 다시 배포합니다. 서버 저장소의 **Deploy** 버튼으로 시작할 수 있고, 자세한 방법은 그 README에 있습니다.
 2. 설정(톱니바퀴) > **기기 동기화**를 엽니다.
 3. **서버 주소**에 배포한 주소(`https://내-서버.vercel.app`)를 넣습니다.
 4. **비밀번호**에 LILAC_PASSWORD를 넣고 **연결**을 누릅니다. 휴대폰 앱에도 같은 주소와 비밀번호를 넣으면 됩니다.
