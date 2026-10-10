@@ -47,6 +47,8 @@ class DownloadManager {
 
   read() { try { const value = JSON.parse(fs.readFileSync(this.stateFile, 'utf8')); return Array.isArray(value) ? value : []; } catch { return []; } }
   save() { fs.mkdirSync(path.dirname(this.stateFile), { recursive: true }); fs.writeFileSync(this.stateFile, JSON.stringify(this.jobs, null, 2)); this.broadcast('downloads:changed', this.list()); }
+  // Latest change first: an episode moves up when its state changes, not with every percent of progress, so two
+  // series downloading at once do not trade places in the list all the time.
   // missing: a finished episode whose video is not where it was saved (the folder moved, the drive not plugged in).
   list() { return this.jobs.slice().sort((a,b) => (b.updated || 0) - (a.updated || 0)).map(job => job.status === 'completed' && !fs.existsSync(job.filePath || '') ? { ...job, missing: true } : job); }
 
@@ -203,7 +205,7 @@ class DownloadManager {
       args.push('-c','copy','-movflags','+faststart','-f','mp4',job.partialPath);
       const [from,span]=local?[95,4]:[0,99];
       const child=spawn(ffmpeg,args,{windowsHide:true});this.active.get(job.id).process=child;let duration=0,stderr='';
-      child.stderr.on('data',chunk=>{const text=chunk.toString();stderr=(stderr+text).slice(-12000);const d=text.match(/Duration:\s*([^,]+)/)?.[1];if(d){duration=seconds(d);job.duration=duration}const t=[...text.matchAll(/time=\s*([^\s]+)/g)].pop()?.[1];if(t&&duration){const progress=from+Math.max(0,Math.min(span,Math.round(seconds(t)/duration*span)));if(progress!==job.progress){job.progress=progress;job.updated=Date.now();this.save();}}});
+      child.stderr.on('data',chunk=>{const text=chunk.toString();stderr=(stderr+text).slice(-12000);const d=text.match(/Duration:\s*([^,]+)/)?.[1];if(d){duration=seconds(d);job.duration=duration}const t=[...text.matchAll(/time=\s*([^\s]+)/g)].pop()?.[1];if(t&&duration){const progress=from+Math.max(0,Math.min(span,Math.round(seconds(t)/duration*span)));if(progress!==job.progress){job.progress=progress;this.save();}}});
       child.once('error',reject);child.once('close',code=>{if(job.status==='paused')return resolve();if(code===0&&fs.existsSync(job.partialPath))resolve();else reject(new Error((stderr.match(/([^\r\n]+)$/)?.[1]||`FFmpeg 종료 코드 ${code}`).trim()));});
     });
   }
@@ -263,7 +265,7 @@ class DownloadManager {
     }
     let done=tasks.filter(task=>fs.existsSync(task.file)&&fs.statSync(task.file).size>0).length,next=0;
     if(!tasks.length)throw new Error('영상 재생목록이 비어 있습니다.');
-    const report=()=>{const progress=Math.min(95,Math.floor(done/tasks.length*95));if(progress!==job.progress){job.progress=progress;job.updated=Date.now();this.save()}};
+    const report=()=>{const progress=Math.min(95,Math.floor(done/tasks.length*95));if(progress!==job.progress){job.progress=progress;this.save()}};
     report();
     const results=await Promise.allSettled(Array.from({length:HLS_PARALLEL},async()=>{
       try{while(next<tasks.length&&!signal.aborted){
@@ -281,7 +283,7 @@ class DownloadManager {
     const headers={'User-Agent':HLS_USER_AGENT,...stream.headers};if(stream.referer&&!headers.Referer)headers.Referer=stream.referer;
     await downloadFile({url:stream.url,file,headers,signal,identity:stableMediaUrl(stream.url),progress:(received,total)=>{
       const progress=total?Math.min(95,Math.floor(received/total*95)):job.progress||0;
-      if(progress!==job.progress){job.progress=progress;job.updated=Date.now();this.save()}
+      if(progress!==job.progress){job.progress=progress;this.save()}
     }});
     return {inputs:[file]};
   }

@@ -54,6 +54,25 @@ test('closing during an ordinary HLS download resumes cached segments after rest
   assert.equal(decoded.status, 0, decoded.stderr);
 });
 
+test('progress ticks do not move a downloading episode to the top of the list', async t => {
+  const { dir, app } = fixture(t), media = path.join(dir, 'media'); fs.mkdirSync(media);
+  const generated = spawnSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc=size=160x90:rate=10', '-t', '4', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-g', '5',
+    '-f', 'hls', '-hls_time', '0.5', '-hls_list_size', '0', path.join(media, 'video.m3u8')], { windowsHide: true, encoding: 'utf8' });
+  assert.equal(generated.status, 0, generated.stderr);
+  const server = http.createServer((req, res) => res.end(fs.readFileSync(path.join(media, path.basename(new URL(req.url, 'http://localhost').pathname)))));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const seen = new Map();
+  const manager = new DownloadManager({ app, resolveEpisode: async () => ({ url: `http://127.0.0.1:${server.address().port}/video.m3u8`, hls: true, burnedKorean: true }), broadcast: (_, jobs) => {
+    for (const job of jobs) if (job.status === 'downloading') { const entry = seen.get(job.updated) || new Set(); entry.add(job.progress || 0); seen.set(job.updated, entry); }
+  } }); t.after(() => manager.shutdown());
+  manager.enqueue({ title: 'Order Test', anime: { id: 'series' }, episode: { id: 'one', number: 1 }, episodeNumber: 1 });
+  await finished(manager);
+  assert.equal(manager.jobs[0].status, 'completed', manager.jobs[0].error);
+  assert.equal(seen.size, 1, 'the order timestamp changes only when the episode changes state');
+  assert.ok([...seen.values()][0].size > 2, 'progress was reported while downloading');
+});
+
 test('pause followed by immediate resume while resolving cannot let the abandoned run write files', async t => {
   const { app } = fixture(t); let resolveFirst, lookups = 0, remuxes = 0;
   const manager = new DownloadManager({ app, broadcast() {}, resolveEpisode: async () => {

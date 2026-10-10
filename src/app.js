@@ -137,7 +137,12 @@ function downloadGroupCard(key,jobs){
   const progress=Math.round(jobs.reduce((sum,job)=>sum+(job.status==='completed'?100:job.progress||0),0)/jobs.length);
   group.className=`download-group${open?' open':''}`;
   group.innerHTML=`<article class="download-card download-group-card"><div class="download-cover"${cover?` style="background-image:url('${cover}')"`:''}></div><div class="download-copy"><b ${first.anime?titleAttr(first.anime):''}>${escapeHtml(storedTitle(first))} <small>${jobs.length}개 회차</small></b><span>${escapeHtml(summary)}</span><div class="download-progress"><i style="width:${progress}%"></i></div></div><div class="download-actions">${active.length?`<button data-group-action="cancel">${downloadIcon('close')}<span>전체 중지</span></button>`:''}${stopped?`<button data-group-action="resume">${downloadIcon('retry')}<span>이어 받기</span></button>`:''}<button class="danger" data-group-action="remove">${downloadIcon('delete')}<span>전체 삭제</span></button><button class="download-group-toggle" aria-expanded="${open}" aria-label="회차 목록 ${open?'접기':'펼치기'}"><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button></div></article><div class="download-group-episodes"></div>`;
-  const head=group.querySelector('.download-group-card'),toggle=()=>{open?openDownloadGroups.delete(key):openDownloadGroups.add(key);renderDownloads()};
+  // The whole list is drawn again: the group's card is kept where it was on screen (its group may have moved meanwhile).
+  group.dataset.groupKey=key;
+  const head=group.querySelector('.download-group-card'),toggle=()=>{
+    const top=head.getBoundingClientRect().top;
+    open?openDownloadGroups.delete(key):openDownloadGroups.add(key);renderDownloads();
+    const card=document.querySelector(`#downloadList > [data-group-key="${CSS.escape(key)}"] > .download-group-card`),main=card?.closest('main');if(main)main.scrollTop+=card.getBoundingClientRect().top-top};
   head.onclick=event=>{if(!event.target.closest('[data-group-action]'))toggle()};
   for(const button of head.querySelectorAll('[data-group-action]'))button.onclick=async event=>{
     event.stopPropagation();const action=button.dataset.groupAction;

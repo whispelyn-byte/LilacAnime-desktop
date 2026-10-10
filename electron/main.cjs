@@ -633,17 +633,18 @@ async function ohliDetail(anime){
   const poster=$('.article-box-img img').attr('src')||$('meta[property="og:image"]').attr('content')||imageOfMain(anime);
   const episodes=[];
   $('.eps-item a[href]').each((_,a)=>{
-    const el=$(a),date=el.find('.eps-date').text().replace(/\s+/g,' ').trim(),label=el.clone().children().remove().end().text().trim(),number=Number(label.match(/(\d+)\s*화/)?.[1]||label.match(/\d+/)?.[0])||null;
+    const el=$(a),date=el.find('.eps-date').text().replace(/\s+/g,' ').trim(),label=el.clone().children().remove().end().text().trim(),number=Number(label.match(/(\d+(?:\.\d+)?)\s*화/)?.[1]||label.match(/\d+(?:\.\d+)?/)?.[0])||null;
     episodes.push({name:number?String(number):label||'1',number,url:absoluteUrl(el.attr('href'),OHLI24_WEB),dub:false,provider:'ohli24',...(/^\d{4}-\d{2}-\d{2}$/.test(date)?{airedDate:date}:{})});
   });
-  // Listed newest first; a movie's page has no list and plays itself.
+  // Listed newest first; a movie's page has no list and plays itself. A special between episodes keeps its own number
+  // (9.5화 is 9.5, not 5), so it is listed, played and saved apart from the episode its number ends in.
   episodes.reverse();if(episodes.every(episode=>episode.number))episodes.sort((a,b)=>a.number-b.number);
   if(!episodes.length)episodes.push({name:'1',number:1,url:anime.url,dub:false,provider:'ohli24'});
   const native=meta['원제']||anime.title_japanese||'',ids=native&&!hasHangul(native)?await ohliAnilist(native,(meta['방영일']||'').match(/\d{4}/)?.[0]):null;
   if(ids)for(const episode of episodes)Object.assign(episode,ids);
   const data={...anime,...(ids||{}),title,title_japanese:native,images:{webp:{large_image_url:absoluteUrl(poster,OHLI24_WEB)}},
     synopsis:$('.movie-coment').first().text().replace(/\s+/g,' ').trim()||anime.synopsis||'',genres:(meta['장르']||'').split(/[,/·]/).map(name=>name.trim()).filter(Boolean).map(name=>({name})),
-    year:(meta['방영일']||'').match(/\d{4}/)?.[0]||anime.year||'',aired:meta['방영일']||'',availableEpisodes:Math.max(...episodes.map(episode=>Number(episode.number)||0)),totalEpisodes:Number((meta['총화수']||'').match(/\d+/)?.[0])||null,episodes:Number((meta['총화수']||'').match(/\d+/)?.[0])||episodes.length};
+    year:(meta['방영일']||'').match(/\d{4}/)?.[0]||anime.year||'',aired:meta['방영일']||'',availableEpisodes:Math.max(...episodes.map(episode=>Number.isInteger(episode.number)?episode.number:0)),totalEpisodes:Number((meta['총화수']||'').match(/\d+/)?.[0])||null,episodes:Number((meta['총화수']||'').match(/\d+/)?.[0])||episodes.length};
   return {data,episodes,unavailable:false};
 }
 // The cdndania player hands its master playlist (master.txt) only to its own page: the request needs the cookie the
@@ -718,7 +719,7 @@ async function linkaniDetail(anime){
   $('.ewave-playlist-content').each((index,list)=>{
     const id=$(list).attr('id')||'',tab=tabs.find(item=>item.target===`#${id}`)||tabs[index]||{name:''},dub=index>0&&!/sub|자막/i.test(tab.name)||/더빙|dub/i.test(tab.name);
     $(list).find('a[href*="/watch/"]').each((_,a)=>{
-      const href=absoluteUrl($(a).attr('href'),LINKANI_WEB),label=$(a).text().trim(),number=Number(label.match(/\d+/)?.[0]||href.match(/\/k(\d+)\/?$/)?.[1])||null;
+      const href=absoluteUrl($(a).attr('href'),LINKANI_WEB),label=$(a).text().trim(),number=Number(label.match(/\d+(?:\.\d+)?/)?.[0]||href.match(/\/k(\d+)\/?$/)?.[1])||null;
       if(!episodes.some(episode=>episode.url===href))episodes.push({name:number?String(number):label||'1',number,url:href,dub,provider:'linkani'});
     });
   });
@@ -732,7 +733,7 @@ async function linkaniDetail(anime){
   if(ids)for(const episode of episodes)Object.assign(episode,ids);
   const data={...anime,...(ids||{}),title_japanese:native||anime.title_japanese||'',title,images:{webp:{large_image_url:poster?absoluteUrl(poster,LINKANI_WEB):imageOfMain(anime)}},synopsis:synopsis||anime.synopsis||'',
     score:Number($('.ewave-star').attr('score'))||anime.score||null,genres:(field['장르']?.links||[]).map(name=>({name})),studios:(field['제작사']?.links||[]).map(name=>({name})),
-    year:(field['년']?.text||'').match(/\d{4}/)?.[0]||anime.year||'',type:field['분류']?.text||anime.type||'TV',availableEpisodes:Math.max(0,...episodes.map(episode=>Number(episode.number)||0)),totalEpisodes:Number((field['총화수']?.text||'').match(/\d+/)?.[0])||anime.totalEpisodes||null,episodes:Number((field['총화수']?.text||'').match(/\d+/)?.[0])||episodes.filter(episode=>!episode.dub).length||null};
+    year:(field['년']?.text||'').match(/\d{4}/)?.[0]||anime.year||'',type:field['분류']?.text||anime.type||'TV',availableEpisodes:Math.max(0,...episodes.map(episode=>Number.isInteger(episode.number)?episode.number:0)),totalEpisodes:Number((field['총화수']?.text||'').match(/\d+/)?.[0])||anime.totalEpisodes||null,episodes:Number((field['총화수']?.text||'').match(/\d+/)?.[0])||episodes.filter(episode=>!episode.dub).length||null};
   return {data,episodes,unavailable:!episodes.length};
 }
 async function resolveLinkaniEpisode(episode){
