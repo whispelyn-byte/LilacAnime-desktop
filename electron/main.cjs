@@ -942,16 +942,37 @@ function readSubtitleText(file){
   if(data[0]===0xfe&&data[1]===0xff)return new TextDecoder('utf-16be').decode(data.subarray(2));
   try{return new TextDecoder('utf-8',{fatal:true}).decode(data).replace(/^\uFEFF/,'')}catch{return new TextDecoder('euc-kr').decode(data)}
 }
+// Plain text as a VTT cue (as the translator writes one). VTT drops whatever would end or open something there: a blank
+// line ends the cue (two breaks in a row, a break before a line break of the file), a "-->" line starts another, and
+// a "<" opens a tag that swallows the rest ("<3 사랑해", "a < b"). Empty lines are left out and the rest escaped.
+function vttCueText(text){return String(text).split(/\r?\n|\r/).map(line=>line.trim()).filter(Boolean).join('\n').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/--&gt;/g,'→')}
 // Android prepareSmiAsVttFile: each <SYNC Start=ms> cue lasts until the next SYNC (or 5 s for the last one).
+// SAMI is HTML: <br> breaks a line, the file's own line breaks are spaces ("첫 줄<br>⏎둘째 줄" is two lines, not three),
+// and its character references are read (&lt; is a "<" of the text, &#12354; a character).
 function smiToVtt(file){
   const source=readSubtitleText(file),syncs=[...source.matchAll(/<sync\s+start\s*=\s*["']?(\d+)["']?[^>]*>([\s\S]*?)(?=<sync\s+start\s*=|$)/gi)];
-  const clean=raw=>raw.replace(/<br\s*\/?>/gi,'\n').replace(/<\/p\s*>/gi,'\n').replace(/<[^>]+>/g,'').replace(/&nbsp;/gi,' ').replace(/&amp;/gi,'&').replace(/&lt;/gi,'<').replace(/&gt;/gi,'>').replace(/&quot;/gi,'"').replace(/&#39;/g,"'").split('\n').map(line=>line.trim()).join('\n').trim();
+  const char=code=>{try{return String.fromCodePoint(code)}catch{return ''}};
+  const clean=raw=>vttCueText(raw.replace(/\s*[\r\n]+\s*/g,' ').replace(/<br\s*\/?>/gi,'\n').replace(/<\/p\s*>/gi,'\n').replace(/<[^>]+>/g,'').replace(/&nbsp;/gi,' ').replace(/&lt;/gi,'<').replace(/&gt;/gi,'>').replace(/&quot;/gi,'"').replace(/&apos;/gi,"'")
+    .replace(/&#x([0-9a-f]+);/gi,(_,hex)=>char(parseInt(hex,16))).replace(/&#(\d+);/g,(_,dec)=>char(Number(dec))).replace(/&amp;/gi,'&'));
   const clock=ms=>{const h=Math.floor(ms/3600000),m=Math.floor(ms/60000)%60,sec=Math.floor(ms/1000)%60;return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}.${String(ms%1000).padStart(3,'0')}`};
   const cues=syncs.map((match,index)=>{const start=Number(match[1]),end=syncs[index+1]?Number(syncs[index+1][1]):start+5000,text=clean(match[2]);return end>start&&text?`${index+1}\n${clock(start)} --> ${clock(end)}\n${text}`:null}).filter(Boolean);
   const out=file.replace(/\.(smi|sami)$/i,'.vtt');fs.writeFileSync(out,`WEBVTT\n\n${cues.join('\n\n')}\n`,'utf8');return out;
 }
-function srtToVtt(file){const text=readSubtitleText(file).replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g,'$1.$2');const out=file.replace(/\.srt$/i,'.vtt');fs.writeFileSync(out,`WEBVTT\n\n${text}`,'utf8');return out}
-function assToVtt(file){const lines=fs.readFileSync(file,'utf8').replace(/^\uFEFF/,'').split(/\r?\n/);let inEvents=false,fields=[];const cues=[];const stamp=value=>{const match=String(value).trim().match(/(\d+):(\d{2}):(\d{2})[.](\d{1,3})/);if(!match)return null;return `${String(match[1]).padStart(2,'0')}:${match[2]}:${match[3]}.${match[4].padEnd(3,'0').slice(0,3)}`};for(const line of lines){if(/^\[Events]/i.test(line)){inEvents=true;continue}if(/^\[/.test(line)){inEvents=false;continue}if(!inEvents)continue;if(/^Format:/i.test(line)){fields=line.slice(line.indexOf(':')+1).split(',').map(x=>x.trim().toLowerCase());continue}if(!/^Dialogue:/i.test(line)||!fields.length)continue;const raw=line.slice(line.indexOf(':')+1),parts=raw.split(','),values=parts.slice(0,fields.length-1);values.push(parts.slice(fields.length-1).join(','));const row=Object.fromEntries(fields.map((field,index)=>[field,values[index]||'']));const start=stamp(row.start),end=stamp(row.end);if(!start||!end)continue;const text=(row.text||'').replace(/\{[^}]*}/g,'').replace(/\\[Nn]/g,'\n').replace(/\\h/g,' ').trim();if(text)cues.push(`${start} --> ${end}\n${text}`)}const out=file.replace(/\.(ass|ssa)$/i,'.vtt');fs.writeFileSync(out,`WEBVTT\n\n${cues.join('\n\n')}\n`,'utf8');return out}
+// An SRT made from SMI keeps its <br>s, which VTT does not know (the lines would run together): each becomes a line
+// break, taking the file's own line break beside it along so no blank line cuts the cue short. Its tags (<i>, <font>)
+// stay, but a "<" that opens none and a "-->" in the text are escaped (see vttCueText).
+function srtToVtt(file){
+  const timing=/^\s*[\d:.,]+\s*-->\s*[\d:.,]+/;
+  const text=readSubtitleText(file).replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g,'$1.$2').replace(/(?:\r?\n)?(?:[ \t]*<br\s*\/?>[ \t]*)+(?:\r?\n)?/gi,'\n')
+    .split('\n').map(line=>timing.test(line)?line:line.replace(/<(?!\/?[a-z][^<>]*>)/gi,'&lt;').replace(/-->/g,'→')).join('\n');
+  const out=file.replace(/\.srt$/i,'.vtt');fs.writeFileSync(out,`WEBVTT\n\n${text}`,'utf8');return out}
+// A VTT converted from the SMI / SRT / ASS file beside it (same name), made again with the converters above.
+function reconvertSubtitle(vtt){
+  if(!/\.vtt$/i.test(vtt))return false;
+  for(const [ext,convert] of [['.smi',smiToVtt],['.sami',smiToVtt],['.srt',srtToVtt],['.ass',assToVtt],['.ssa',assToVtt]]){const original=vtt.replace(/\.vtt$/i,ext);if(fs.existsSync(original)){convert(original);return true}}
+  return false;
+}
+function assToVtt(file){const lines=fs.readFileSync(file,'utf8').replace(/^\uFEFF/,'').split(/\r?\n/);let inEvents=false,fields=[];const cues=[];const stamp=value=>{const match=String(value).trim().match(/(\d+):(\d{2}):(\d{2})[.](\d{1,3})/);if(!match)return null;return `${String(match[1]).padStart(2,'0')}:${match[2]}:${match[3]}.${match[4].padEnd(3,'0').slice(0,3)}`};for(const line of lines){if(/^\[Events]/i.test(line)){inEvents=true;continue}if(/^\[/.test(line)){inEvents=false;continue}if(!inEvents)continue;if(/^Format:/i.test(line)){fields=line.slice(line.indexOf(':')+1).split(',').map(x=>x.trim().toLowerCase());continue}if(!/^Dialogue:/i.test(line)||!fields.length)continue;const raw=line.slice(line.indexOf(':')+1),parts=raw.split(','),values=parts.slice(0,fields.length-1);values.push(parts.slice(fields.length-1).join(','));const row=Object.fromEntries(fields.map((field,index)=>[field,values[index]||'']));const start=stamp(row.start),end=stamp(row.end);if(!start||!end)continue;const text=vttCueText((row.text||'').replace(/\{[^}]*\\p[1-9][^}]*\}[^{]*/g,'').replace(/\{[^}]*}/g,'').replace(/\\[Nn]/g,'\n').replace(/\\h/g,' '));if(text)cues.push(`${start} --> ${end}\n${text}`)}const out=file.replace(/\.(ass|ssa)$/i,'.vtt');fs.writeFileSync(out,`WEBVTT\n\n${cues.join('\n\n')}\n`,'utf8');return out}
 // Local audio analysis over downloaded episodes only (Android LinkkfChapterService.detectSkipSegmentsOffline).
 // Results are cached per title and episode.
 async function analyzeOfflineOpEd({title,episode,currentUrl,duration,candidates,status=()=>{}}){
@@ -1954,7 +1975,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('desktop:settings',()=>desktopState.settings());
   ipcMain.handle('desktop:tray',(_,enabled)=>desktopState.setTray(Boolean(enabled)));
   const broadcast=(channel,value)=>BrowserWindow.getAllWindows().forEach(win=>{if(!win.isDestroyed())win.webContents.send(channel,value)});
-  const subtitleStore=new SubtitleStore({app});
+  const subtitleStore=new SubtitleStore({app,reconvert:reconvertSubtitle});
   // Same order as the player's ensureSubtitle: the preferred source's saved file, the stream's own
   // subtitle, any saved file, then Kairan/Csora.
   const downloadSubtitleKey=job=>{const episode=job.episode||{};return encodeURIComponent(String(episode.url||episode.token||episode.id||episode.number||''))};

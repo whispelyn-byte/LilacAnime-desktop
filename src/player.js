@@ -439,7 +439,10 @@ function pipSourceVideo() {
   return pip.video = video;
 }
 function vttLines(ctx, text, maxWidth) {
-  const plain = text.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  // Character references as the player shows them (&#39; and &quot; too, which SRT files carry).
+  const char = code => { try { return String.fromCodePoint(code); } catch { return ''; } };
+  const plain = text.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lrm;|&rlm;/g, '')
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => char(parseInt(hex, 16))).replace(/&#(\d+);/g, (_, dec) => char(Number(dec))).replace(/&amp;/g, '&');
   return plain.split(/\r?\n/).flatMap(line => {
     const words = line.split(' '), lines = [];
     let current = '';

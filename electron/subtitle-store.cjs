@@ -7,7 +7,9 @@ const { pathToFileURL } = require('url');
 const SOURCES = ['linkkf', 'reanime', 'kairan', 'csora', 'anissia', 'jimaku', 'user', 'provider', 'download', 'gemini'];
 
 class SubtitleStore {
-  constructor({ app }) {
+  // reconvert(vttPath): makes a converted VTT again from the SMI / SRT / ASS file beside it (false when there is none).
+  constructor({ app, reconvert = null }) {
+    this.reconvert = reconvert;
     this.file = path.join(app.getPath('userData'), 'subtitle-store.json');
     this.managedRoot = path.join(app.getPath('userData'), 'subtitles');
     try { this.data = JSON.parse(fs.readFileSync(this.file, 'utf8')) || {}; } catch { this.data = {}; }
@@ -21,7 +23,10 @@ class SubtitleStore {
 
   list(key) {
     const entries = (this.data[key] || []).filter(entry => entry.path && fs.existsSync(entry.path));
-    if (entries.length !== (this.data[key] || []).length) { this.data[key] = entries; this.write(); }
+    let changed = entries.length !== (this.data[key] || []).length;
+    // VTT made before converter 2 lost the lines after a <br> (SMI), a "<" or a "-->": made again once from its original.
+    for (const entry of entries) if (this.reconvert && (entry.converter || 0) < 2) { try { this.reconvert(entry.path); } catch { /* kept as it is */ } entry.converter = 2; changed = true; }
+    if (changed) { this.data[key] = entries; this.write(); }
     return entries.map(entry => this.withUrls(entry));
   }
 
@@ -35,7 +40,7 @@ class SubtitleStore {
     // back only while the file is still there).
     const engine = item => String(item.label || '').split(' 번역')[0];
     const list = (this.data[key] || []).filter(item => !(item.source === source && (item.path === entry.path || (source === 'gemini' && engine(item) === engine(entry)))));
-    const saved = { id: `sub_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, source, label: String(entry.label || source), path: entry.path, assPath: entry.assPath || null, fonts: Array.isArray(entry.fonts) ? entry.fonts : [], saved: Date.now(), ...(entry.from ? { from: String(entry.from), fromName: String(entry.fromName || '') } : {}) };
+    const saved = { id: `sub_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, source, label: String(entry.label || source), path: entry.path, assPath: entry.assPath || null, fonts: Array.isArray(entry.fonts) ? entry.fonts : [], saved: Date.now(), converter: 2, ...(entry.from ? { from: String(entry.from), fromName: String(entry.fromName || '') } : {}) };
     // behind: made in the background beside the subtitle on screen, so it does not come first when the episode opens.
     this.data[key] = (entry.behind ? [...list.slice(0, 19), saved] : [saved, ...list]).slice(0, 20);
     this.write();
