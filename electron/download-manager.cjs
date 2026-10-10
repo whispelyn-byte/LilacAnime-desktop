@@ -14,6 +14,8 @@ function seconds(value = '') {
 }
 
 const MAX_CONCURRENT_DOWNLOADS = 2;
+// Saved and found subtitle sources whose file is Korean (a fansub, a machine translation, Linkkf's, the user's own).
+const KOREAN_SOURCES = ['kairan', 'csora', 'anissia', 'gemini', 'linkkf', 'user'];
 const HLS_PARALLEL = 6;
 const HLS_USER_AGENT = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome || '131.0.0.0'} Safari/537.36`;
 
@@ -156,7 +158,8 @@ class DownloadManager {
       const stream = await resolving;
       if(stopped())return;
       if(stream?.server)job.videoServer=stream.server; // Animenosub: which server the video came from
-      const animeDir=path.join(this.root,safeName(job.title)), base=`${String(job.episodeNumber).padStart(3,'0')}화`;
+      // A special (OVA, SP) is saved by its label ("OVA 1화.mp4"), not over the numbered episode it shares a number with.
+      const animeDir=path.join(this.root,safeName(job.title)), base=job.episodeLabel?safeName(job.episodeLabel):`${String(job.episodeNumber).padStart(3,'0')}화`;
       fs.mkdirSync(animeDir,{recursive:true});job.filePath||=path.join(animeDir,`${base}.mp4`);job.partialPath=`${job.filePath}.part`;fs.mkdirSync(path.dirname(job.filePath),{recursive:true});job.status='downloading';job.updated=Date.now();this.save();
       const hls=stream?.mirror||stream?.hls||/\.m3u8(?:$|\?)/i.test(stream.url)||new URL(stream.url).pathname.startsWith('/__flix/');
       const local=hls?await this.mirrorHls(job,stream):await this.mirrorFile(job,stream);
@@ -301,6 +304,9 @@ class DownloadManager {
     // Not when the site has its own Korean subtitle (a RE:Anime / Miruro Korean track, Linkkf's), which is the
     // episode's: no Jimaku file and no translation beside it (see attachTracks too).
     job.siteKorean = Boolean(stream?.subtitleUrl) && (job.resolveKind === 'linkkf' || ['reanime', 'miruro', 'linkani', 'ohli24'].includes(job.episode?.provider));
+    // Whether the episode's own subtitle is Korean (the site's, a fansub, a translation or the user's file): a track
+    // translated later stays beside it then, instead of becoming the episode's subtitle (see attachTracks).
+    job.koreanSubtitle = job.siteKorean || Boolean(found && !found.stream && KOREAN_SOURCES.includes(found.source));
     if (!found || found.stream) {
       await this.saveSubtitle(job, stream?.subtitleUrl); this.saveAssSubtitle(job, stream?.subtitleAss?.path);
       if (!job.siteKorean) await this.attachJimaku(job, stream, !found && !job.subtitlePath);
@@ -408,7 +414,13 @@ class DownloadManager {
       job.stage = 'translate'; job.translateProgress = track.label; this.save();
       const result = await this.translateTrack?.(track.path, title, job.anime).catch(() => null);
       if (!result || !this.jobs.includes(job)) return; // no key or model, translation of downloads turned off, or it failed
-      track.translatedPath = track.path.replace(/\.[^.]+$/, '.ko.vtt'); fs.copyFileSync(result.path, track.translatedPath);
+      // Nothing Korean for the episode: the translation is its subtitle, beside the video ("<episode>.ko.vtt") as a
+      // translated Jimaku file is, not only in the track folder. Beside a Korean one it is kept with the tracks.
+      if (!job.koreanSubtitle && fs.existsSync(job.filePath || '')) {
+        const out = job.filePath.replace(/\.mp4$/i, '.ko.vtt'); fs.copyFileSync(result.path, out); track.translatedPath = out;
+        job.subtitleOriginals = [...(job.subtitleOriginals || []), job.subtitlePath, job.subtitleAssPath].filter(item => item && item !== out);
+        Object.assign(job, { subtitlePath: out, subtitleAssPath: null, subtitleFonts: [], subtitleLabel: `${result.engine || 'AI'} 번역 (${track.label})` });
+      } else { track.translatedPath = track.path.replace(/\.[^.]+$/, '.ko.vtt'); fs.copyFileSync(result.path, track.translatedPath); }
       track.translatedFailed = result.failed || 0; this.save();
     } finally { job.stage = ''; delete job.translateProgress; job.updated = Date.now(); this.save(); }
   }

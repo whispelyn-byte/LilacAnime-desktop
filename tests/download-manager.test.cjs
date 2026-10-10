@@ -167,3 +167,41 @@ test('ordinary HTTP video downloads are staged and remuxed into a playable offli
   assert.equal(job.status, 'completed', job.error); assert.equal(fs.existsSync(`${job.filePath}.part.source`), false);
   const decoded = spawnSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-i', job.filePath, '-f', 'null', '-'], { windowsHide: true, encoding: 'utf8' }); assert.equal(decoded.status, 0, decoded.stderr);
 });
+
+test('a special (OVA 1화) is saved by its label, not over 1화', async t => {
+  const { app } = fixture(t);
+  const manager = new DownloadManager({ app, broadcast() {}, resolveEpisode: async () => ({ url: 'https://example/video.mp4', burnedKorean: true }) }); t.after(() => manager.shutdown());
+  manager.mirrorFile = async () => ({ inputs: [] });
+  manager.runFfmpeg = async job => fs.writeFileSync(job.partialPath, job.episode.id);
+  const one = manager.enqueue({ title: '삼자삼엽', episode: { id: 'ep1', number: 1, provider: 'ohli24' }, episodeNumber: 1 });
+  const ova = manager.enqueue({ title: '삼자삼엽', episode: { id: 'ova1', name: 'OVA 1', number: null, special: true, provider: 'ohli24' }, episodeNumber: 1, episodeLabel: 'OVA 1화' });
+  await finished(manager);
+  assert.deepEqual([path.basename(one.filePath), path.basename(ova.filePath)], ['001화.mp4', 'OVA 1화.mp4']);
+  assert.equal(fs.readFileSync(one.filePath, 'utf8'), 'ep1');
+});
+
+test('a translated subtitle track is the episode\'s subtitle beside the video when nothing Korean was found, else it stays with the tracks', async t => {
+  const make = (korean, dir, app) => new DownloadManager({ app, broadcast() {},
+    resolveEpisode: async () => ({ url: 'https://example/video.mp4', referer: '', subtitleTracks: [{ url: 'https://example/en.vtt', label: 'English', language: 'en' }] }),
+    findSubtitle: async () => korean ? { source: 'kairan', path: path.join(dir, 'kairan.vtt'), label: 'Kairan 자막' } : null,
+    saveTrack: async () => { const file = path.join(dir, `track-${Math.random()}.vtt`); fs.writeFileSync(file, 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello\n'); return { path: file }; },
+    translateTrack: async () => { const file = path.join(dir, `ko-${Math.random()}.vtt`); fs.writeFileSync(file, 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n안녕\n'); return { path: file, engine: 'Gemini', failed: 0 }; } });
+  for (const korean of [false, true]) {
+    const { dir, app } = fixture(t);
+    fs.writeFileSync(path.join(dir, 'kairan.vtt'), 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n안녕하세요\n');
+    const manager = make(korean, dir, app); t.after(() => manager.shutdown());
+    manager.mirrorFile = async () => ({ inputs: [] });
+    manager.runFfmpeg = async job => fs.writeFileSync(job.partialPath, 'video');
+    const job = manager.enqueue({ title: korean ? 'Tempest' : 'Ghost Meets Gal', episode: { id: 'one', number: 1, provider: 'reanime' }, episodeNumber: 1 });
+    await finished(manager); await manager.trackQueue;
+    const track = job.subtitleTracks[0];
+    if (!korean) {
+      assert.equal(job.subtitlePath, job.filePath.replace(/\.mp4$/, '.ko.vtt')); assert.equal(job.subtitleLabel, 'Gemini 번역 (English)');
+      assert.equal(track.translatedPath, job.subtitlePath); assert.match(fs.readFileSync(job.subtitlePath, 'utf8'), /안녕/);
+    } else {
+      assert.match(fs.readFileSync(job.subtitlePath, 'utf8'), /안녕하세요/, 'the fansub stays the subtitle');
+      assert.equal(path.basename(path.dirname(track.translatedPath)), '001화_자막트랙'); assert.equal(path.basename(track.translatedPath), '01_English.ko.vtt');
+      assert.equal(fs.existsSync(job.filePath.replace(/\.mp4$/, '.ko.vtt')), false);
+    }
+  }
+});

@@ -627,6 +627,16 @@ async function ohliAnilist(native,year){
   ohliAnilistCache.set(key,lookup);lookup.catch(()=>ohliAnilistCache.delete(key));
   return lookup.catch(()=>null);
 }
+// An episode's label on the Korean sites (애니24, 링크애니): "12화", "9.5화", or a special ("OVA 1화", "SP 노벨 히로인즈",
+// "특별편"). A special has no episode number of its own: read as one, "OVA 1화" was 1화 a second time (listed twice,
+// saved over 1화, given 1화's OP/ED times). It keeps its label as its name instead, and special: true.
+const SPECIAL_EPISODE=/^\s*(?:OVA|OAD|ONA|SP|SPECIAL|스페셜|특별편?|번외편?|극장판)(?![a-z])/i;
+function episodeLabelInfo(label){
+  const text=String(label||'').trim();
+  if(SPECIAL_EPISODE.test(text))return {name:text.replace(/\s*화\s*$/,''),number:null,special:true};
+  const number=Number(text.match(/(\d+(?:\.\d+)?)\s*화/)?.[1]||text.match(/\d+(?:\.\d+)?/)?.[0])||null;
+  return {name:number?String(number):text||'1',number};
+}
 async function ohliDetail(anime){
   const $=cheerio.load(await ohliFetch(anime.url)),meta={};
   $('.article-box-meta li').each((_,li)=>{const spans=$(li).find('span');meta[$(spans[0]).text().replace(/[:：]\s*$/,'').trim()]=spans.slice(1).map((_,span)=>$(span).text()).get().join('').replace(/\s+/g,' ').trim()});
@@ -634,15 +644,15 @@ async function ohliDetail(anime){
   const poster=$('.article-box-img img').attr('src')||$('meta[property="og:image"]').attr('content')||imageOfMain(anime);
   const episodes=[];
   $('.eps-item a[href]').each((_,a)=>{
-    const el=$(a),date=el.find('.eps-date').text().replace(/\s+/g,' ').trim(),label=el.clone().children().remove().end().text().trim(),number=Number(label.match(/(\d+(?:\.\d+)?)\s*화/)?.[1]||label.match(/\d+(?:\.\d+)?/)?.[0])||null;
-    episodes.push({name:number?String(number):label||'1',number,url:absoluteUrl(el.attr('href'),OHLI24_WEB),dub:false,provider:'ohli24',...(/^\d{4}-\d{2}-\d{2}$/.test(date)?{airedDate:date}:{})});
+    const el=$(a),date=el.find('.eps-date').text().replace(/\s+/g,' ').trim(),label=el.clone().children().remove().end().text().trim();
+    episodes.push({...episodeLabelInfo(label),url:absoluteUrl(el.attr('href'),OHLI24_WEB),dub:false,provider:'ohli24',...(/^\d{4}-\d{2}-\d{2}$/.test(date)?{airedDate:date}:{})});
   });
   // Listed newest first; a movie's page has no list and plays itself. A special between episodes keeps its own number
   // (9.5화 is 9.5, not 5), so it is listed, played and saved apart from the episode its number ends in.
   episodes.reverse();if(episodes.every(episode=>episode.number))episodes.sort((a,b)=>a.number-b.number);
   if(!episodes.length)episodes.push({name:'1',number:1,url:anime.url,dub:false,provider:'ohli24'});
   const native=meta['원제']||anime.title_japanese||'',ids=native&&!hasHangul(native)?await ohliAnilist(native,(meta['방영일']||'').match(/\d{4}/)?.[0]):null;
-  if(ids)for(const episode of episodes)Object.assign(episode,ids);
+  if(ids)for(const episode of episodes)if(!episode.special)Object.assign(episode,ids);
   const data={...anime,...(ids||{}),title,title_japanese:native,images:{webp:{large_image_url:absoluteUrl(poster,OHLI24_WEB)}},
     synopsis:$('.movie-coment').first().text().replace(/\s+/g,' ').trim()||anime.synopsis||'',genres:(meta['장르']||'').split(/[,/·]/).map(name=>name.trim()).filter(Boolean).map(name=>({name})),
     year:(meta['방영일']||'').match(/\d{4}/)?.[0]||anime.year||'',aired:meta['방영일']||'',availableEpisodes:Math.max(...episodes.map(episode=>Number.isInteger(episode.number)?episode.number:0)),totalEpisodes:Number((meta['총화수']||'').match(/\d+/)?.[0])||null,episodes:Number((meta['총화수']||'').match(/\d+/)?.[0])||episodes.length};
@@ -745,18 +755,19 @@ async function linkaniDetail(anime){
   $('.ewave-playlist-content').each((index,list)=>{
     const id=$(list).attr('id')||'',tab=tabs.find(item=>item.target===`#${id}`)||tabs[index]||{name:''},dub=index>0&&!/sub|자막/i.test(tab.name)||/더빙|dub/i.test(tab.name);
     $(list).find('a[href*="/watch/"]').each((_,a)=>{
-      const href=absoluteUrl($(a).attr('href'),LINKANI_WEB),label=$(a).text().trim(),number=Number(label.match(/\d+(?:\.\d+)?/)?.[0]||href.match(/\/k(\d+)\/?$/)?.[1])||null;
-      if(!episodes.some(episode=>episode.url===href))episodes.push({name:number?String(number):label||'1',number,url:href,dub,provider:'linkani'});
+      const href=absoluteUrl($(a).attr('href'),LINKANI_WEB),info=episodeLabelInfo($(a).text().trim());
+      if(!info.number&&!info.special){const fromUrl=Number(href.match(/\/k(\d+)\/?$/)?.[1])||null;if(fromUrl)Object.assign(info,{name:String(fromUrl),number:fromUrl})}
+      if(!episodes.some(episode=>episode.url===href))episodes.push({...info,url:href,dub,provider:'linkani'});
     });
   });
-  episodes.sort((a,b)=>Number(a.dub)-Number(b.dub)||(a.number||0)-(b.number||0));
+  episodes.sort((a,b)=>Number(a.dub)-Number(b.dub)||Number(Boolean(a.special))-Number(Boolean(b.special))||(a.number||0)-(b.number||0));
   // The original title (원제, under the episode list) and the air year find the AniList entry, as 애니24's do, so AniSkip
   // has the OP/ED times; a poster taken from AniList (anilist-<id>.png) names it outright.
   const info=$('.box.tv').first(),infoText=info.text().replace(/\s+/g,' '),native=(infoText.match(/원제\s*[:：]\s*(.+?)$/)?.[1]||'').trim();
   const airYear=(infoText.match(/방영 정보\s*[:：]\s*(\d{4})/)?.[1])||(field['년']?.text||'').match(/\d{4}/)?.[0]||'';
   const posterId=Number(String(poster).match(/anilist-(\d+)\./)?.[1])||null;
   const ids=posterId?{anilistId:posterId,malId:null}:native&&!hasHangul(native)?await ohliAnilist(native,airYear):null;
-  if(ids)for(const episode of episodes)Object.assign(episode,ids);
+  if(ids)for(const episode of episodes)if(!episode.special)Object.assign(episode,ids);
   const data={...anime,...(ids||{}),title_japanese:native||anime.title_japanese||'',title,images:{webp:{large_image_url:poster?absoluteUrl(poster,LINKANI_WEB):imageOfMain(anime)}},synopsis:synopsis||anime.synopsis||'',
     score:Number($('.ewave-star').attr('score'))||anime.score||null,genres:(field['장르']?.links||[]).map(name=>({name})),studios:(field['제작사']?.links||[]).map(name=>({name})),
     year:(field['년']?.text||'').match(/\d{4}/)?.[0]||anime.year||'',type:field['분류']?.text||anime.type||'TV',availableEpisodes:Math.max(0,...episodes.map(episode=>Number.isInteger(episode.number)?episode.number:0)),totalEpisodes:Number((field['총화수']?.text||'').match(/\d+/)?.[0])||anime.totalEpisodes||null,episodes:Number((field['총화수']?.text||'').match(/\d+/)?.[0])||episodes.filter(episode=>!episode.dub).length||null};
@@ -2020,6 +2031,8 @@ app.whenReady().then(async () => {
   // Android LilacDownloadService: AniSkip timestamps are saved with the download (one retry after 500 ms);
   // without them the local analyzer runs over the anime's other downloaded episodes.
   const findDownloadSkips=async job=>{
+    // A special (OVA, SP) is not one of the series' numbered episodes, whose times these are.
+    if(job.episode?.special)return [];
     let anilistId=job.episode?.anilistId||job.anime?.anilistId||null,malId=job.episode?.malId||job.anime?.malId||null;
     if(!anilistId&&!malId&&['ohli24','linkani'].includes(job.anime?.provider)&&!hasHangul(job.anime.title_japanese))({anilistId=null,malId=null}=await ohliAnilist(String(job.anime.title_japanese||''),job.anime.year)||{});
     const lookup=()=>androidOnlineSkipTimes({episode:job.episodeNumber,anilistId,malId,duration:job.duration||0}).catch(()=>[]);
@@ -2279,7 +2292,9 @@ app.whenReady().then(async () => {
   // Android OpEdSkipResolver: online playback uses AniSkip only; a downloaded episode uses the AniSkip
   // timestamps saved with the download, then the local audio analyzer over other downloaded episodes.
   ipcMain.handle('oped:get', async (event, request = {}) => {
-    let {title='',episode,duration,currentUrl,candidates=[],anilistId=null,malId=null,nativeTitle='',year='',audioAnalysis=true,offline=false,jobId=null}=request;if(!/^(https?|file):/i.test(currentUrl||'')||!Number.isFinite(Number(duration)))return [];
+    let {title='',episode,duration,currentUrl,candidates=[],anilistId=null,malId=null,nativeTitle='',year='',audioAnalysis=true,offline=false,jobId=null,special=false}=request;if(!/^(https?|file):/i.test(currentUrl||'')||!Number.isFinite(Number(duration)))return [];
+    // A special (OVA, SP) is not one of the series' numbered episodes, whose AniSkip times these would be.
+    if(special&&!offline)return [];
     // 애니24 has no AniList id of its own: it is found by the original title (see ohliAnilist).
     if(!anilistId&&!malId&&nativeTitle&&!hasHangul(nativeTitle))({anilistId=null,malId=null}=await ohliAnilist(String(nativeTitle),year)||{});
     const status=message=>event.sender.send('oped:status',message);
