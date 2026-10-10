@@ -244,3 +244,24 @@ test('ASS canvas follows stretched video bounds and returns to the original boun
   assert.equal(created[0].bounds.width, 1600); assert.equal(created[0].bounds.x, 250);
   await window.LilacAss.destroy(); assert.equal(window.LilacAss.active, false);
 });
+
+test('a slower earlier subtitle search does not replace the source or maker picked after it', async () => {
+  const elements = {}, $ = selector => (elements[selector] ||= { value: selector === '#skipTitle' ? '체인소맨' : selector === '#skipEpisode' ? '6' : '', textContent: '' });
+  const pending = [], attached = [];
+  const context = vm.createContext({ $, localStorage: { setItem() {} }, playbackRequestId: 1, currentPlaybackContext: {}, currentSubtitle: null,
+    KOREAN_SOURCES: ['kairan', 'csora', 'anissia'], SUBTITLE_SOURCE_LABELS: { kairan: 'Kairan', csora: 'Csora', anissia: 'Anissia' },
+    window: { lilac: { savedSubtitles: async () => [], findSubtitle: (source, _title, _episode, _anime, options = {}) => new Promise((resolve, reject) => pending.push({ source, maker: options.maker, resolve, reject })) } },
+    subtitleStoreKey: () => 'key', subtitleSearchAnime: () => ({}), pressSubtitleSource() {}, renderSubtitleSheet() {}, preferAiSubtitle() {}, syncSettingChoices() {}, syncPlayerSettingsUI() {}, renderAnissiaMakers() {},
+    communityLabel: (source, result) => `${source}${result.maker ? ` · ${result.maker}` : ''}`, attachSubtitle: (url, label) => attached.push(label) });
+  vm.runInContext(section('// Each chip press', '// Quality:'), context);
+  vm.runInContext(section('async function selectAnissiaMaker', '// Writes one subtitle setting'), context);
+  const settle = async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); };
+  const kairan = context.switchSubtitleSource('kairan'); await settle();
+  const csora = context.switchSubtitleSource('csora'); await settle();
+  pending[1].resolve({ url: 'csora', path: 'csora' }); pending[0].resolve({ url: 'kairan', path: 'kairan' }); await Promise.all([kairan, csora]);
+  assert.deepEqual(attached, ['csora']);
+  const first = context.selectAnissiaMaker('A'), second = context.selectAnissiaMaker('B');
+  pending[3].resolve({ url: 'b', path: 'b', maker: 'B' }); pending[2].reject(new Error('none')); await Promise.all([first, second]);
+  assert.deepEqual(attached, ['csora', 'anissia · B']);
+  assert.equal($('#subtitleState').textContent, 'Anissia · B 자막을 찾는 중...');
+});
