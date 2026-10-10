@@ -99,5 +99,9 @@ contextBridge.exposeInMainWorld('lilac', {
   defaultSubtitleFont: (choice, customPath) => ipcRenderer.invoke('font:default', choice, customPath),
   chooseFont: () => ipcRenderer.invoke('file:font'),
   updateNotes: () => ipcRenderer.invoke('update:notes'),
-  openExternal: url => ipcRenderer.invoke('open:external', url)
+  openExternal: url => ipcRenderer.invoke('open:external', url),
+  syncStatus: () => ipcRenderer.invoke('device-sync:status'),
+  syncConnect: (server, password) => ipcRenderer.invoke('device-sync:connect', server, password),
+  syncDisconnect: () => ipcRenderer.invoke('device-sync:disconnect'),
+  syncRequest: (method, pathname, body) => ipcRenderer.invoke('device-sync:request', method, pathname, body)
 });

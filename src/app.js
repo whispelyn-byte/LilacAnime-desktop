@@ -6,7 +6,7 @@ const $$ = s => [...document.querySelectorAll(s)];
 const SPEED_OPTIONS=[.1,.25,.5,.75,1,1.25,1.5,1.75,2,3,4];
 const store = {
   get(key, fallback = []) { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } },
-  set(key, value) { localStorage.setItem(key, JSON.stringify(value)); }
+  set(key, value) { localStorage.setItem(key, JSON.stringify(value)); if (key === 'library' || key === 'history') window.deviceSyncChanged?.(key); }
 };
 const state = { season: [], top: [], library: store.get('library'), history: store.get('history'), downloads:[], source: localStorage.getItem('contentSource') || 'reanime', catalogOffset:36, catalogTotal:null, catalogLoading:false, catalogDone:false };
 let hlsPlayer = null;
@@ -112,7 +112,7 @@ function card(a) {
 function renderCards(target, items) { const el=$(target); el.classList.remove('loading-cards'); el.replaceChildren(...items.map(card)); }
 function toggleLibrary(a, button) {
   if(saved(a.mal_id)){state.library=state.library.filter(x=>x.mal_id!==a.mal_id);updateLibraryButton(button,false,!button?.classList.contains('heart'));toast('내 목록에서 삭제했어요.');}
-  else{state.library.unshift(normalize(a));updateLibraryButton(button,true,!button?.classList.contains('heart'));toast('내 목록에 추가했어요.');}
+  else{state.library.unshift({...normalize(a),savedAt:Date.now()});updateLibraryButton(button,true,!button?.classList.contains('heart'));toast('내 목록에 추가했어요.');}
   store.set('library',state.library); renderLibrary();
 }
 function downloadStatusText(job){if(job.missing)return '영상 파일을 찾을 수 없어요 · 옮겼다면 위의 "저장 폴더 바꾸기"로 그 폴더를 골라 주세요';return job.status==='completed'?job.stage==='subtitle'?'다운로드 완료 · 자막 찾는 중':job.stage==='translate'?`다운로드 완료 · 자막 트랙 번역 중 (${job.translateProgress||''})`:job.subtitlePath?'다운로드 완료 · 자막 포함':'다운로드 완료':job.status==='downloading'?`${job.progress||0}% 다운로드 중`:job.status==='resolving'?'영상 주소 확인 중':job.status==='queued'?'대기 중':job.status==='paused'?'일시 중지':job.status==='failed'?`실패 · ${job.error||'다시 시도해 주세요'}`:job.status}
@@ -1143,3 +1143,51 @@ async function showChangelogIfUpdated(version){
 }
 $('#changelogClose').onclick=()=>$('#changelogDialog').close();
 $('#changelogBody').addEventListener('click',event=>{const link=event.target.closest('a[data-external]');if(link){event.preventDefault();window.lilac.openExternal(link.href)}});
+
+// 기기 동기화 (src/device-sync.js): 내 목록 and 시청 기록 through the owner's LilacAnime server, connected in 설정 > 기기
+// 동기화. It runs when the app opens, when it comes back to the front, every 5 minutes, and a little after either list
+// changes here (a history entry while playing at most every 30 s, as its progress is saved every few seconds).
+const deviceSync=(()=>{
+  let server='',connected=false,timer=null,due=0,lastRun=0;
+  const formatAt=at=>new Date(at).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});
+  const show=text=>{$('#syncState').textContent=text};
+  const engine=LilacSync.createSync({
+    api:{push:items=>window.lilac.syncRequest('POST','/api/sync',{items}),pull:since=>window.lilac.syncRequest('GET',`/api/sync?since=${since}`)},
+    read:()=>({library:state.library,history:state.history}),
+    // Written past store.set, so taking in the other device's changes does not schedule another sync.
+    write:({library,history})=>{state.library=library;state.history=history;localStorage.setItem('library',JSON.stringify(library));localStorage.setItem('history',JSON.stringify(history));renderLibrary();renderContinue()},
+    // What was synced with one server says nothing about another: a new address starts over.
+    state:{get:()=>{const saved=store.get('deviceSync',null);return saved?.server===server?saved:{server}},set:value=>localStorage.setItem('deviceSync',JSON.stringify({...value,server}))},
+    status:async info=>{
+      if(info.state==='syncing')return show('동기화하는 중...');
+      if(info.state==='done')return show(`${server}에 연결됨 · 마지막 동기화 ${formatAt(info.at)}`);
+      const status=await window.lilac.syncStatus().catch(()=>null);
+      if(status&&!status.connected){await refresh();return show('서버가 이 기기를 받지 않습니다. 비밀번호가 바뀌었다면 새 비밀번호로 다시 연결하세요.')}
+      show(`동기화하지 못했습니다: ${ipcMessage(info.error)}`);
+    }});
+  const run=()=>{clearTimeout(timer);timer=null;due=0;if(!connected)return;lastRun=Date.now();engine.run()};
+  // A later request never pushes a sooner one back (history is saved every few seconds while playing).
+  const soon=delay=>{if(!connected)return;const at=Date.now()+delay;if(timer&&due<=at)return;clearTimeout(timer);due=at;timer=setTimeout(run,delay)};
+  async function refresh(){
+    const status=await window.lilac.syncStatus().catch(()=>({server:'',connected:false}));
+    server=status.server;connected=status.connected;
+    if(server&&!$('#syncServer').value)$('#syncServer').value=server;
+    $('#syncNow').hidden=!connected;$('#syncDisconnect').hidden=!connected;$('#syncConnect').textContent=connected?'다시 연결':'연결';
+    if(!connected)show(server?'연결이 끊겨 있습니다. 비밀번호를 넣고 연결하세요.':'연결된 서버가 없습니다.');
+    else if(!engine.running)show(`${server}에 연결됨`);
+    return status;
+  }
+  $('#syncConnect').onclick=async()=>{
+    const button=$('#syncConnect');button.disabled=true;show('서버에 연결하는 중...');
+    try{await window.lilac.syncConnect($('#syncServer').value,$('#syncPassword').value);$('#syncPassword').value='';await refresh();run()}
+    catch(error){show(ipcMessage(error))}finally{button.disabled=false}
+  };
+  $('#syncPassword').addEventListener('keydown',event=>{if(event.key==='Enter')$('#syncConnect').click()});
+  $('#syncNow').onclick=()=>run();
+  $('#syncDisconnect').onclick=async()=>{await window.lilac.syncDisconnect();await refresh()};
+  window.deviceSyncChanged=key=>soon(key==='history'?30000:3000);
+  window.addEventListener('focus',()=>{if(Date.now()-lastRun>60000)soon(1000)});
+  setInterval(()=>soon(0),5*60*1000);
+  refresh().then(status=>{if(status.connected)soon(3000)});
+  return {run,refresh};
+})();
