@@ -120,3 +120,17 @@ test('connecting: the address is checked to be a LilacAnime server, the token is
   tokenOk = false; await assert.rejects(client.request('POST', '/api/sync', { items: [] }), /다시 로그인/);
   assert.deepEqual(client.status(), { server: 'https://my-server.vercel.app', connected: false });
 });
+
+test('an error from Vercel itself (no such function, a crash) is shown as words, not [object Object]', async t => {
+  const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
+  const { DeviceSync } = require('../electron/device-sync.cjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lilac-device-sync-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  let reply;
+  const client = new DeviceSync({ app: { getPath: () => dir }, fetchImpl: async () => reply });
+  reply = { ok: false, status: 404, json: async () => ({ error: { code: 'NOT_FOUND', message: 'The page could not be found' } }) };
+  await assert.rejects(client.connect('my-server.vercel.app', 'pw'), error => /LilacAnime 서버가 없습니다/.test(error.message));
+  reply = { ok: false, status: 500, json: async () => ({ error: { code: 'FUNCTION_INVOCATION_FAILED', message: 'A server error has occurred' } }) };
+  await assert.rejects(client.connect('my-server.vercel.app', 'pw'), error => /FUNCTION_INVOCATION_FAILED/.test(error.message) && /Logs/.test(error.message));
+  reply = { ok: false, status: 502, json: async () => { throw new Error('not JSON'); } };
+  await assert.rejects(client.connect('my-server.vercel.app', 'pw'), error => /HTTP 502/.test(error.message));
+});

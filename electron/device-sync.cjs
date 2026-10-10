@@ -16,6 +16,16 @@ function serverAddress(value) {
   return url.origin;
 }
 
+// What went wrong, said so the owner can act on it. The LilacAnime server answers {error: "..."}; Vercel itself (no
+// such function, a function that crashed) answers {error: {code, message}}.
+function serverError(data, status) {
+  if (typeof data?.error === 'string') return data.error;
+  const code = String(data?.error?.code || '');
+  if (code === 'NOT_FOUND' || status === 404) return '이 주소에 LilacAnime 서버가 없습니다. Vercel에 배포한 주소가 맞는지, 배포가 끝났는지 확인하세요.';
+  if (/FUNCTION_INVOCATION|INTERNAL|DEPLOYMENT/.test(code) || status >= 500) return `서버가 요청을 처리하지 못했습니다 (${code || `HTTP ${status}`}). Vercel 프로젝트의 Logs에서 오류를 확인하세요.`;
+  return data?.error?.message ? `서버 오류: ${data.error.message}` : `서버 오류 (HTTP ${status})`;
+}
+
 class DeviceSync {
   constructor({ app, fetchImpl = globalThis.fetch }) {
     this.file = path.join(app.getPath('userData'), 'device-sync.json');
@@ -35,7 +45,7 @@ class DeviceSync {
         body: body ? JSON.stringify(body) : undefined });
     } catch (error) { throw new Error(error?.name === 'TimeoutError' ? '서버가 응답하지 않습니다.' : '서버에 연결하지 못했습니다. 주소와 인터넷 연결을 확인하세요.'); }
     let data = null; try { data = await response.json(); } catch { /* not JSON: not a LilacAnime server */ }
-    if (!response.ok) throw Object.assign(new Error(data?.error || `서버 오류 (HTTP ${response.status})`), { status: response.status });
+    if (!response.ok) throw Object.assign(new Error(serverError(data, response.status)), { status: response.status });
     if (!data) throw new Error('LilacAnime 서버가 아닌 것 같습니다. 주소를 확인하세요.');
     return data;
   }
@@ -43,7 +53,7 @@ class DeviceSync {
   // Checks that the address is a LilacAnime server set up to work, signs in and keeps the token.
   async connect(address, password) {
     const server = serverAddress(address);
-    const state = await this.call(server, '/api/status').catch(error => { throw error.status === 404 ? new Error('LilacAnime 서버가 아닌 것 같습니다. 주소를 확인하세요.') : error; });
+    const state = await this.call(server, '/api/status');
     if (state.app !== 'lilacanime-server') throw new Error('LilacAnime 서버가 아닌 것 같습니다. 주소를 확인하세요.');
     if (!state.ready) throw new Error(`서버 설정이 끝나지 않았습니다. ${(state.problems || []).join(' ')}`);
     if (!String(password || '')) throw new Error('비밀번호를 입력하세요.');
