@@ -381,14 +381,17 @@ async function reanimeEpisodes(anime, page, listed = null) {
 
 async function reanimeServers(episode) {
   const parsed=new URL(episode.url),slug=parsed.pathname.split('/').filter(Boolean).pop(),number=Number(parsed.searchParams.get('ep')||episode.number||1);
+  // Keep the requested audio before ranking HD servers or deduplicating URLs. Flix can list DUB first,
+  // and some episodes use the same URL for both labels. A failed SUB must never fall through to DUB.
+  const candidatesFrom=links=>links.map(item=>({name:String(item.serverName||''),url:String(item.dataLink||item.link||''),dub:/^dub(?:bed)?$/i.test(String(item.dataType||''))||/\bdub(?:bed)?\b/i.test(String(item.serverName||''))}))
+    .filter(item=>item.dub===Boolean(episode.dub)&&/^https:\/\/flixcloud\.cc\/e\//i.test(item.url));
   // The current API often serves streams only from /api/flix: both are asked at once (one after the other, an empty
   // /api/watch cost a whole request first), /api/watch's links used when it has any.
   const watch=providerFetch(`${REANIME_WEB}/api/watch/${encodeURIComponent(slug)}/${number}`,{json:true,referer:`${REANIME_WEB}/`}).then(root=>Array.isArray(root?.episode_links)?root.episode_links:[],()=>[]);
   const flix=episode.anilistId?providerFetch(`${REANIME_WEB}/api/flix/${Number(episode.anilistId)}/${number}`,{json:true,referer:`${REANIME_WEB}/`}).then(root=>Array.isArray(root?.servers)?root.servers:[]):null;
   flix?.catch(()=>{});
-  let links=await watch;
-  if(!links.length&&flix)links=await flix;
-  const candidates=links.map(item=>({name:String(item.serverName||''),url:String(item.dataLink||item.link||'')})).filter(item=>/^https:\/\/flixcloud\.cc\/e\//i.test(item.url));
+  let candidates=candidatesFrom(await watch);
+  if(!candidates.length&&flix)candidates=candidatesFrom(await flix);
   return [...candidates.filter(item=>/HD-?2/i.test(item.name)),...candidates.filter(item=>/HD-?1/i.test(item.name)),...candidates]
     .filter((item,index,array)=>array.findIndex(x=>x.url===item.url)===index);
 }
@@ -2480,7 +2483,7 @@ app.whenReady().then(async () => {
   // The window buttons Windows draws over the page: in the theme's colors, and over the player in a window white on the
   // video, or not drawn at all while the player's controls are hidden (they come back with the controls).
   const windowButtons=new WeakMap();
-  const paintWindowButtons=win=>{const {light=false,mode='page'}=windowButtons.get(win)||{};win.setTitleBarOverlay({...(mode==='hidden'?{color:'#00000000',symbolColor:'#00000000'}:mode==='player'?{color:'#00000000',symbolColor:'#ffffff'}:light?{color:'#ffffff',symbolColor:'#1c1b1f'}:{color:'#121212',symbolColor:'#d0cdd6'}),height:42})};
+  const paintWindowButtons=win=>{const {light=false,mode='page'}=windowButtons.get(win)||{};if(process.platform==='darwin'){win.setWindowButtonVisibility(mode!=='hidden');return}win.setTitleBarOverlay({...(mode==='hidden'?{color:'#00000000',symbolColor:'#00000000'}:mode==='player'?{color:'#00000000',symbolColor:'#ffffff'}:light?{color:'#ffffff',symbolColor:'#1c1b1f'}:{color:'#121212',symbolColor:'#d0cdd6'}),height:42})};
   const setWindowButtons=(event,change)=>{const win=BrowserWindow.fromWebContents(event.sender);if(!win||win.isDestroyed())return;windowButtons.set(win,{...windowButtons.get(win),...change});paintWindowButtons(win)};
   ipcMain.handle('window:theme',(event,light)=>setWindowButtons(event,{light:Boolean(light)}));
   ipcMain.handle('window:buttons',(event,mode)=>setWindowButtons(event,{mode:['player','hidden'].includes(mode)?mode:'page'}));
