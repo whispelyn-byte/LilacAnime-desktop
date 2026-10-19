@@ -3,10 +3,11 @@ const path = require('path');
 function communityEpisodes(text = '') {
   const value = String(text).normalize('NFKC'), list = [], ranges = [];
   const number = '\\d+(?:\\.\\d+)?';
-  const range = new RegExp(`(?<![\\d.])(${number})\\s*[~∼〜～–—-]\\s*(${number})\\s*(?:화|회|편)`, 'g');
+  // "1~3화" and "1화~3화" are ranges; "1, 5화", "1+5화" and "1·5화" are lists.
+  const range = new RegExp(`(?<![\\d.])(${number})\\s*(?:화|회|편)?\\s*[~∼〜～–—-]\\s*(${number})\\s*(?:화|회|편)`, 'g');
   const remaining = value.replace(range, (_, first, last) => { if (Number(first) <= Number(last)) ranges.push([Number(first), Number(last)]); return ' '; });
-  for (const match of remaining.matchAll(new RegExp(`(?<![\\d.])((?:${number}\\s*[,、&/]\\s*)*${number})\\s*(?:화|회|편)`, 'g'))) {
-    list.push(...match[1].split(/[,、&/]/).map(Number));
+  for (const match of remaining.matchAll(new RegExp(`(?<![\\d.])((?:${number}\\s*[,、&/+·・]\\s*)*${number})\\s*(?:화|회|편)`, 'g'))) {
+    list.push(...match[1].split(/[,、&/+·・]/).map(Number));
   }
   for (const match of value.matchAll(new RegExp(`\\bep(?:isode)?\\s*\\.?\\s*(${number})(?![\\d.])`, 'gi'))) list.push(Number(match[1]));
   return { list: [...new Set(list)], ranges, has: episode => list.includes(Number(episode)) || ranges.some(([a, b]) => Number(episode) >= a && Number(episode) <= b), any: list.length + ranges.length > 0 };

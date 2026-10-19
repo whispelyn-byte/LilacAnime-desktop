@@ -1672,7 +1672,7 @@ function communityScore(target,candidate){
 const COMMUNITY_TRAILING_EPISODE=/(?<!season|시즌|part|파트|vol\.?|제)\s+(\d{1,3}(?:\.\d+)?)\s*(?:\((?:끝|완|完)\))?\s*(?:자막)?\s*$/i;
 function communityPostEpisodes(title=''){const episodes=communityEpisodes(title);if(episodes.any)return episodes;const m=String(title).normalize('NFKC').match(COMMUNITY_TRAILING_EPISODE);return m?communityEpisodes(`${m[1]}화`):episodes}
 function communityPostTitle(title=''){return communityTitle(String(title).normalize('NFKC').replace(COMMUNITY_TRAILING_EPISODE,' '))}
-function communityTitle(text=''){return String(text).normalize('NFKC').replace(/\d+(?:\.\d+)?\s*[~∼〜～–—\-,、&/]\s*(?=\d)/g,'').replace(/\d+(?:\.\d+)?\s*(?:화|회|편)|\bep(?:isode)?\s*\.?\s*\d+(?:\.\d+)?|\((?:끝|완|完)\)|작업\s*중|블루레이판|자막/gi,' ').trim()}
+function communityTitle(text=''){return String(text).normalize('NFKC').replace(/\d+(?:\.\d+)?\s*(?:화|회|편)?\s*[~∼〜～–—\-,、&/+·・]\s*(?=\d)/g,'').replace(/\d+(?:\.\d+)?\s*(?:화|회|편)|\bep(?:isode)?\s*\.?\s*\d+(?:\.\d+)?|\((?:끝|완|完)\)|작업\s*중|블루레이판|자막/gi,' ').trim()}
 // Picks the post's download links for one episode: per-episode posts (Kairan) carry the number in the
 // title, series posts (Csora) label each link ("13화", "1 ~ 12화") and add a separate "폰트" link.
 function communityLinks(post,episode,{offsets=[],allowOffset=false}={}){

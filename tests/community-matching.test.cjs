@@ -9,6 +9,15 @@ test('episode labels retain decimals and distinguish ranges from individual epis
   assert.equal(communityEpisodes('제목 2기 1080p').any, false);
 });
 
+test('bundled posts written with +, · or 화 on both ends of a range keep every episode', () => {
+  for (const [title, has, not] of [['작품 1+5화', [1, 5], [2]], ['작품 1·5화', [1, 5], [3]], ['작품 1・2화', [1, 2], [3]], ['작품 1화~3화', [1, 2, 3], [4]], ['작품 1화 - 3화', [1, 2, 3], [4]]]) {
+    const episodes = communityEpisodes(title);
+    for (const n of has) assert.equal(episodes.has(n), true, `${title} ${n}`);
+    for (const n of not) assert.equal(episodes.has(n), false, `${title} ${n}`);
+  }
+  assert.deepEqual(communityEpisodes('작품 2기 - 5화').ranges, []);
+});
+
 test('subtitle filenames match episode numbers without consuming resolution, years or CRC tags', () => {
   const cases = [
     ['Show [01].ass', 1], ['Show - 01 [1080p][A1B2C3D4].ass', 1],
