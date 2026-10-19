@@ -673,30 +673,15 @@ async function ohliBrowse(page=1,format=''){
   if(format==='Movie')return ohliBoard('극장판',page);
   return page<=1?{data:await ohliAiring(),done:false}:ohliBoard('완결',page-1);
 }
-// The airing list's cards carry no 원제: it is read from each show's page, six at a time, and remembered for the
-// session (a page that failed is asked again next time).
-const ohliOriginalTitles=new Map();
-async function ohliWithOriginalTitles(items){
-  let next=0;
-  const lookup=item=>{
-    if(!ohliOriginalTitles.has(item.id)){const pending=ohliPage(item.url).then(props=>{const comic=props.comic||{};return String(comic.original_title||ohliInfo(comic)['원제']||'')});ohliOriginalTitles.set(item.id,pending);pending.catch(()=>ohliOriginalTitles.delete(item.id))}
-    return ohliOriginalTitles.get(item.id).catch(()=>'');
-  };
-  const titles=new Map();
-  await Promise.all(Array.from({length:6},async()=>{while(next<items.length){const item=items[next++];titles.set(item.id,await lookup(item))}}));
-  return items.map(item=>({...item,title_japanese:item.title_japanese||titles.get(item.id)||''}));
-}
-// A search: the finished and movie boards search themselves (Korean titles only, spaced as typed: searched again by
-// pieces when nothing is found); the airing board lists every airing show, matched here by its title, or by its 원제
-// for a query in another script.
+// A search: the finished and movie boards search themselves (spaced as typed: searched again by pieces when nothing
+// is found); the airing board lists every airing show, matched here.
 async function ohliSearch(query){
-  const wanted=spaceKey(query),matches=item=>[item.title,item.title_japanese].some(title=>title&&spaceKey(title).includes(wanted));
+  const wanted=spaceKey(query);
   const boards=keyword=>Promise.all(['완결','극장판'].map(board=>ohliBoard(board,1,keyword).then(result=>result.data,()=>[]))).then(lists=>lists.flat());
-  const airingShows=ohliAiring().then(items=>hasHangul(query)?items:ohliWithOriginalTitles(items)).catch(()=>[]);
-  const [airing,listed]=await Promise.all([airingShows,boards(query)]);
+  const [airing,listed]=await Promise.all([ohliAiring().catch(()=>[]),boards(query)]);
   const searched=listed.length?listed:await searchIgnoringSpaces(query,boards,item=>[item.title]);
   const found=new Map();
-  for(const item of [...airing.filter(matches),...searched])if(!found.has(item.mal_id))found.set(item.mal_id,item);
+  for(const item of [...airing.filter(item=>spaceKey(item.title).includes(wanted)),...searched])if(!found.has(item.mal_id))found.set(item.mal_id,item);
   return [...found.values()];
 }
 // The AniList entry of a 애니24 series, by its original (Japanese) title and air year: AniSkip finds OP/ED times by it

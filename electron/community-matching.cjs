@@ -29,7 +29,28 @@ function communityFileEpisode(file) {
   if (/\b(?:no|vol|volume|part|cour|season|movie|level|lv)[\s.]*\d+$/i.test(tail)) return { episode: null, season: null };
   const bare = tail
     .match(/(?:^|[\s_.\-[\](])(\d+(?:\.\d+)?)(?:v\d+)?[\s\])]*$/i);
-  return { episode: bare ? Number(bare[1]) : null, season: null };
+  if (bare) return { episode: Number(bare[1]), season: null };
+  // "Show - 01SubsPlease": the release group glued after the number (a capital, so "Show - 2nd" stays unnumbered).
+  const glued = tail.match(/\s-\s*(\d+(?:\.\d+)?)(?:v\d+)?[A-Z][A-Za-z0-9]*[\s\])]*$/);
+  return { episode: glued ? Number(glued[1]) : null, season: null };
+}
+
+// Files named alike but for one number ("A 01 x.smi" … "A 09 x.smi", whatever the shape around it) are an episode
+// set numbered by it: names the parser does not read are numbered this way, so the set is never taken as unnumbered
+// (and any one of its files given to every episode).
+function seriesEpisodes(items) {
+  const number = /\d+(?:\.\d+)?/g, groups = new Map(), found = new Map();
+  for (const item of items) {
+    const base = item.name.normalize('NFKC').replace(/\.[a-z0-9]+$/i, ''), key = base.replace(number, '#').toLowerCase();
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push({ item, numbers: base.match(number) || [] });
+  }
+  for (const list of groups.values()) {
+    if (list.length < 2) continue;
+    const varying = list[0].numbers.map((_, index) => index).filter(index => new Set(list.map(entry => Number(entry.numbers[index]))).size > 1);
+    if (varying.length === 1) for (const { item, numbers } of list) found.set(item, Number(numbers[varying[0]]));
+  }
+  return found;
 }
 
 const COMMUNITY_EXTRA = /non-?telop|textless|(?:^|[^a-z0-9])(?:NC(?:OP|ED)|PV|CM)(?=$|[^a-z0-9])|tokuten|preview|trailer|논텔롭|예고편|특전/i;
@@ -38,6 +59,7 @@ function selectCommunityFile(files, { episode, strict = false, bundle = false, s
     .filter(item => !COMMUNITY_EXTRA.test(item.name))
     .map(item => ({ ...item, parsed: communityFileEpisode(item.name) }))
     .filter(item => !season || !item.parsed.season || item.parsed.season === season);
+  for (const [item, number] of seriesEpisodes(pool.filter(item => item.parsed.episode == null))) item.parsed = { ...item.parsed, episode: number };
   const quality = item => ({ ass: 50, ssa: 40, srt: 30, vtt: 20, smi: 10 }[path.extname(item.name).slice(1).toLowerCase()] || 0) +
     Math.min(9, Number(item.name.match(/(?:\d|[ _.-])v(\d+)(?=[ ._\]-]|$)/i)?.[1]) || 0);
   const rank = list => list.sort((a, b) => quality(b) - quality(a) || (b.size || 0) - (a.size || 0))[0];

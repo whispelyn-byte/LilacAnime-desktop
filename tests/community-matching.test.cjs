@@ -17,7 +17,8 @@ test('subtitle filenames match episode numbers without consuming resolution, yea
     ['Show 12.5v2.ass', 12.5], ['Show 01 (완).ass', 1],
     ['Show 12화 자막.srt', 12], ['Show [1080p][5A2B3C4D].ass', null],
     ['Show 2026.ass', null], ['Kaiju No. 8.ass', null], ['Show Part 2.ass', null],
-    ['csora_file0.ass', null], ['anissia_file1.ass', null]
+    ['csora_file0.ass', null], ['anissia_file1.ass', null],
+    ['Yasei no Last Boss ga Arawareta - 01SubsPlease.smi', 1], ['Show - 2nd.ass', null]
   ];
   for (const [name, episode] of cases) assert.equal(communityFileEpisode(name).episode, episode, name);
   assert.deepEqual(communityFileEpisode('Show_S02E05.ass'), { episode: 5, season: 2 });
@@ -35,6 +36,16 @@ test('unnumbered movies and episode-specific posts still work without accepting 
   assert.equal(selectCommunityFile(['main.ass'], { episode: 7 }).file, 'main.ass');
   assert.equal(selectCommunityFile(['main.ass'], { episode: 7, strict: true }), null);
   assert.equal(selectCommunityFile(['Show 03.ass'], { episode: 1 }), undefined);
+});
+
+test('a set of files differing in one number is numbered by it, never given to every episode', () => {
+  // An Anissia archive whose names the parser alone did not read: episode 1 got episode 8's subtitle.
+  const files = [1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => `Yasei no Last Boss ga Arawareta - 0${n}SubsPlease.smi`).concat('Yasei no Last Boss ga Arawareta - 08SubsPlease.vtt');
+  assert.equal(selectCommunityFile(files, { episode: 1 }).file, 'Yasei no Last Boss ga Arawareta - 01SubsPlease.smi');
+  assert.equal(selectCommunityFile(files, { episode: 8 }).file, 'Yasei no Last Boss ga Arawareta - 08SubsPlease.vtt');
+  const odd = ['ab01cd.smi', 'ab02cd.smi', 'ab03cd.smi'];
+  assert.equal(selectCommunityFile(odd, { episode: 2 }).file, 'ab02cd.smi');
+  assert.equal(selectCommunityFile(odd, { episode: 4 }), undefined);
 });
 
 test('matching season, full scripts, ASS and revised versions are preferred in that order', () => {
