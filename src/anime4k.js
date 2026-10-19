@@ -1,7 +1,8 @@
 // The media element keeps playback, audio and native captions; only its picture is replaced.
 (() => {
   const modes = {
-    off: '끄기', light: '가볍게', a: 'A · 선명하게', b: 'B · 부드럽게', c: 'C · 노이즈 제거'
+    off: '끄기', light: '가볍게', a: 'A · 선명하게', b: 'B · 부드럽게', c: 'C · 노이즈 제거',
+    aa: 'A+A · 더 선명하게', bb: 'B+B · 더 부드럽게', ca: 'C+A · 노이즈 제거 후 선명하게', hq: '고화질 (고사양)'
   };
   let video, stage, getAspect, notify, library, renderer, canvas, gl, dimensions;
   let frameId = null, frameKind = null, revision = 0, blocked = false, message = '';

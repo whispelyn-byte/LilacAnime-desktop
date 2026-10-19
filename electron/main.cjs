@@ -613,6 +613,19 @@ async function hlsProbe(url,headers={},options={}){
   return {program:variants.length>1?program:null,speed:Math.min(...speeds),requiredSpeed:Math.max(bitrate/8/1024,duration?size/1024/duration:0)*1.5};
 }
 
+// The Korean sites (애니24, 링크애니) find a keyword only as it is spaced: "스파이패밀리" finds nothing of "스파이 패밀리".
+// A Korean query that found nothing is searched again by three pieces of it (its start, middle and end: three letters
+// each, two for a short query), and of what they find, the titles holding the whole query, spaces aside, are kept.
+const spaceKey=value=>String(value||'').normalize('NFKC').toLowerCase().replace(/\s+/g,'');
+async function searchIgnoringSpaces(query,search,titles){
+  const wanted=spaceKey(query),letters=[...wanted];if(!hasHangul(query)||letters.length<3)return [];
+  const size=letters.length>=5?3:2,piece=at=>letters.slice(at,at+size).join('');
+  const pieces=[...new Set([0,Math.floor((letters.length-size)/2),letters.length-size].map(piece))].filter(text=>text!==String(query).trim());
+  const found=new Map();
+  for(const list of await Promise.all(pieces.map(text=>search(text).catch(()=>[]))))
+    for(const item of list)if(!found.has(item.mal_id)&&titles(item).some(title=>title&&spaceKey(title).includes(wanted)))found.set(item.mal_id,item);
+  return [...found.values()];
+}
 // --- 애니24 (ani.ohli24.com) ----------------------------------------------------------------------------------------
 // A Korean site whose videos mostly have the Korean subtitle burned in. Its pages are read with Chromium's network
 // stack (Electron's net): the connection Node's own TLS makes to it is cut off on Korean lines, Chromium's is not.
@@ -660,12 +673,30 @@ async function ohliBrowse(page=1,format=''){
   if(format==='Movie')return ohliBoard('극장판',page);
   return page<=1?{data:await ohliAiring(),done:false}:ohliBoard('완결',page-1);
 }
-// A search: the finished and movie boards search themselves; the airing board lists every airing show, matched here.
+// The airing list's cards carry no 원제: it is read from each show's page, six at a time, and remembered for the
+// session (a page that failed is asked again next time).
+const ohliOriginalTitles=new Map();
+async function ohliWithOriginalTitles(items){
+  let next=0;
+  const lookup=item=>{
+    if(!ohliOriginalTitles.has(item.id)){const pending=ohliPage(item.url).then(props=>{const comic=props.comic||{};return String(comic.original_title||ohliInfo(comic)['원제']||'')});ohliOriginalTitles.set(item.id,pending);pending.catch(()=>ohliOriginalTitles.delete(item.id))}
+    return ohliOriginalTitles.get(item.id).catch(()=>'');
+  };
+  const titles=new Map();
+  await Promise.all(Array.from({length:6},async()=>{while(next<items.length){const item=items[next++];titles.set(item.id,await lookup(item))}}));
+  return items.map(item=>({...item,title_japanese:item.title_japanese||titles.get(item.id)||''}));
+}
+// A search: the finished and movie boards search themselves (Korean titles only, spaced as typed: searched again by
+// pieces when nothing is found); the airing board lists every airing show, matched here by its title, or by its 원제
+// for a query in another script.
 async function ohliSearch(query){
-  const key=value=>String(value||'').normalize('NFKC').toLowerCase().replace(/\s+/g,''),wanted=key(query);
-  const [airing,finished,movies]=await Promise.all([ohliAiring().catch(()=>[]),ohliBoard('완결',1,query).then(result=>result.data,()=>[]),ohliBoard('극장판',1,query).then(result=>result.data,()=>[])]);
+  const wanted=spaceKey(query),matches=item=>[item.title,item.title_japanese].some(title=>title&&spaceKey(title).includes(wanted));
+  const boards=keyword=>Promise.all(['완결','극장판'].map(board=>ohliBoard(board,1,keyword).then(result=>result.data,()=>[]))).then(lists=>lists.flat());
+  const airingShows=ohliAiring().then(items=>hasHangul(query)?items:ohliWithOriginalTitles(items)).catch(()=>[]);
+  const [airing,listed]=await Promise.all([airingShows,boards(query)]);
+  const searched=listed.length?listed:await searchIgnoringSpaces(query,boards,item=>[item.title]);
   const found=new Map();
-  for(const item of [...airing.filter(item=>key(item.title).includes(wanted)),...finished,...movies])if(!found.has(item.mal_id))found.set(item.mal_id,item);
+  for(const item of [...airing.filter(matches),...searched])if(!found.has(item.mal_id))found.set(item.mal_id,item);
   return [...found.values()];
 }
 // The AniList entry of a 애니24 series, by its original (Japanese) title and air year: AniSkip finds OP/ED times by it
@@ -2372,8 +2403,11 @@ app.whenReady().then(async () => {
       return {data:result.data,offset:page,nextOffset:page+1,done:result.done};
     }
     if (provider === 'linkani') {
-      const page=Math.max(1,Number(offset)||1),url=query?`${LINKANI_WEB}/view/${page>1?`page/${page}/`:''}?wd=${encodeURIComponent(query)}`:`${LINKANI_WEB}/list/2/${page>1?`page/${page}/`:''}`;
-      const data=linkaniItems(await linkaniFetch(url));return {data,offset:page,nextOffset:page+1,done:!data.length||(Boolean(query)&&data.length<30)};
+      const page=Math.max(1,Number(offset)||1),searchUrl=(text,at=1)=>`${LINKANI_WEB}/view/${at>1?`page/${at}/`:''}?wd=${encodeURIComponent(text)}`,url=query?searchUrl(query,page):`${LINKANI_WEB}/list/2/${page>1?`page/${page}/`:''}`;
+      const data=linkaniItems(await linkaniFetch(url));
+      // A search that found nothing as spaced is tried again by pieces (one page of them).
+      if(query&&page===1&&!data.length){const spaced=await searchIgnoringSpaces(query,async text=>linkaniItems(await linkaniFetch(searchUrl(text))),item=>[item.title]);return {data:spaced,offset:1,nextOffset:null,done:true}}
+      return {data,offset:page,nextOffset:page+1,done:!data.length||(Boolean(query)&&data.length<30)};
     }
     if (provider === 'miruro') {
       // offset is the cursor of the next page (none for the first).
