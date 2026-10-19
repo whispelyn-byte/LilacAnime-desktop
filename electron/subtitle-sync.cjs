@@ -163,7 +163,91 @@ function fitScore(cues, speech, move = time => time) {
   }
   return total ? hit / total : 0;
 }
-// Segments a candidate may keep: each with 8 lines and 45 s of the subtitle at least, never moving a line before the
+// Two parts from two shifts already found: the lines before one line take shift `a`, that line and the rest `b`, at
+// the line where the fit is best (each line's speech under either shift, summed up to it). An episode's head may keep
+// its timing while the rest moves: a TV-made subtitle has the sponsor card after the opening (提供, ~10 s) the web video
+// has not (Heroine? Saint? No, I'm an All-Works Maid 4 and 5: the part before the opening right, the rest 10.1 s late).
+// Each part's rules are keptSegments'. null when no line gives a better fit than either shift alone.
+function twoParts(lines, speech, a, b) {
+  const cues = lines.slice().sort((x, y) => x[0] - y[0]);
+  const hits = shift => cues.map(cue => fitScore([cue], speech, time => time + shift) * (cue[1] - cue[0]));
+  const before = hits(a), after = hits(b);
+  let head = 0, tail = after.reduce((sum, hit) => sum + hit, 0), end = -Infinity, best = null;
+  for (let k = 1; k < cues.length; k++) {
+    head += before[k - 1]; tail -= after[k - 1]; end = Math.max(end, cues[k - 1][1]);
+    // Only where the lines stay in order (as keptSegments asks): the first line moved by b not before the last by a.
+    if (cues[k][0] + b < end + a - 1) continue;
+    if (head + tail > (best?.hit ?? Math.max(before.reduce((s, h) => s + h, 0), after.reduce((s, h) => s + h, 0)))) best = { hit: head + tail, k };
+  }
+  return best ? [{ from: cues[0][0], shift: a }, { from: cues[best.k][0], shift: b }] : null;
+}
+// The share of the lines whose start, moved, falls within 0.3 s of a start in the reference (sorted): a TV-made
+// subtitle's lines start within 0.3 s of the site track's for 58-64%, a web one's for 70-90% (All-Works Maid, Frieren,
+// Horimiya), and a wrong shift puts few there.
+function startScore(lines, starts, move = time => time) {
+  let hit = 0;
+  for (const [start] of lines) {
+    const time = move(start, start); let low = 0, high = starts.length;
+    while (low < high) { const mid = (low + high) >> 1; if (starts[mid] < time - 0.3) low = mid + 1; else high = mid; }
+    if (low < starts.length && starts[low] <= time + 0.3) hit++;
+  }
+  return lines.length ? hit / lines.length : 0;
+}
+// The seconds of speech (merged, in order) within from..to.
+function speechHit(speech, from, to) {
+  let low = 0, high = speech.length, hit = 0;
+  while (low < high) { const mid = (low + high) >> 1; if (speech[mid][1] <= from) low = mid + 1; else high = mid; }
+  for (let i = low; i < speech.length && speech[i][0] < to; i++) hit += Math.max(0, Math.min(to, speech[i][1]) - Math.max(from, speech[i][0]));
+  return hit;
+}
+// The shifts along a whole episode against a site track, found directly (dynamic programming over its lines) instead
+// of by ffsubsync's split, which found nothing on All-Works Maid 5 and stray blocks on Horimiya 1: each line takes one of
+// the shifts within ±reach (0.1 s apart); keeping the shift of the line before costs nothing, changing it costs
+// `penalty` seconds of speech (what the change must win back), and no change moves a line before the end of the lines
+// before it. Any number of parts, where the speech asks for them. One result per penalty (the same table of each
+// line's speech at each shift serves them all); each part's shift is then refined to 0.01 s on its own lines. The
+// results are candidates like the others: keptSegments, the fit and the gain on the lines moved differently judge them.
+function alignedParts(lines, speech, { reach = 300, penalties = [3, 6, 12] } = {}) {
+  const cues = lines.slice().sort((x, y) => x[0] - y[0]).filter(([start, end]) => end > start), n = cues.length, step = 0.1;
+  if (n < 2 || !speech.length) return [];
+  const count = Math.round(2 * reach / step) + 1, shiftOf = j => Math.round((j * step - reach) * 100) / 100;
+  const hits = new Float32Array(n * count);
+  for (let i = 0; i < n; i++) for (let j = 0; j < count; j++) hits[i * count + j] = speechHit(speech, cues[i][0] + shiftOf(j), cues[i][1] + shiftOf(j));
+  const linesHit = (from, to, shift) => { let hit = 0; for (let i = from; i < to; i++) hit += speechHit(speech, cues[i][0] + shift, cues[i][1] + shift); return hit; };
+  return penalties.map(penalty => {
+    let prev = new Float64Array(count), next = new Float64Array(count);
+    const switched = new Uint8Array(n * count), source = new Uint16Array(n * count), best = new Float64Array(count), arg = new Uint16Array(count);
+    for (let j = 0; j < count; j++) prev[j] = hits[j];
+    let end = cues[0][1];
+    for (let i = 1; i < n; i++) {
+      for (let j = 0; j < count; j++) if (!j || prev[j] > best[j - 1]) { best[j] = prev[j]; arg[j] = j; } else { best[j] = best[j - 1]; arg[j] = arg[j - 1]; }
+      // From shift a to b at this line: its start moved by b not before the end so far moved by a (1 s of overlap
+      // allowed, as keptSegments), so a ≤ b + gap + 1: the best of the shifts up to that one.
+      const gap = cues[i][0] - end;
+      for (let j = 0; j < count; j++) {
+        const limit = Math.min(count - 1, Math.floor((shiftOf(j) + gap + 1 + reach) / step + 1e-6));
+        let value = prev[j];
+        if (limit >= 0 && best[limit] - penalty > value) { value = best[limit] - penalty; switched[i * count + j] = 1; source[i * count + j] = arg[limit]; }
+        next[j] = value + hits[i * count + j];
+      }
+      end = Math.max(end, cues[i][1]);
+      [prev, next] = [next, prev];
+    }
+    let j = 0; for (let k = 1; k < count; k++) if (prev[k] > prev[j]) j = k;
+    const taken = new Array(n);
+    for (let i = n - 1; i >= 0; i--) { taken[i] = j; if (i && switched[i * count + j]) j = source[i * count + j]; }
+    const parts = [];
+    for (let i = 0; i < n; i++) if (!i || taken[i] !== taken[i - 1]) parts.push({ index: i, shift: shiftOf(taken[i]) });
+    return parts.map((part, k) => {
+      const to = k + 1 < parts.length ? parts[k + 1].index : n;
+      let shift = part.shift, top = -1;
+      for (let d = -10; d <= 10; d++) { const value = Math.round((part.shift + d / 100) * 100) / 100, hit = linesHit(part.index, to, value); if (hit > top) { top = hit; shift = value; } }
+      return { from: cues[part.index][0], shift };
+    });
+  });
+}
+// Segments a candidate may keep: each with 8 lines of the subtitle at least (and 45 s, against the audio: against a site
+// track a short part is judged by its own fit, as All-Works Maid 6's 26 s before the opening), never moving a line before the
 // end of the segment before it (lines stay in order), and, against the audio, each new segment starting at an opening
 // or ending (chapters: AniSkip times in the video) within 20 s, as the audio alone split Oshi no Ko 1 at -102 s and
 // +129 s. ffsubsync's split puts stray segments between the right ones: in Horimiya 1 two blocks of a minute changed
@@ -176,7 +260,7 @@ function keptSegments(segments, cues, chapters = null, score = () => 0) {
   const linesOf = (parts, i) => cues.filter(([start]) => start >= (i ? parts[i].from : -Infinity) && (i + 1 >= parts.length || start < parts[i + 1].from));
   const broken = parts => parts.some((_, i) => {
     const lines = linesOf(parts, i);
-    if (lines.length < 8 || lines[lines.length - 1][0] - lines[0][0] < 45) return true;
+    if (lines.length < 8 || (edges && lines[lines.length - 1][0] - lines[0][0] < 45)) return true;
     if (!i) return false;
     const before = linesOf(parts, i - 1), endBefore = Math.max(...before.map(([, end]) => end)) + parts[i - 1].shift, startHere = lines[0][0] + parts[i].shift;
     if (startHere < endBefore - 1) return true;
@@ -356,8 +440,12 @@ function createSubtitleSync({ userData, ffmpegPath, managedRoot }) {
   // - Against the audio, the centre of the stereo mix (where dialogue sits) is heard: the whole mix swung Toradora! 1
   //   between -1.3 and +44 s.
   // Thresholds from 8 episodes against their site tracks: a right shift raised the score by 0.06 to 0.17 (to 0.89 and
-  // over), a subtitle already right by under 0.003.
-  const FIT = { track: { margin: 0.03, floor: 0.6 }, audio: { margin: 0.03, floor: 0.3 } };
+  // over), a subtitle already right by under 0.003. Each part of segments must gain as much as a right shift does
+  // (0.06) on its own lines, by the overlap and by the starts. Checked on 66 subtitles of 31 episodes (12 titles, web and
+  // TV-made Jimaku files): the right parts gained 0.10 to 0.63 by both, the wrong ones lost 0.43 and 0.50 by the starts,
+  // and no subtitle right with one shift was split; the 120 s windows left off after a sync went from 16 to 6, those
+  // six where the site track has no lines (All-Works Maid 3 from 14:53 to 15:53) or both of an episode's files agree.
+  const FIT = { track: { margin: 0.03, floor: 0.6, split: 0.06 }, audio: { margin: 0.03, floor: 0.3, split: 0.06 } };
   async function sync({ videoUrl, headers = {}, subtitlePath, assPath = null, timingPath = null, references = [], referencePath = null, referenceAssPath = null, chapters = [], duration = 0, background = false, status = () => {} }) {
     if (!subtitlePath || !fs.existsSync(subtitlePath)) throw new Error('자막 파일이 없습니다.');
     const tracks = [...(references || []), ...(referencePath ? [{ path: referencePath, assPath: referenceAssPath }] : [])].filter(track => track?.path && fs.existsSync(track.path));
@@ -420,14 +508,41 @@ function createSubtitleSync({ userData, ffmpegPath, managedRoot }) {
         if (found) candidates.push({ kind: request.split ? 'segments' : request.frameRate ? 'frame-rate' : 'shift', ...found });
         stopped();
       }
+      // Against a site track, the shifts found directly along the episode (alignedParts), one candidate per penalty.
+      if (byTrack) for (const parts of alignedParts(cues, speech, { reach: Math.min(300, length) })) {
+        if (parts.length === 1) { candidates.push({ kind: 'aligned', offset: parts[0].shift, scale: 1, segments: null }); continue; }
+        const kept = keptSegments(parts, cues, null, option => fitScore(cues, speech, mover(0, 1, option)));
+        if (kept?.length > 1) candidates.push({ kind: 'aligned', offset: kept[0].shift, scale: 1, segments: kept });
+        else if (kept?.length === 1) candidates.push({ kind: 'aligned', offset: kept[0].shift, scale: 1, segments: null });
+      }
+      // Two parts of the shifts found (no change among them), which ffsubsync's split may not find (All-Works Maid 5).
+      const shifts = [...new Set(candidates.filter(candidate => !candidate.segments && candidate.scale === 1).map(candidate => candidate.offset))];
+      for (const a of shifts) for (const b of shifts) {
+        const parts = a !== b ? twoParts(cues, speech, a, b) : null, kept = parts && keptSegments(parts, cues, byTrack ? null : chapters || []);
+        if (kept?.length > 1) candidates.push({ kind: 'two-part', offset: b, scale: 1, segments: kept });
+      }
       for (const candidate of candidates) candidate.score = fitScore(cues, speech, mover(candidate.offset, candidate.scale, candidate.segments));
       const none = candidates[0], ranked = candidates.slice(1).sort((a, b) => b.score - a.score);
-      // Segments only when they fit clearly better than the best single shift (which is the more precise).
-      let chosen = ranked[0];
-      const single = ranked.find(candidate => !candidate.segments);
-      if (chosen?.segments && single && chosen.score - single.score < 0.02) chosen = single;
       const fit = FIT[byTrack ? 'track' : 'audio'], method = byTrack ? 'track' : 'audio';
-      const summary = { none: Math.round(none.score * 1000) / 1000, chosen: chosen ? Math.round(chosen.score * 1000) / 1000 : null, tried: candidates.map(c => ({ kind: c.kind, offset: c.offset, scale: c.scale, segments: c.segments, score: Math.round(c.score * 1000) / 1000 })) };
+      // Segments only when each part they move differently from the best single shift (which is the more precise) fits
+      // its own lines clearly better: a head of a few minutes right is a small part of the whole episode's score
+      // (All-Works Maid 4: 0.783 against 0.773, its first 3:37 at 0.91 against 0.77). Against a site track a part must
+      // also put more of its lines' starts on the track's (startScore): in fast dialogue a wrong shift can cover as much
+      // speech as the right one, but its starts fall between the track's (All-Works Maid 3: a part at -19.83 s gaining
+      // 0.03 by the overlap and losing 0.43 by the starts; every right part gained 0.10 or more by both).
+      const single = ranked.find(candidate => !candidate.segments), move = candidate => mover(candidate.offset, candidate.scale, candidate.segments);
+      const starts = byTrack ? [...new Set(vttCues(best.vtt).map(([start]) => start))].sort((a, b) => a - b) : null;
+      for (const candidate of single ? ranked.filter(item => item.segments) : []) {
+        const gains = candidate.segments.map((part, i) => {
+          const lines = cues.filter(([start]) => start >= (i ? part.from : -Infinity) && (i + 1 >= candidate.segments.length || start < candidate.segments[i + 1].from));
+          if (!lines.length || lines.every(([start]) => Math.abs(move(candidate)(start, start) - move(single)(start, start)) <= 0.3)) return null;
+          const overlap = fitScore(lines, speech, move(candidate)) - fitScore(lines, speech, move(single));
+          return starts ? Math.min(overlap, startScore(lines, starts, move(candidate)) - startScore(lines, starts, move(single))) : overlap;
+        }).filter(gain => gain != null);
+        candidate.gain = gains.length ? Math.min(...gains) : 0;
+      }
+      let chosen = ranked.find(candidate => !candidate.segments || candidate.gain >= fit.split);
+      const summary = { none: Math.round(none.score * 1000) / 1000, chosen: chosen ? Math.round(chosen.score * 1000) / 1000 : null, tried: candidates.map(c => ({ kind: c.kind, offset: c.offset, scale: c.scale, segments: c.segments, score: Math.round(c.score * 1000) / 1000, ...(c.gain != null ? { gain: Math.round(c.gain * 1000) / 1000 } : {}) })) };
       if (!chosen || chosen.score < fit.floor) {
         if (none.score >= fit.floor) return { offset: 0, scale: 1, segments: null, method, scores: summary, unchanged: true };
         throw Object.assign(new Error('이 자막이 영상과 맞는 위치를 찾지 못해 그대로 뒀어요 (다른 판본이나 다른 회차의 자막일 수 있어요).'), { uncertain: true, scores: summary });
@@ -463,4 +578,4 @@ function createSubtitleSync({ userData, ffmpegPath, managedRoot }) {
   return { installed, install, sync, retime, cancel, stop, running: () => Boolean(running) };
 }
 
-module.exports = { createSubtitleSync, retimeVtt, retimeAss, parseResult, vttCues, dialogueVtt, assDialogueVtt, assSpeech, segmentsOf, keptSegments, shiftAt, mover, merged, fitScore, spokenVtt };
+module.exports = { createSubtitleSync, retimeVtt, retimeAss, parseResult, vttCues, dialogueVtt, assDialogueVtt, assSpeech, segmentsOf, keptSegments, twoParts, alignedParts, startScore, shiftAt, mover, merged, fitScore, spokenVtt };

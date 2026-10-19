@@ -107,3 +107,40 @@ test('segments: stray blocks between the right ones are let go by the fit, short
   assert.equal(keptSegments(truth, cues, [{ startTime: 90, endTime: 180 }], score), null);
   assert.deepEqual(keptSegments(truth, cues, [{ startTime: 510, endTime: 598 }], score), truth);
 });
+
+test('two parts: the head keeps its timing and the rest moves, at the line that fits best with the lines in order', () => {
+  const { twoParts, fitScore, mover } = require('../electron/subtitle-sync.cjs');
+  // A TV-made subtitle: right up to the opening (lines until 60 s), then 10 s late from the first line after it
+  // (a sponsor card the web video has not), as All-Works Maid 5.
+  let seed = 7; const random = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const cues = []; for (let t = 2; t < 1300; t += 2 + random() * 6) if (t < 60 || t > 170) cues.push([t, t + 1 + random() * 2]);
+  const speech = cues.map(([s, e]) => s < 60 ? [s, e] : [s - 10, e - 10]);
+  const parts = twoParts(cues, speech, 0, -10);
+  assert.deepEqual(parts, [{ from: cues[0][0], shift: 0 }, { from: cues.find(([start]) => start > 170)[0], shift: -10 }]);
+  assert.ok(fitScore(cues, speech, mover(0, 1, parts)) > fitScore(cues, speech, mover(-10, 1)));
+  // A subtitle late all through: no line gives a better fit than the one shift.
+  assert.equal(twoParts(cues, cues.map(([s, e]) => [s - 10, e - 10]), 0, -10), null);
+});
+
+test('aligned parts: any number of parts where the speech asks for them, and none where one shift fits', () => {
+  const { alignedParts, merged } = require('../electron/subtitle-sync.cjs');
+  let seed = 7; const random = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const cues = []; for (let t = 2; t < 1300; t += 2 + random() * 6) if (t < 60 || t > 170) cues.push([t, t + 1 + random() * 2]);
+  // Right up to the opening, 10 s late after it, 13.5 s late from 800 s (a second card in the middle).
+  const late = s => s < 60 ? 0 : s < 800 ? 10 : 13.5;
+  const found = alignedParts(cues, merged(cues.map(([s, e]) => [s - late(s), e - late(s)])), { reach: 300, penalties: [6] })[0];
+  assert.deepEqual(found.map(part => part.shift), [0, -10, -13.5]);
+  assert.equal(found[1].from, cues.find(([start]) => start > 170)[0]);
+  assert.equal(found[2].from, cues.find(([start]) => start >= 800)[0]);
+  // Late 4 s all through: one part.
+  assert.deepEqual(alignedParts(cues, merged(cues.map(([s, e]) => [s + 4, e + 4])), { reach: 300, penalties: [6] })[0].map(part => part.shift), [4]);
+});
+
+test('start score: the share of the lines starting within 0.3 s of a reference start, moved as a candidate says', () => {
+  const { startScore } = require('../electron/subtitle-sync.cjs');
+  const lines = [[10, 12], [20, 22], [30, 31], [40, 42]], starts = [10.2, 19.5, 30.25, 50];
+  assert.equal(startScore(lines, starts), 0.5);
+  assert.equal(startScore(lines, starts, time => time + 10), 0.5);
+  assert.equal(startScore(lines, starts, time => time + 5), 0);
+  assert.equal(startScore([], starts), 0);
+});
