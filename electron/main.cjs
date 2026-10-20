@@ -17,7 +17,7 @@ const { selectMiruroServer } = require('./miruro-playback.cjs');
 const { createCatalogUpdates } = require('./catalog-updates.cjs');
 const { createTmdbClient } = require('./tmdb-client.cjs');
 const { DesktopState } = require('./desktop-state.cjs');
-const { communityEpisodes, selectCommunityFile } = require('./community-matching.cjs');
+const { communityEpisodes, communityFileEpisode, communityLinkEpisodes, planCommunityLinks, pickCommunityFile, selectCommunityFile, COMMUNITY_FONT } = require('./community-matching.cjs');
 let desktopState;
 const { compareRelease, releaseDate } = require('../src/anime-metadata.js');
 let catalogUpdates;
@@ -1067,14 +1067,21 @@ function titleKey(value=''){const clean=simpleTitle(value),hangul=(clean.match(/
 // Words such as "청춘 돼지는 ○○의 꿈을 꾸지 않는다" are shared across a whole franchise, so word overlap only
 // counts when one title's words all appear in the other; words missing on both sides mean another work.
 function titleScore(target,candidate){const keyA=titleKey(target),keyB=titleKey(candidate);if(!keyA||!keyB)return 0;if(keyA===keyB)return 1;if(keyA.includes(keyB)||keyB.includes(keyA))return Math.min(keyA.length,keyB.length)/Math.max(keyA.length,keyB.length);const a=[...new Set(simpleTitle(target).split(' ').filter(Boolean))],b=[...new Set(simpleTitle(candidate).split(' ').filter(Boolean))];if(!a.length||!b.length)return 0;const found=(x,list)=>list.some(y=>Math.min(x.length,y.length)>=2&&(y.includes(x)||x.includes(y)));const missingA=a.filter(x=>x.length>=2&&!found(x,b)),missingB=b.filter(y=>y.length>=2&&!found(y,a));if(missingA.length&&missingB.length)return 0;return Math.min((a.length-missingA.length)/a.length,(b.length-missingB.length)/b.length)}
-// Same as Android KairanSubtitleService/GoogleDriveDownloader: 15 s to connect, 60 s without data.
+// Same as Android KairanSubtitleService/GoogleDriveDownloader: 15 s to connect, 60 s without data. The file's own
+// name, when the response gives one (Content-Disposition), comes back as buffer.fileName: Tistory's attachment
+// URLs end in a generic "tfile.smi".
 async function downloadBuffer(url,referer){
   const controller=new AbortController();let timer=setTimeout(()=>controller.abort(),15000);
+  // A header holds ASCII only: a Korean post address ("/entry/작품-3화") is sent percent-encoded.
+  let sentReferer=referer||url;try{sentReferer=new URL(sentReferer).href}catch{}
   try{
-    const response=await fetch(url,{signal:controller.signal,headers:{'User-Agent':LINKKF_UA,Referer:referer||url}});if(!response.ok)throw new Error(`자막 다운로드 HTTP ${response.status}`);
+    const response=await fetch(url,{signal:controller.signal,headers:{'User-Agent':LINKKF_UA,Referer:sentReferer}});if(!response.ok)throw new Error(`자막 다운로드 HTTP ${response.status}`);
     const chunks=[];const reader=response.body.getReader();
     for(;;){clearTimeout(timer);timer=setTimeout(()=>controller.abort(),60000);const {done,value}=await reader.read();if(done)break;chunks.push(value)}
-    return Buffer.concat(chunks);
+    const buffer=Buffer.concat(chunks),disposition=response.headers.get('content-disposition')||'';
+    const encoded=disposition.match(/filename\*\s*=\s*(?:UTF-8|utf-8)''([^;]+)/)?.[1],plain=disposition.match(/filename\s*=\s*"?([^";]+)"?/)?.[1];
+    try{buffer.fileName=encoded?decodeURIComponent(encoded):plain?Buffer.from(plain,'latin1').toString('utf8'):''}catch{buffer.fileName=plain||''}
+    return buffer;
   }catch(error){if(error.name==='AbortError')throw new Error('자막 다운로드 시간이 초과되었습니다.');throw error}finally{clearTimeout(timer)}
 }
 function driveId(url){return url.match(/\/file\/d\/([^/?]+)/)?.[1]||url.match(/[?&]id=([^&]+)/)?.[1]||null}
@@ -1251,6 +1258,62 @@ async function tmdbOverview(anime={}){
   if(!hasHangul(text))text='';
   tmdbOverviewDisk[key]={text,time:Date.now()};try{fs.writeFileSync(tmdbOverviewFile(),JSON.stringify(tmdbOverviewDisk),'utf8')}catch{}
   return text;
+}
+// Artwork for the detail page: a wide picture for its header and the work's Korean title logo. TMDB (with the key from
+// 설정 > 한국어 제목 검색) gives both: a backdrop without text, and logos marked Korean ("ko"; no other language's
+// logo is used, the title then stays text). Without a key or a TMDB backdrop, AniList's banner. Found like the Korean
+// overview, and kept on disk for a month (a miss for a week).
+// logos: up to three, each with how light its lettering is (0 black … 1 white), so the page can take the one that
+// stands out on its theme (TMDB often has a dark and a white version of the same logo).
+let artworkDisk=null;
+const artworkFile=()=>path.join(app.getPath('userData'),'artwork-cache.json');
+const TMDB_IMAGE='https://image.tmdb.org/t/p';
+async function animeArtwork(anime={}){
+  const key=`${anime.provider||'jikan'}:${anime.id??anime.mal_id}:${tmdbKey()?'tmdb':'free'}`;
+  artworkDisk||=(()=>{try{return JSON.parse(fs.readFileSync(artworkFile(),'utf8'))||{}}catch{return {}}})();
+  const cached=artworkDisk[key];if(cached&&Array.isArray(cached.logos)&&Date.now()-cached.time<(cached.banner||cached.logos.length?30:7)*86400000)return {banner:cached.banner||'',logos:cached.logos};
+  let banner='',logos=[];
+  if(tmdbKey()){
+    // Korean-only sources (애니24, 링크애니) have no English title: their Korean one is searched as it is.
+    const titles=[anime.title_english,anime.title,anime.romaji,anime.title_japanese],queries=tmdbQueries(titles);
+    if(!queries.length&&hasHangul(anime.title))queries.push(String(anime.title).replace(/\s*(?:\d+\s*기|시즌\s*\d+)\s*$/,'').trim());
+    const kinds=/movie|film|극장/i.test(String(anime.type||''))?['movie','tv']:['tv','movie'];
+    find:for(const query of queries){
+      for(const kind of kinds){
+        const pick=await tmdbPick(query,kind).catch(()=>null);if(!pick)continue;
+        const images=await tmdbFetch(`/${kind}/${pick.id}/images`,{include_image_language:'ko,null'}).catch(()=>null);if(!images)continue;
+        const ranked=list=>(list||[]).slice().sort((a,b)=>(b.vote_average||0)-(a.vote_average||0)||(b.width||0)-(a.width||0));
+        const backdrop=ranked((images.backdrops||[]).filter(item=>!item.iso_639_1))[0];banner=backdrop?`${TMDB_IMAGE}/w1280${backdrop.file_path}`:'';
+        // An SVG logo is asked for as PNG, which TMDB renders from it.
+        const files=ranked((images.logos||[]).filter(item=>item.iso_639_1==='ko')).slice(0,3).map(item=>item.file_path.replace(/\.svg$/i,'.png'));
+        logos=(await Promise.all(files.map(async file=>({url:`${TMDB_IMAGE}/w500${file}`,light:await logoLightness(`${TMDB_IMAGE}/w300${file}`).catch(()=>null)})))).filter(item=>item.light!=null);
+        break find;
+      }
+    }
+  }
+  if(!banner)banner=await anilistBanner(anime).catch(()=>'');
+  artworkDisk[key]={banner,logos,time:Date.now()};try{fs.writeFileSync(artworkFile(),JSON.stringify(artworkDisk),'utf8')}catch{}
+  return {banner,logos};
+}
+// How light a logo's lettering is: the mean luminance of its opaque pixels (0 black … 1 white).
+async function logoLightness(url){
+  const response=await fetch(url,{signal:AbortSignal.timeout(15000)});if(!response.ok)throw new Error(`HTTP ${response.status}`);
+  const image=nativeImage.createFromBuffer(Buffer.from(await response.arrayBuffer()));if(image.isEmpty())throw new Error('logo image');
+  const pixels=image.toBitmap();let sum=0,count=0;
+  // BGRA, every fourth pixel is enough.
+  for(let at=0;at+3<pixels.length;at+=16){if(pixels[at+3]<160)continue;sum+=(.0722*pixels[at]+.7152*pixels[at+1]+.2126*pixels[at+2])/255;count++}
+  return count?Math.round(sum/count*100)/100:null;
+}
+// AniList's banner (a wide picture most series have), by the AniList or MAL id when known, else by the English or
+// Japanese title: AniList does not know Korean ones.
+async function anilistBanner(anime={}){
+  const anilistId=Number(anime.anilistId)||null,malId=Number(anime.malId||(/^\d+$/.test(String(anime.mal_id??''))?anime.mal_id:''))||null;
+  const search=[anime.title_english,anime.romaji,anime.title_japanese,anime.title].map(value=>String(value||'').trim()).find(value=>value&&!hasHangul(value))||'';
+  if(!anilistId&&!malId&&!search)return '';
+  const query='query($id:Int,$mal:Int,$search:String){Media(id:$id,idMal:$mal,search:$search,type:ANIME){bannerImage}}';
+  const variables=anilistId?{id:anilistId}:malId?{mal:malId}:{search};
+  const response=await fetch('https://graphql.anilist.co',{signal:AbortSignal.timeout(20000),method:'POST',headers:{Accept:'application/json','Content-Type':'application/json','User-Agent':'LilacAnime Android'},body:JSON.stringify({query,variables})});
+  return response.ok?String((await response.json())?.data?.Media?.bannerImage||''):'';
 }
 // Fallbacks when TMDB has no Korean name (or no key is set): AniList's Korean synonyms, then the Korean
 // Wikidata labels of the work and its series, looked up by MAL/AniList ID.
@@ -1605,7 +1668,14 @@ async function communityPosts(blog,{force=false}={}){
 function communitySeason(text=''){
   const value=String(text).normalize('NFKC'),m=value.match(/(?:season|시즌)\s*(\d+)|(\d+)\s*기(?![가-힣])|(\d+)(?:st|nd|rd|th)(?:\s*season)?\b|[가-힣](\d)(?=\s|$)/i);
   if(m)return Number(m[1]||m[2]||m[3]||m[4]);
-  const roman=value.trim().match(/(?:^|\s)(II|III|IV|V|VI)\s*$/i);return roman?{II:2,III:3,IV:4,V:5,VI:6}[roman[1].toUpperCase()]:null;
+  // A roman numeral at the end, or before a subtitle ("클레바테스Ⅱ ~마수왕과 가짜 용사 전승~", "시광대리인 Ⅱ -Link Click Ⅱ-").
+  const roman=value.trim().match(/(?:^|\s)(II|III|IV|V|VI)\s*$/i)||value.match(/(?:^|[\s가-힣])(II|III|IV|VI|V)(?=\s*[~\-(:])/);return roman?{II:2,III:3,IV:4,V:5,VI:6}[roman[1].toUpperCase()]:null;
+}
+// Every season a post title names: some makers keep a series in one post ("… 1기/2기/3기", "클레바테스 1기 … / 2기 …").
+// A title naming none is the first season's.
+function communitySeasons(text=''){
+  const listed=new Set([...String(text).normalize('NFKC').matchAll(/(\d+)\s*기(?![가-힣])/g)].map(m=>Number(m[1])));
+  return listed.size>1?listed:new Set([communitySeason(text)??1]);
 }
 // Provider (English) titles also number a later season with a bare digit or a roman numeral at the end
 // ("The Angel Next Door Spoils Me Rotten 2", Re:Anime's "…Rotten2", "Overlord IV"), but "Kaiju No. 8",
@@ -1675,21 +1745,21 @@ function communityPostTitle(title=''){return communityTitle(String(title).normal
 function communityTitle(text=''){return String(text).normalize('NFKC').replace(/\d+(?:\.\d+)?\s*(?:화|회|편)?\s*[~∼〜～–—\-,、&/+·・]\s*(?=\d)/g,'').replace(/\d+(?:\.\d+)?\s*(?:화|회|편)|\bep(?:isode)?\s*\.?\s*\d+(?:\.\d+)?|\((?:끝|완|完)\)|작업\s*중|블루레이판|자막/gi,' ').trim()}
 // Picks the post's download links for one episode: per-episode posts (Kairan) carry the number in the
 // title, series posts (Csora) label each link ("13화", "1 ~ 12화") and add a separate "폰트" link.
-function communityLinks(post,episode,{offsets=[],allowOffset=false}={}){
+// Each link keeps its text (linkInfo): downloadCommunityMatch tries them tier by tier (planCommunityLinks).
+function communityLinks(post,episode,{offsets=[],allowOffset=false,season=null}={}){
   const $=cheerio.load(post.html),anchors=[];
-  $('a[href]').each((_,a)=>{const href=absoluteUrl($(a).attr('href'),post.url);if(/drive\.google\.com|docs\.google\.com|\.zip(?:$|\?)|\.(?:ass|ssa|srt|vtt|smi)(?:$|\?)/i.test(href))anchors.push({href,label:$(a).text().trim()})});
-  const fonts=anchors.filter(a=>/폰트|font/i.test(a.label)),subs=anchors.filter(a=>!fonts.includes(a)),withFonts=list=>list.length?[...new Set([...list,...fonts].map(a=>a.href))]:[];
-  const titleEpisodes=communityPostEpisodes(post.title);
-  if(titleEpisodes.any){const bundle=titleEpisodes.ranges.length>0||titleEpisodes.list.length>1;return titleEpisodes.has(episode)?{links:withFonts(subs),episode,strict:bundle,bundle}:{links:[],episode}}
-  const labeled=subs.map(a=>({...a,episodes:communityEpisodes(a.label)})).filter(a=>a.episodes.any);
-  // No numbers at all: a movie or a whole-season bundle, whose file has to be matched by episode.
-  if(!labeled.length)return {links:withFonts(subs),episode,strict:true};
-  const pick=ep=>{const exact=labeled.filter(a=>a.episodes.list.includes(ep));return exact.length?exact:labeled.filter(a=>a.episodes.has(ep))};
-  // Later seasons often continue the numbering (2기 = 13~24화) while the player counts from 1.
-  const direct=pick(episode),number=direct.length?episode:allowOffset?offsets.map(offset=>episode+Number(offset)).find(number=>Number.isFinite(number)&&number>episode&&pick(number).length)??episode:episode;
-  const chosen=direct.length?direct:pick(number),bundle=chosen.some(a=>a.episodes.ranges.length>0||a.episodes.list.length>1);
-  // A range link ("1 ~ 12화") is a bundle, so its file must be matched by episode number.
-  return {links:withFonts(chosen),episode:number,strict:bundle,bundle};
+  $('a[href]').each((_,a)=>{const href=absoluteUrl($(a).attr('href'),post.url);if(/drive\.google\.com|docs\.google\.com|\.zip(?:$|\?)|\.(?:ass|ssa|srt|vtt|smi)(?:$|\?)/i.test(href)&&!anchors.some(x=>x.href===href))anchors.push({href,label:$(a).text().trim()})});
+  const titleEpisodes=communityPostEpisodes(post.title),plan=number=>planCommunityLinks(post.title,titleEpisodes,anchors,number,{season}),named=found=>found.tiers.some(tier=>tier.some(link=>communityLinkEpisodes(link.label).any));
+  let number=episode,found=plan(episode);
+  // Later seasons often continue the numbering (2기 = 13~24화) while the player counts from 1: a link named for the
+  // continued number, when none is named for the episode itself.
+  if(allowOffset&&!titleEpisodes.any&&!named(found))for(const offset of offsets){const next=episode+Number(offset);if(!Number.isFinite(next)||next<=episode)continue;const other=plan(next);if(named(other)){number=next;found=other;break}}
+  if(!found.tiers.length)return {links:[],episode:number};
+  const linkInfo=[...found.tiers.flatMap((tier,index)=>tier.map(link=>({...link,tier:index}))),...found.fonts.map(link=>({...link,font:true}))];
+  // A range, a list or a link without a number: the file inside has to be matched by episode number.
+  const bundle=titleEpisodes.ranges.length>0||titleEpisodes.list.length>1||found.tiers.flat().some(link=>{const e=communityLinkEpisodes(link.label);return e.ranges.length>0||e.list.length>1});
+  const strict=bundle||!found.tiers[0]?.[0]?.exact;
+  return {links:linkInfo.map(link=>link.href),linkInfo,episode:number,strict,bundle};
 }
 const COMMUNITY_FILE=/\.(ass|ssa|srt|vtt|smi|ttf|otf|ttc)$/i;
 function communityFileName(name){return path.basename(String(name).replace(/\\/g,'/')).normalize('NFC').replace(/[^\p{L}\p{N}._ ()\[\]-]/gu,'_')}
@@ -1704,7 +1774,8 @@ async function downloadDriveBuffer(url,referer){
 // Unpacks subtitle and font files. Zip names without the UTF-8 flag are CP949 (Korean Windows);
 // 7z/RAR go through Windows' bundled bsdtar.
 async function extractCommunityArchive(buffer,dir){
-  const files=[],write=(name,data)=>{if(!COMMUNITY_FILE.test(name))return;let out=path.join(dir,communityFileName(name));if(files.includes(out))out=path.join(dir,`${files.length}_${communityFileName(name)}`);fs.writeFileSync(out,data);files.push(out)};
+  // Several links unpack into one folder: a name already there (from this archive or another) gets a number.
+  const files=[],write=(name,data)=>{if(!COMMUNITY_FILE.test(name))return;let out=path.join(dir,communityFileName(name));for(let n=1;fs.existsSync(out);n++)out=path.join(dir,`${n}_${communityFileName(name)}`);fs.writeFileSync(out,data);files.push(out)};
   if(buffer[0]===0x50&&buffer[1]===0x4b){
     const zip=new AdmZip(buffer);let extracted=0;
     for(const entry of zip.getEntries()){if(entry.isDirectory)continue;const size=Number(entry.header?.size||0);extracted+=size;if(size>100*1024*1024||extracted>300*1024*1024)throw new Error('ZIP 자막 크기 제한을 초과했습니다.');
@@ -1726,14 +1797,16 @@ async function extractCommunityArchive(buffer,dir){
 // UTF-16 files (common for SMI) are read by their byte order mark.
 function communitySubtitleExt(buffer){const bom=buffer[0]===0xff&&buffer[1]===0xfe?'utf-16le':buffer[0]===0xfe&&buffer[1]===0xff?'utf-16be':'utf-8',head=new TextDecoder(bom).decode(buffer.subarray(0,8192)).replace(/^\uFEFF/,'');return /^WEBVTT/.test(head)?'.vtt':/\[Script Info\]/i.test(head)?'.ass':/<sami[\s>]/i.test(head)?'.smi':/\d+:\d{2}:\d{2}[,.]\d{3}\s*-->/.test(head)?'.srt':null}
 // Posts of one blog ranked for a title and episode (best first).
-function rankCommunityPosts(posts,title,episode,originalTitle='',{offsets=[]}={}){
-  const season=searchSeason(title,originalTitle)??1,wanted=communityTitle(title);
+function rankCommunityPosts(posts,title,episode,originalTitle='',{offsets=[],season:askedSeason=null}={}){
+  // fileSeason: the season the title marks, if any. An unmarked title may still be filed under a later season by the
+  // maker (시광대리인 영도편 → "Link.Click.S03E01"), so its files are not filtered by season.
+  const fileSeason=askedSeason??searchSeason(title,originalTitle),season=fileSeason??1,wanted=communityTitle(title);
   const rank=(list,name,number)=>list.map(post=>({post,score:communityScore(name,communityPostTitle(post.title))})).filter(x=>x.score>=.52) // Android MIN_SIMILARITY
-    .map(x=>({...x,season,...communityLinks(x.post,number,{offsets,allowOffset:season>1})})).filter(x=>x.links.length)
+    .map(x=>({...x,season,fileSeason,...communityLinks(x.post,number,{offsets,allowOffset:season>1,season})})).filter(x=>x.links.length)
     // Per-episode links beat bundles of a similarly named post; newer posts come first in the feed.
     .sort((a,b)=>Math.round((b.score-a.score)*20)||Number(Boolean(a.strict))-Number(Boolean(b.strict)));
   const usable=posts.filter(post=>!/작업\s*중|하차/.test(post.title));
-  const direct=rank(usable.filter(post=>(communitySeason(communityPostTitle(post.title))??1)===season),wanted,episode);
+  const direct=rank(usable.filter(post=>communitySeasons(communityPostTitle(post.title)).has(season)),wanted,episode);
   if(direct.length||season<2)return direct;
   // Some makers number a later season on from the first ("정반대의 너와 나 15화" is 2기 3화) and drop the season
   // from the title. Such posts are matched under the series name with the previous seasons' episodes added,
@@ -1781,25 +1854,77 @@ async function findCommunitySubtitle(source,title,episode,{originalTitle='',offs
   }
   throw lastError||new Error(`${label} 자막 게시물을 찾지 못했습니다.`);
 }
-// Downloads a ranked post's links (Drive, zip/7z/RAR, subtitle files) and picks the episode's file.
+// Google Drive folders (drive.google.com/drive/folders/<id>): their public embedded view lists each entry's name and
+// id. A maker's folder can be a whole archive ("자막 모음" → 완결 → 2026 → 1분기 → <작품> → files), so it is searched
+// breadth first: a folder named like the title, then the newest years and quarters, for at most 40 listings. The
+// linked folder's own files are its answer when it has any.
+function driveFolderId(url){return String(url).match(/drive\.google\.com\/(?:drive\/(?:u\/\d+\/)?folders\/|embeddedfolderview\?id=)([\w-]+)/)?.[1]||null}
+async function driveFolderEntries(id){
+  const html=await providerFetch(`https://drive.google.com/embeddedfolderview?id=${encodeURIComponent(id)}`,{referer:'https://drive.google.com/'}),$=cheerio.load(html);
+  return $('.flip-entry').map((_,node)=>{const entry=$(node),href=entry.find('a').first().attr('href')||'';return {id:String(entry.attr('id')||'').replace(/^entry-/,''),name:entry.find('.flip-entry-title').first().text().trim(),folder:/\/folders\//.test(href)}}).get().filter(entry=>entry.id&&entry.name);
+}
+async function driveFolderFiles(id,title){
+  const wanted=communityTitle(title),named=entry=>communityScore(wanted,communityTitle(entry.name))>=.52,queue=[{id,depth:0,path:[]}],seen=new Set();
+  // Six listings at a time. Folders under numbered ones (years, quarters: where finished series are filed) go first,
+  // the newest path first (2026 → 2분기 before 2025 → 4분기), then the rest in the order found.
+  const order=(a,b)=>{for(let i=0;i<Math.max(a.path.length,b.path.length);i++){const x=a.path[i]??-1,y=b.path[i]??-1;if(x!==y)return y-x}return a.depth-b.depth};
+  for(let listings=0;queue.length&&listings<40;){
+    queue.sort(order);
+    const batch=queue.splice(0,6).filter(item=>!seen.has(item.id));batch.forEach(item=>seen.add(item.id));listings+=batch.length;
+    const listed=await Promise.all(batch.map(item=>driveFolderEntries(item.id).catch(()=>[])));let own=null;
+    for(const [index,{depth,match,path}] of batch.entries()){
+      const entries=listed[index],files=entries.filter(entry=>!entry.folder),folders=entries.filter(entry=>entry.folder);
+      if(files.some(entry=>/\.(?:ass|ssa|srt|vtt|smi|zip|7z|rar)$/i.test(entry.name))&&(depth===0||match))return files;
+      const titled=folders.filter(named);if(titled.length&&!own)own=titled.map(entry=>({id:entry.id,depth:depth+1,match:true,path}));
+      if(depth<5)queue.push(...folders.filter(entry=>!titled.includes(entry)).map(entry=>({id:entry.id,depth:depth+1,match,path:[...path,Number(entry.name.match(/\d+/)?.[0])||0]})));
+    }
+    if(own){queue.length=0;queue.push(...own)}
+  }
+  return [];
+}
+// Downloads a ranked post's links (Drive, zip/7z/RAR, subtitle files) and picks the episode's file. The links are
+// tried a tier at a time (communityLinks: named for the episode, covering it, naming none) until one tier holds the
+// episode, so a post's other bundles are not downloaded once its own link has the file; the fonts follow.
 async function downloadCommunityMatch(match,source,title,episode){
   const root=path.join(app.getPath('userData'),'subtitles',simpleTitle(title).replace(/\s+/g,'_')||'anime',String(episode));fs.mkdirSync(root,{recursive:true});
-  const dir=fs.mkdtempSync(path.join(root,`${source}-`)),candidates=[];
-  for(const original of match.links){
-    try{
-      const id=driveId(original),url=id?`https://drive.usercontent.google.com/download?id=${encodeURIComponent(id)}&export=download&confirm=t`:original,buffer=await downloadDriveBuffer(url,id?undefined:match.post.url);
-      if(buffer.length<16||buffer.length>300*1024*1024)continue;
-      const unpacked=await extractCommunityArchive(buffer,dir);
-      if(unpacked){candidates.push(...unpacked.filter(file=>/\.(ass|ssa|srt|vtt|smi)$/i.test(file)));continue}
-      const ext=communitySubtitleExt(buffer);if(!ext)continue;
-      let name='';try{name=decodeURIComponent(new URL(original).pathname.split('/').pop()||'')}catch{}
-      const base=/\.(?:ass|ssa|srt|vtt|smi)$/i.test(name)?`raw${candidates.length}_${communityFileName(name).replace(/\.[^.]+$/,'')}`:`${source}_file${candidates.length}`;
-      const out=path.join(dir,`${base}${ext}`);fs.writeFileSync(out,buffer);candidates.push(out);
-    }catch{/* Try remaining links. */}
+  const dir=fs.mkdtempSync(path.join(root,`${source}-`)),candidates=[],subtitle=file=>/\.(ass|ssa|srt|vtt|smi)$/i.test(file);
+  const download=async link=>{
+    // A Drive folder: only the episode's own file (or archive) in it is downloaded, else its unnumbered archives.
+    const folder=driveFolderId(link.href);
+    if(folder){
+      const entries=await driveFolderFiles(folder,title),picked=pickCommunityFile(entries.map(entry=>({file:entry.id,name:entry.name})),{episode:match.episode,season:match.fileSeason===undefined?match.season:match.fileSeason});
+      const targets=picked?[entries.find(entry=>entry.id===picked.file)]:entries.filter(entry=>/\.(?:zip|7z|rar)$/i.test(entry.name)&&communityFileEpisode(entry.name).episode==null).slice(0,2);
+      if(picked&&/\.(?:ass|ssa)$/i.test(picked.name))targets.push(...entries.filter(entry=>COMMUNITY_FONT.test(entry.name)));
+      const files=[];for(const entry of targets)try{files.push(...await download({href:`https://drive.google.com/file/d/${entry.id}/view`,label:entry.name}))}catch{/* next file */}
+      return files;
+    }
+    const original=link.href,id=driveId(original),url=id?`https://drive.usercontent.google.com/download?id=${encodeURIComponent(id)}&export=download&confirm=t`:original,buffer=await downloadDriveBuffer(url,id?undefined:match.post.url);
+    if(buffer.length<16||buffer.length>300*1024*1024)return [];
+    const unpacked=await extractCommunityArchive(buffer,dir);if(unpacked)return unpacked.filter(subtitle);
+    const ext=communitySubtitleExt(buffer);if(!ext)return [];
+    // The file's own name: the server's, the URL's, or the link text when that is a file name (Tistory URLs end in
+    // "tfile.smi", so its number would be lost).
+    let name=buffer.fileName||'';if(!subtitle(name))try{name=decodeURIComponent(new URL(original).pathname.split('/').pop()||'')}catch{}
+    const label=String(link.label||'').replace(/\s*\d+(?:\.\d+)?\s*[KMG]B\s*$/i,'').trim();if((!subtitle(name)||/^t?file\./i.test(name))&&subtitle(label))name=label;
+    const base=subtitle(name)&&!/^t?file\./i.test(name)?`raw${candidates.length}_${communityFileName(name).replace(/\.[^.]+$/,'')}`:`${source}_file${candidates.length}`;
+    const out=path.join(dir,`${base}${ext}`);fs.writeFileSync(out,buffer);return [out];
+  };
+  const info=match.linkInfo||match.links.map(href=>({href,label:'',tier:0}));
+  const tiers=[...new Set(info.filter(link=>!link.font).map(link=>link.tier))].sort((a,b)=>a-b);
+  let selected=null;
+  for(const tier of tiers){
+    const links=info.filter(link=>!link.font&&link.tier===tier),files=[];
+    for(const link of links){try{files.push(...await download(link))}catch{/* Try remaining links. */}}
+    candidates.push(...files);
+    // Match the episode before preferring ASS and newer revisions; do not substitute another numbered file.
+    // Links not named for the episode alone ("통합", a range) never fall back to an arbitrary unnumbered file.
+    const exact=links.every(link=>link.exact);
+    selected=pickCommunityFile(files.map(file=>({file,name:path.basename(file),size:fs.statSync(file).size})),{episode:match.episode,exact,strict:exact||!match.linkInfo?match.strict:true,bundle:match.bundle,season:match.fileSeason===undefined?match.season:match.fileSeason});
+    if(selected)break;
   }
-  // Match the episode before preferring ASS and newer revisions; do not substitute another numbered file.
-  const selected=selectCommunityFile(candidates.map(file=>({file,name:path.basename(file),size:fs.statSync(file).size})),{episode:match.episode,strict:match.strict,bundle:match.bundle,season:match.season});
-  if(!selected)throw new Error('이 회차에 맞는 자막 파일을 추출하지 못했습니다.');return subtitleResult(selected.file,{source,post:match.post.url,postTitle:match.post.title,all:candidates});
+  if(!selected)throw new Error('이 회차에 맞는 자막 파일을 추출하지 못했습니다.');
+  for(const link of info.filter(link=>link.font))try{await download(link)}catch{/* The subtitle plays with the fallback font. */}
+  return subtitleResult(selected.file,{source,post:match.post.url,postTitle:match.post.title,all:candidates});
 }
 // Some makers pack their subtitles into the post's image instead of linking a file (WinPNG,
 // https://github.com/harnenim/WinPNG). The blog's own viewer decodes the image and converts Jamaker projects (.jmk) to
@@ -1965,16 +2090,21 @@ async function anissiaFetch(pathname){
 // The Anissia entry for a Korean title, with the season required to match ("2기", "Season 3").
 async function anissiaAnime(title,originalTitle=''){
   const season=searchSeason(title,originalTitle)??1,wanted=communityTitle(title);
-  const bare=wanted.replace(/[~〜～][^~〜～]*[~〜～]/g,' ').replace(/\s*(?:\d+\s*기|season\s*\d+|시즌\s*\d+)\s*$/i,'').replace(/\s+/g,' ').trim();
+  // Subtitles (~…~, -Link Click-) and season marks go: Anissia keeps "Ⅱ" as typed, and the title read here has it
+  // as "II", which its search does not find. The season is checked on the results instead.
+  const bare=wanted.replace(/[~〜～][^~〜～]*[~〜～]/g,' ').replace(/(?:^|\s)-[^-]+-(?=\s|$)/g,' ').replace(/(?<=[가-힣\s])(?:II|III|IV|VI|V)(?=\s|$)/g,' ')
+    .replace(/\s*(?:\d+\s*기|season\s*\d+|시즌\s*\d+)\s*$/i,'').replace(/\s+/g,' ').trim();
   // Anissia's search misses titles typed with their punctuation ("명탐정 프리큐어!").
   const plain=bare.replace(/[!?！？.,:;·'"“”‘’♡♥☆★]+/g,' ').replace(/\s+/g,' ').trim();
-  const queries=[...new Set([bare,plain,plain.split(' ').slice(0,2).join(' ')])].filter(query=>query.length>=2);
+  const queries=[...new Set([bare,plain,plain.split(' ').slice(0,2).join(' '),plain.split(' ')[0]])].filter(query=>query.length>=2);
   const seen=new Map();let best=null,lastError=null,answered=false;
   for(const query of queries){
     for(let page=0;page<3;page++){
       let result;try{result=await anissiaFetch(`/anime/list/${page}?q=${encodeURIComponent(query)}`);if(!Array.isArray(result?.content))throw new Error('Anissia 검색 응답을 읽지 못했습니다.');answered=true}catch(error){lastError=error;break}
       for(const item of result.content)seen.set(item.animeNo,item);
-      best=[...seen.values()].filter(item=>(communitySeason(item.subject)??1)===season).map(item=>({item,score:communityScore(wanted,item.subject)})).filter(x=>x.score>=.52).sort((a,b)=>b.score-a.score)[0];
+      // Anissia also names a later season with a bare digit ("이세계 유유자적 농가 2"); in a blog post's title such a
+      // digit is the episode, so this is read for Anissia's own titles only.
+      best=[...seen.values()].filter(item=>(communitySeason(item.subject)??(Number(String(item.subject).match(/[가-힣]\s+([2-9])$/)?.[1])||1))===season).map(item=>({item,score:communityScore(wanted,item.subject)})).filter(x=>x.score>=.52).sort((a,b)=>b.score-a.score)[0];
       if(best?.score>=.98)return best.item;
       if(result.last===true||page+1>=Number(result.totalPages||1)||!result.content.length)break;
     }
@@ -2058,6 +2188,9 @@ async function findAnissiaSubtitle(title,episode,{originalTitle='',offsets=[],ma
   const found=await anissiaMakers(title,originalTitle);if(!found)throw new Error('Anissia에서 작품을 찾지 못했습니다.');
   // A maker picked in the player is the only one tried.
   const anime=found.anime,captions=maker?found.captions.filter(item=>item.name===maker):found.captions;
+  // The season asked for, from the title or Anissia's own ("이세계 유유자적 농가 2"): posts are ranked under either name,
+  // and the Anissia one may not show it the way a post title would.
+  const askedSeason=searchSeason(title,originalTitle)??communitySeason(anime.subject)??(Number(String(anime.subject).match(/[가-힣]\s+([2-9])$/)?.[1])||null);
   for(const caption of captions){
     let origin;try{origin=new URL(caption.website).origin}catch{continue}
     const host=new URL(origin).hostname;
@@ -2069,25 +2202,25 @@ async function findAnissiaSubtitle(title,episode,{originalTitle='',offsets=[],ma
       // ("후리렌 1기(完)" for 장송의 프리렌), so it is ranked under the Anissia title.
       const naver=naverBlogRef(caption.website);
       let linked=naver?(naver.logNo?await naverPost(naver.blogId,naver.logNo).then(post=>({...post,title:`${anime.subject} ${post.pageTitle}`.trim()})).catch(()=>null):null):await anissiaLinkedPost(caption.website,anime.subject,origin);
-      const linkedSeason=communitySeason(communityPostTitle(linked?.pageTitle||'')),wrongLinkedSeason=linkedSeason!=null&&linkedSeason!==(searchSeason(title,originalTitle)??1);if(wrongLinkedSeason)linked=null;
+      const linkedTitle=communityPostTitle(linked?.pageTitle||''),wrongLinkedSeason=communitySeason(linkedTitle)!=null&&!communitySeasons(linkedTitle).has(askedSeason??1);if(wrongLinkedSeason)linked=null;
       if(/\.blogspot\.com$/i.test(host)){
         const posts=[...await communityPosts(origin),...(linked?[linked]:[])];
-        for(const name of [anime.subject,title])if(!matches.length)matches=rankCommunityPosts(posts,name,episode,originalTitle,{offsets});
-        if(!matches.length){const refreshed=[...await communityPosts(origin,{force:true}),...(linked?[linked]:[])];for(const name of [anime.subject,title])if(!matches.length)matches=rankCommunityPosts(refreshed,name,episode,originalTitle,{offsets})}
+        for(const name of [anime.subject,title])if(!matches.length)matches=rankCommunityPosts(posts,name,episode,originalTitle,{offsets,season:askedSeason});
+        if(!matches.length){const refreshed=[...await communityPosts(origin,{force:true}),...(linked?[linked]:[])];for(const name of [anime.subject,title])if(!matches.length)matches=rankCommunityPosts(refreshed,name,episode,originalTitle,{offsets,season:askedSeason})}
       }else if(/\.tistory\.com$/i.test(host)||naver){
         // Some makers use their own short name ("츠레카노 12"); the post Anissia links gives it away, so it is
         // searched too and its posts count as this anime's.
         const nickname=anissiaNickname(linked?.pageTitle||'',anime.subject);
         const nicknameEpisode=title=>{const at=title.indexOf(nickname),number=at<0?null:title.slice(at+nickname.length).match(/^\s*(\d{1,3})(?!\d)/)?.[1];return number?`${anime.subject} ${Number(number)}화`:null};
         const nicknames=nickname?[...new Set([nickname,nickname.replace(/\([^)]*\)/g,' ').replace(/\s+/g,' ').trim()])].filter(Boolean):[];
-        const listed=(naver?await naverPosts(naver.blogId,anime.subject,nicknames):await tistoryPosts(origin,anime.subject,nicknames)).map(post=>{const renamed=nickname&&post.title.includes(nickname)&&communityScore(communityTitle(anime.subject),communityPostTitle(post.title))<.52?nicknameEpisode(post.title):null;return renamed?{...post,title:renamed}:post}),season=communitySeason(anime.subject)??1;
+        const listed=(naver?await naverPosts(naver.blogId,anime.subject,nicknames):await tistoryPosts(origin,anime.subject,nicknames)).map(post=>{const renamed=nickname&&post.title.includes(nickname)&&communityScore(communityTitle(anime.subject),communityPostTitle(post.title))<.52?nicknameEpisode(post.title):null;return renamed?{...post,title:renamed}:post}),season=askedSeason??1;
         // The season's own number, or a continued one on posts without a season ("15화" for 2기 3화).
-        const numbered=post=>{const postSeason=communitySeason(communityPostTitle(post.title)),episodes=communityPostEpisodes(post.title);return ((postSeason??1)===season&&episodes.has(episode))||(season>1&&postSeason==null&&offsets.some(offset=>episodes.has(episode+offset)))};
+        const numbered=post=>{const postSeason=communitySeason(communityPostTitle(post.title)),episodes=communityPostEpisodes(post.title);return (communitySeasons(communityPostTitle(post.title)).has(season)&&episodes.has(episode))||(season>1&&postSeason==null&&offsets.some(offset=>episodes.has(episode+offset)))};
         const base=value=>communityTitle(value).replace(/\s*(?:\d+\s*기|season\s*\d+|시즌\s*\d+)\s*$/i,'');
         const likely=listed.filter(post=>numbered(post)&&Math.max(communityScore(base(anime.subject),communityPostTitle(post.title)),communityScore(base(title),communityPostTitle(post.title)))>=.52).slice(0,4);
         await Promise.all(likely.map(async post=>{try{post.html=naver?(await naverPost(naver.blogId,post.logNo)).html:await providerFetch(post.url,{referer:`${origin}/`})}catch{post.html=''}}));
         const posts=[...likely.filter(post=>post.html),...(linked&&!likely.some(post=>post.url===linked.url)?[linked]:[])];
-        for(const name of [anime.subject,title])if(!matches.length)matches=rankCommunityPosts(posts,name,episode,originalTitle,{offsets});
+        for(const name of [anime.subject,title])if(!matches.length)matches=rankCommunityPosts(posts,name,episode,originalTitle,{offsets,season:askedSeason});
         // No download link: the files may be packed into the post's image (WinPNG). The episode's own posts first,
         // then the one Anissia links.
         if(!matches.length&&/\.tistory\.com$/i.test(host)){
@@ -2713,6 +2846,8 @@ app.whenReady().then(async () => {
   // Several lookups at a time (TMDB answers quickly; AniList allows about 90 requests a minute).
   // A work's story in Korean from TMDB ('' when there is none; see tmdbOverview).
   ipcMain.handle('anime:overview',(_,anime={})=>tmdbOverview(anime||{}).catch(()=>''));
+  // The detail page's header picture and Korean title logo ('' each when there is none; see animeArtwork).
+  ipcMain.handle('anime:artwork',(_,anime={})=>animeArtwork(anime||{}).catch(()=>({banner:'',logos:[]})));
   ipcMain.handle('titles:resolve',async(_,list=[])=>{
     const items=(Array.isArray(list)?list:[]).slice(0,60),results=[];let next=0;
     await Promise.all(Array.from({length:6},async()=>{while(next<items.length){const item=items[next++];results.push(await resolveDisplayTitle(item).catch(()=>({key:`${item.provider||'jikan'}:${item.id??item.mal_id}`,ko:'',en:''})))}}));

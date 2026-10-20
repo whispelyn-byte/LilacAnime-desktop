@@ -152,6 +152,46 @@ test('Anissia shares successful requests, expires its cache and retries failed r
   await assert.rejects(h.context.anissiaFetch('/bad'), /Anissia fail/);
 });
 
+test('Anissia finds titles with a roman season or a hyphenated subtitle by their bare name', async () => {
+  const entries = { '클레바테스': [{ animeNo: 1, subject: '클레바테스 ~마수왕과 아기와 시체 용사~' }, { animeNo: 2, subject: '클레바테스Ⅱ ~마수왕과 가짜 용사 전승~' }],
+    '이세계 유유자적 농가': [{ animeNo: 6, subject: '이세계 유유자적 농가 2' }, { animeNo: 7, subject: '이세계 유유자적 농가' }],
+    '시광대리인 영도편': [], '시광대리인': [{ animeNo: 3, subject: '시광대리인 -Link Click- 영도편' }, { animeNo: 4, subject: '시광대리인 Ⅱ -Link Click Ⅱ-' }, { animeNo: 5, subject: '시광대리인 -Link Click-' }] };
+  const h = setup({ anissiaFetch: async url => ({ content: entries[decodeURIComponent(url.split('?q=')[1])] || [], totalPages: 1, last: true }) });
+  h.load('async function anissiaAnime(', '// Tistory:');
+  assert.equal((await h.context.anissiaAnime('클레바테스Ⅱ ~마수왕과 가짜 용사 전승~')).animeNo, 2);
+  assert.equal((await h.context.anissiaAnime('클레바테스 ~마수왕과 아기와 시체 용사~')).animeNo, 1);
+  assert.equal((await h.context.anissiaAnime('시광대리인 -Link Click- 영도편')).animeNo, 3);
+  assert.equal((await h.context.anissiaAnime('시광대리인 Ⅱ -Link Click Ⅱ-')).animeNo, 4);
+  // Anissia's own titles may mark a season with a bare digit.
+  assert.equal((await h.context.anissiaAnime('이세계 유유자적 농가 2기')).animeNo, 6);
+  assert.equal((await h.context.anissiaAnime('이세계 유유자적 농가')).animeNo, 7);
+});
+
+test('a post keeping several seasons serves each season its own archive', () => {
+  const { context: c } = setup();
+  assert.deepEqual([...c.communitySeasons('자판기 1기/2기/3기')], [1, 2, 3]); assert.deepEqual([...c.communitySeasons('작품 2기')], [2]);
+  assert.equal(c.communitySeason('클레바테스Ⅱ ~마수왕과 가짜 용사 전승~'), 2);
+  const name = '자동판매기로 다시 태어난 나는 미궁을 방랑한다';
+  const p = post(`${name} 1기/2기/3기`, 'seasons', [`${name} 3기 1-2 SubsPlease`, `${name} 2기 1-12 SubsPlease`, `${name} 1-12 Ohys`]);
+  const links = (title, episode) => c.rankCommunityPosts([p], title, episode).map(match => Array.from(match.links).join());
+  assert.deepEqual(links(`${name} 3기`, 1), ['https://drive.google.com/file/d/seasons_0/view']);
+  assert.deepEqual(links(`${name} 2기`, 5), ['https://drive.google.com/file/d/seasons_1/view']);
+  assert.deepEqual(links(name, 5), ['https://drive.google.com/file/d/seasons_2/view']);
+});
+
+test('a Drive folder archive is searched for the title, newest years first, within a listing budget', async () => {
+  const tree = { root: [['완결', 'done', 1], ['극장판', 'movies', 1]], movies: [['어떤 극장판', 'm1', 1]], done: [['2025', 'y25', 1], ['2026', 'y26', 1]],
+    y25: [['4분기', 'q254', 1]], y26: [['1분기', 'q261', 1], ['2분기', 'q262', 1]], q262: [['다른 작품', 'other', 1]], q261: [['마술사 쿠논은 보인다', 'kunon', 1]],
+    kunon: [['마술사 쿠논은 보인다 01.zip', 'f1', 0], ['마술사 쿠논은 보인다 02.zip', 'f2', 0]], flat: [['푸드코트에서 1화 자막.ass', 'a1', 0]] };
+  const listed = [], h = setup();
+  h.load('function driveFolderId(', '// Downloads a ranked post');
+  h.context.driveFolderEntries = async id => { listed.push(id); return (tree[id] || []).map(([name, entry, folder]) => ({ id: entry, name, folder: Boolean(folder) })); };
+  assert.equal(h.context.driveFolderId('https://drive.google.com/drive/folders/root?usp=sharing'), 'root');
+  assert.deepEqual((await h.context.driveFolderFiles('root', '마술사 쿠논은 보인다')).map(entry => entry.id), ['f1', 'f2']);
+  assert.ok(listed.indexOf('q261') >= 0 && (listed.indexOf('q254') < 0 || listed.indexOf('q262') < listed.indexOf('q254')));
+  assert.deepEqual((await h.context.driveFolderFiles('flat', '푸드코트에서')).map(entry => entry.id), ['a1']);
+});
+
 test('previous-season lookup retries a failure, shares concurrent chains, and stops cycles', async () => {
   let fail = true, calls = 0;
   const h = setup({ fetch: async (_, options) => {
@@ -205,6 +245,26 @@ test('WinPNG uses original episode names rather than generated extraction indice
   assert.equal(fs.readFileSync(result.path, 'utf8'), 'second');
 });
 
+test('links are downloaded a tier at a time and a Korean post address is sent percent-encoded', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lilac-community-tier-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const zip = names => { const z = new AdmZip(); for (const name of names) z.addFile(name, Buffer.from('[Script Info]\nTitle: ' + name)); return z.toBuffer(); };
+  const archives = { 'https://example.tistory.com/a/3.zip': zip(['Show - 03 (1080p) [ABCDEF12].ass']), 'https://example.tistory.com/a/all.zip': zip(['Show - 01.ass', 'Show - 03.ass']) };
+  const fetched = [], referers = [];
+  const h = setup({ app: { getPath: () => dir }, driveId: () => null, subtitleResult: (file, options) => ({ path: file, ...options }), LINKKF_UA: 'test', AbortController, setTimeout, clearTimeout,
+    fetch: async (url, options) => { fetched.push(url); referers.push(options.headers.Referer); const data = archives[url];
+      return { ok: true, headers: { get: () => null }, body: { getReader: () => { let done = false; return { read: async () => done ? { done: true } : (done = true, { done: false, value: data }) }; } } }; } });
+  h.load('// Same as Android KairanSubtitleService/GoogleDriveDownloader', 'function driveId(');
+  h.load('const COMMUNITY_FILE=', '// Posts of one blog ranked');
+  h.load('function driveFolderId(', '// Some makers pack');
+  const post = { title: '작품', url: 'https://example.tistory.com/entry/작품-3화', html: '<a href="https://example.tistory.com/a/all.zip">1~12화</a><a href="https://example.tistory.com/a/3.zip">3화</a>' };
+  const match = { ...h.context.communityLinks(post, 3), post };
+  const result = await h.context.downloadCommunityMatch(match, 'anissia', '작품', 3);
+  assert.match(path.basename(result.path), /Show - 03 \(1080p\)/); assert.deepEqual(fetched, ['https://example.tistory.com/a/3.zip']);
+  assert.equal(referers[0], 'https://example.tistory.com/entry/%EC%9E%91%ED%92%88-3%ED%99%94');
+  const first = await h.context.downloadCommunityMatch({ ...h.context.communityLinks(post, 1), post }, 'anissia', '작품', 1);
+  assert.match(fs.readFileSync(first.path, 'utf8'), /Show - 01/);
+});
+
 test('actual ZIP extraction picks the requested script and isolates sources and concurrent searches', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lilac-community-test-'));
   assert.equal(path.dirname(dir), path.resolve(os.tmpdir()));
@@ -214,7 +274,7 @@ test('actual ZIP extraction picks the requested script and isolates sources and 
   const h = setup({ app: { getPath: () => dir }, driveId: () => null, downloadDriveBuffer: async () => zip.toBuffer(), subtitleResult: (file, options) => ({ path: file, ...options }) });
   h.load('const COMMUNITY_FILE=', '// Posts of one blog ranked');
   h.context.downloadDriveBuffer = async () => zip.toBuffer();
-  h.load('async function downloadCommunityMatch(', '// Some makers pack');
+  h.load('function driveFolderId(', '// Some makers pack');
   const match = { episode: 1, strict: true, bundle: true, links: ['https://example.com/files.zip'], post: post('작품 1~2화', 'bundle') };
   const results = await Promise.all(['kairan', 'csora', 'anissia', 'kairan'].map(source => h.context.downloadCommunityMatch(match, source, '작품', 1)));
   assert.equal(new Set(results.map(result => path.dirname(result.path))).size, 4);
