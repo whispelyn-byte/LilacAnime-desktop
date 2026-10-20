@@ -1195,7 +1195,7 @@ async function tmdbSeasonTitle(id,original,options={}){
 function tmdbQueries(titles){
   const queries=[];
   for(const title of titles){
-    const base=String(title||'').replace(/…/g,'...').replace(/[◎○●☆★]+/g,' ').replace(/\s*(?:OVA|OAD|ONA|specials?|recap)\s*\d*\s*$/i,'').replace(/\s*(?:season\s*\d+|\d+(?:st|nd|rd|th)\s*season|part\s*\d+|第\d+期)\s*$/i,'').replace(/[:：]\s*$/,'').trim();
+    const base=String(title||'').replace(/…/g,'...').replace(/[◎○●☆★]+/g,' ').replace(/\s*(?:OVA|OAD|ONA|specials?|recap)\s*\d*\s*$/i,'').replace(/\s*(?:season\s*\d+|\d+(?:st|nd|rd|th)\s*season|part\s*\d+|第?\d+期|シーズン\s*\d+)\s*$/i,'').replace(/[:：]\s*$/,'').trim();
     for(const query of [base,base.split(/\s*[:：]\s+|\s+-\s+/)[0]])if(query&&!/[가-힣]/.test(query)&&!queries.includes(query))queries.push(query);
   }
   return queries;
@@ -1269,14 +1269,16 @@ let artworkDisk=null;
 const artworkFile=()=>path.join(app.getPath('userData'),'artwork-cache.json');
 const TMDB_IMAGE='https://image.tmdb.org/t/p';
 async function animeArtwork(anime={}){
-  const key=`${anime.provider||'jikan'}:${anime.id??anime.mal_id}:${tmdbKey()?'tmdb':'free'}`;
+  // A list card of 애니24 / 링크애니 has only the Korean title; its detail page also the original one and the AniList id,
+  // which find more: the two are kept apart, so a card's miss does not stand for the detail page.
+  const key=`${anime.provider||'jikan'}:${anime.id??anime.mal_id}:${tmdbKey()?'tmdb':'free'}${anime.title_japanese?':ja':''}${anime.anilistId?':al':''}`;
   artworkDisk||=(()=>{try{return JSON.parse(fs.readFileSync(artworkFile(),'utf8'))||{}}catch{return {}}})();
   const cached=artworkDisk[key];if(cached&&Array.isArray(cached.logos)&&Date.now()-cached.time<(cached.banner||cached.logos.length?30:7)*86400000)return {banner:cached.banner||'',logos:cached.logos};
   let banner='',logos=[];
   if(tmdbKey()){
-    // Korean-only sources (애니24, 링크애니) have no English title: their Korean one is searched as it is.
-    const titles=[anime.title_english,anime.title,anime.romaji,anime.title_japanese],queries=tmdbQueries(titles);
-    if(!queries.length&&hasHangul(anime.title))queries.push(String(anime.title).replace(/\s*(?:\d+\s*기|시즌\s*\d+)\s*$/,'').trim());
+    // The English and original titles first, then a Korean one (애니24, 링크애니 give only that on their lists, and
+    // TMDB finds most works by their Korean name too).
+    const titles=[anime.title_english,anime.title,anime.romaji,anime.title_japanese],queries=[...new Set([...tmdbQueries(titles),...koreanTmdbQueries(anime.title)])];
     const kinds=/movie|film|극장/i.test(String(anime.type||''))?['movie','tv']:['tv','movie'];
     find:for(const query of queries){
       for(const kind of kinds){
@@ -1294,6 +1296,13 @@ async function animeArtwork(anime={}){
   if(!banner)banner=await anilistBanner(anime).catch(()=>'');
   artworkDisk[key]={banner,logos,time:Date.now()};try{fs.writeFileSync(artworkFile(),JSON.stringify(artworkDisk),'utf8')}catch{}
   return {banner,logos};
+}
+// A Korean title as TMDB is searched for it: without the site's marks ("(자막)", "ORIGINAL"), the season or part
+// ("3기", "시즌 2", "5부: 황금의 바람", a bare "3" after the name), then the part before a subtitle (":", " -", "~").
+function koreanTmdbQueries(title){
+  const text=String(title||'').normalize('NFKC');if(!hasHangul(text))return [];
+  const base=text.replace(/\((?:자막|더빙|무삭제)\)|\[[^\]]*\]|(?<![A-Za-z])ORIGINAL(?![A-Za-z])/gi,' ').replace(/\s*(?:\d+\s*(?:기|부)|시즌\s*\d+)(?![가-힣]).*$/,'').replace(/(?<=[가-힣A-Za-z])\s+\d{1,2}$/,'').replace(/\s+/g,' ').trim();
+  return [...new Set([base,base.split(/\s*[:：]\s*|\s+-\s*|\s*[~〜～]/)[0].trim()])].filter(query=>query.length>=2);
 }
 // How light a logo's lettering is: the mean luminance of its opaque pixels (0 black … 1 white).
 async function logoLightness(url){

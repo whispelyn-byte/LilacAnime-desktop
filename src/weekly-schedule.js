@@ -24,7 +24,7 @@
       const badge = cancelled ? '결방' : item.startDate > date ? `${item.startDate.slice(5).replace('-', '.')} 첫 방송` : item.startDate === date ? '첫 방송' : '';
       const meta = [item.episode ? `${item.episode}화` : '', item.track === 'dub' ? '영어 더빙' : '', ...item.genres.slice(0, 2)].filter(Boolean).join(' · ');
       const airingLabel = cancelled ? '결방' : !timed ? '방영 목록' : item.airingStatus === 'aired' ? '방영됨' : item.airingStatus === 'delayed' ? '방영 지연' : '방영 예정';
-      button.innerHTML = `<span class="schedule-time${cancelled ? ' cancelled' : ''}">${escapeHtml(item.time || (timed ? '미정' : `${names[selected]}요일`))}<small>${airingLabel}</small></span><span class="schedule-show-copy"><b>${escapeHtml(item.anime ? titleOf(item.anime) : item.title)}</b><small>${escapeHtml(meta || '애니메이션')}${badge ? ` <em>${escapeHtml(badge)}</em>` : ''}</small></span><span class="schedule-arrow" aria-hidden="true">↗</span>`;
+      button.innerHTML = `<span class="schedule-time${cancelled ? ' cancelled' : ''}">${escapeHtml(item.time || (timed ? '미정' : `${names[selected]}요일`))}<small>${airingLabel}</small></span><span class="schedule-show-copy"><b>${escapeHtml(item.anime ? titleOf(item.anime) : item.title)}</b><small>${escapeHtml(meta || '애니메이션')}${badge ? ` <em>${escapeHtml(badge)}</em>` : ''}</small></span>`;
       button.setAttribute('aria-label', `${item.time || '시간 미정'} ${item.title}${cancelled ? ' 결방' : ''}`);
       const cover = imageOf(item.anime || match(item) || {});
       if (cover) {

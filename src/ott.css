@@ -74,6 +74,13 @@ body.light main::-webkit-scrollbar-thumb:hover{background-color:#00000066}
 @keyframes hero-progress{to{width:100%}}
 .hero-pick:focus-visible{outline:2px solid var(--lilac);outline-offset:3px}
 #homeView .hero h1{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;font-size:clamp(38px,4.6vw,68px);font-weight:900;line-height:1.04;letter-spacing:-.035em;margin:0 0 14px;padding-bottom:.06em;text-shadow:0 2px 18px #00000080}
+/* The spotlight's Korean title logo, with the text title small under it (it tells the season). */
+#homeView .hero-logo{display:block;width:auto;height:auto;max-width:100%;max-height:clamp(90px,13vw,170px);margin:0 0 10px;object-fit:contain;object-position:left bottom;filter:drop-shadow(0 2px 14px #000a)}
+#homeView .hero-logo[hidden]{display:none}
+#homeView .hero-logo.contrast{filter:drop-shadow(0 0 1px #fffd) drop-shadow(0 0 1px #fffd) drop-shadow(0 0 10px #fff8)}
+body.light #homeView .hero-logo{filter:drop-shadow(0 2px 8px #0004)}
+body.light #homeView .hero-logo.contrast{filter:drop-shadow(0 0 1px #000c) drop-shadow(0 0 1px #000c) drop-shadow(0 2px 8px #0006)}
+#homeView .hero h1.under-logo{-webkit-line-clamp:1;font-size:18px;font-weight:700;letter-spacing:0;margin:0 0 10px}
 .hero-meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:0 0 14px;font-size:14px;font-weight:600;color:#ffffffd9}
 .hero-meta:empty{display:none}
 .hero-meta .hero-score{color:#f4cf72}
@@ -189,13 +196,14 @@ dialog#detailDialog{width:min(1100px,94vw);border:0;border-radius:10px;backgroun
 #detailDialog .detail-info h1{font-size:clamp(30px,3vw,42px);font-weight:900;letter-spacing:-.03em;margin:22px 0 8px}
 /* A wide header picture (TMDB backdrop, AniList banner) sits lower than a stretched poster's face. */
 #detailDialog .detail-hero.banner{background-position:center 35%}
-/* The Korean title logo in place of the text title, which stays for screen readers. A logo whose lettering blends into
+/* The Korean title logo above the text title. A logo whose lettering blends into
    the page (dark on the dark theme, white on the light one: .contrast) gets an outline in the opposite colour. */
 #detailDialog .detail-body img.detail-logo{display:block;width:auto;height:auto;max-width:min(440px,100%);max-height:150px;margin:22px 0 8px;border-radius:0;box-shadow:none;object-fit:contain;filter:drop-shadow(0 2px 10px #0009)}
 #detailDialog .detail-body img.detail-logo.contrast{filter:drop-shadow(0 0 1px #fffd) drop-shadow(0 0 1px #fffd) drop-shadow(0 0 8px #fff8)}
 body.light #detailDialog .detail-body img.detail-logo{filter:drop-shadow(0 2px 6px #0004)}
 body.light #detailDialog .detail-body img.detail-logo.contrast{filter:drop-shadow(0 0 1px #000c) drop-shadow(0 0 1px #000c) drop-shadow(0 2px 6px #0006)}
-#detailDialog .detail-info h1.has-logo{position:absolute;width:1px;height:1px;margin:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+/* Under a logo the text title stays, small: the logo is the series', the title says which season. */
+#detailDialog .detail-info h1.under-logo{font-size:16px;font-weight:700;letter-spacing:0;margin:0 0 10px;color:var(--muted)}
 #detailDialog .detail-actions button{display:inline-flex;align-items:center;gap:8px;padding:11px 22px;border-radius:var(--ott-radius);font-size:15px}
 #detailDialog .detail-play{background:#fff;color:#141414}
 #detailDialog .detail-play:hover{background:#ffffffcc}

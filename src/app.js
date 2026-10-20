@@ -37,16 +37,19 @@ function titleOf(a) {
   if(!wanted&&!displayTitles.has(key)&&(a.title||a.title_english)){titleAnime.set(key,a);pendingTitles.set(key,{provider:a.provider,id:a.id,mal_id:a.mal_id,title:a.title||a.title_english,title_english:a.title_english||'',title_japanese:a.title_japanese||'',anilistId:a.anilistId||null,malId:a.malId||null});clearTimeout(titleTimer);titleTimer=setTimeout(resolvePendingTitles,200)}
   return (titleLanguage()==='en'?(en||ko):(ko||en))||a.title||a.title_japanese||'제목 없음';
 }
-// Sent in small batches side by side so titles appear as each batch finishes.
+// Six lookups at a time, each title put on screen as soon as it is found: one slow title (searched on through AniList
+// and Wikidata) does not hold back the others.
 async function resolvePendingTitles(){
   const batch=[...pendingTitles.values()];pendingTitles.clear();if(!batch.length)return;
   // Marked first so a miss is not requested again this session.
   batch.forEach(item=>displayTitles.set(animeTitleKey(item),displayTitles.get(animeTitleKey(item))||{}));
-  const chunks=[];for(let i=0;i<batch.length;i+=6)chunks.push(batch.slice(i,i+6));
-  await Promise.all(chunks.map(async chunk=>{
-    const results=await window.lilac.resolveTitles(chunk).catch(()=>[]);
-    for(const result of results)displayTitles.set(result.key,{ko:result.ko||'',en:result.en||''});
-    refreshTitleElements(results.map(result=>result.key));
+  let next=0;
+  await Promise.all(Array.from({length:Math.min(6,batch.length)},async()=>{
+    while(next<batch.length){
+      const results=await window.lilac.resolveTitles([batch[next++]]).catch(()=>[]);
+      for(const result of results)displayTitles.set(result.key,{ko:result.ko||'',en:result.en||''});
+      if(results.length)refreshTitleElements(results.map(result=>result.key));
+    }
   }));
 }
 function refreshTitleElements(keys=null){
@@ -106,6 +109,8 @@ function card(a) {
   el.tabIndex=0;el.setAttribute('role','button');el.setAttribute('aria-label',titleOf(a));
   el.addEventListener('click', e => { if(!e.target.closest('.heart')) openDetail(a.mal_id); });
   el.addEventListener('keydown', e => { if((e.key==='Enter'||e.key===' ')&&e.target===el){e.preventDefault();openDetail(a.mal_id)} });
+  // Pointing at (or focusing) a card starts its detail page's artwork, so the page usually opens with it.
+  for(const type of ['pointerenter','focus'])el.addEventListener(type,()=>readyArtwork(a),{once:true});
   el.querySelector('.heart').addEventListener('click', e => { e.stopPropagation(); toggleLibrary(a, e.currentTarget); });
   return el;
 }
@@ -271,35 +276,61 @@ const koreanOverview=a=>/[가-힣]/.test(a?.synopsis||'')||!a?(Promise.resolve('
 // Home spotlight: up to five shows. The large poster is the one described; a smaller one switches to it, and the
 // bar under the large one moves on to the next when it fills (it waits while the pointer or focus is on the hero).
 let heroPicks=[],heroIndex=0;
-function renderHero(list,label){const hero=$('#hero'),withArt=list.filter(a=>imageOf(a));heroPicks=(withArt.length?withArt:list).slice(0,5);hero.classList.remove('skeleton');hero.querySelector('.hero-label').textContent=label;hero.querySelector('.hero-picks').replaceChildren(...heroPicks.map((a,i)=>{const pick=document.createElement('button');pick.type='button';pick.className='hero-pick';pick.setAttribute('aria-label',titleOf(a));pick.innerHTML='<span class="hero-pick-art"></span><span class="hero-pick-progress"><i></i></span>';setBackgroundImage(pick.querySelector('.hero-pick-art'),imageOf(a));pick.onclick=()=>i===heroIndex?openDetail(a.mal_id):showHero(i);pick.querySelector('.hero-pick-progress i').addEventListener('animationend',()=>{if(heroPicks.length>1&&!matchMedia('(prefers-reduced-motion: reduce)').matches)showHero((heroIndex+1)%heroPicks.length)});return pick}));showHero(0)}
-function showHero(index){const a=heroPicks[index];if(!a)return;heroIndex=index;const hero=$('#hero'),libraryButton=hero.querySelector('.library-toggle');setBackgroundImage(hero.querySelector('.hero-backdrop'),imageOf(a));hero.querySelector('.hero-count').textContent=heroPicks.length>1?`${String(index+1).padStart(2,'0')} / ${String(heroPicks.length).padStart(2,'0')}`:'';$$('#hero .hero-pick').forEach((pick,i)=>{pick.classList.toggle('active',i===index);pick.setAttribute('aria-current',String(i===index))});const copy=hero.querySelector('.hero-copy');copy.classList.remove('swap');void copy.offsetWidth;copy.classList.add('swap');hero.querySelector('h1').textContent=titleOf(a);titleAnime.set(animeTitleKey(a),a);hero.querySelector('h1').dataset.titleFor=animeTitleKey(a);hero.querySelector('.hero-meta').innerHTML=[a.score?`<span class="hero-score">★ ${escapeHtml(String(a.score))}</span>`:'',a.year?`<span>${escapeHtml(String(a.year))}</span>`:'',a.type?`<span class="hero-badge">${escapeHtml(a.type)}</span>`:'',LilacAnimeMeta.episodeLabel(a)?`<span>${escapeHtml(LilacAnimeMeta.episodeLabel(a))}</span>`:''].join('');const heroCopy=hero.querySelector('p'),heroKey=animeTitleKey(a),showHeroCopy=text=>{text=cleanSynopsis(text);if(!text||hero.querySelector('h1').dataset.titleFor!==heroKey)return false;heroCopy.textContent=text;return true};let heroKorean=/[가-힣]/.test(a.synopsis||'');heroCopy.textContent='';showHeroCopy(a.synopsis);koreanOverview(a).then(text=>{if(showHeroCopy(text))heroKorean=true});if(!a.synopsis)heroDetail(a).then(detail=>{if(!heroKorean)showHeroCopy(detail?.synopsis)}).catch(()=>{});hero.querySelector('.primary').onclick=()=>openDetail(a.mal_id);updateLibraryButton(libraryButton,saved(a.mal_id));libraryButton.onclick=e=>toggleLibrary(a,e.currentTarget);}
+function renderHero(list,label){const hero=$('#hero'),withArt=list.filter(a=>imageOf(a));heroPicks=(withArt.length?withArt:list).slice(0,5);heroPicks.forEach(readyArtwork);hero.classList.remove('skeleton');hero.querySelector('.hero-label').textContent=label;hero.querySelector('.hero-picks').replaceChildren(...heroPicks.map((a,i)=>{const pick=document.createElement('button');pick.type='button';pick.className='hero-pick';pick.setAttribute('aria-label',titleOf(a));pick.innerHTML='<span class="hero-pick-art"></span><span class="hero-pick-progress"><i></i></span>';setBackgroundImage(pick.querySelector('.hero-pick-art'),imageOf(a));pick.onclick=()=>i===heroIndex?openDetail(a.mal_id):showHero(i);pick.querySelector('.hero-pick-progress i').addEventListener('animationend',()=>{if(heroPicks.length>1&&!matchMedia('(prefers-reduced-motion: reduce)').matches)showHero((heroIndex+1)%heroPicks.length)});return pick}));showHero(0)}
+function showHero(index){const a=heroPicks[index];if(!a)return;heroIndex=index;const hero=$('#hero'),libraryButton=hero.querySelector('.library-toggle');setBackgroundImage(hero.querySelector('.hero-backdrop'),imageOf(a));hero.querySelector('.hero-count').textContent=heroPicks.length>1?`${String(index+1).padStart(2,'0')} / ${String(heroPicks.length).padStart(2,'0')}`:'';$$('#hero .hero-pick').forEach((pick,i)=>{pick.classList.toggle('active',i===index);pick.setAttribute('aria-current',String(i===index))});const copy=hero.querySelector('.hero-copy');copy.classList.remove('swap');void copy.offsetWidth;copy.classList.add('swap');hero.querySelector('h1').textContent=titleOf(a);titleAnime.set(animeTitleKey(a),a);hero.querySelector('h1').dataset.titleFor=animeTitleKey(a);hero.querySelector('.hero-meta').innerHTML=[a.score?`<span class="hero-score">★ ${escapeHtml(String(a.score))}</span>`:'',a.year?`<span>${escapeHtml(String(a.year))}</span>`:'',a.type?`<span class="hero-badge">${escapeHtml(a.type)}</span>`:'',LilacAnimeMeta.episodeLabel(a)?`<span>${escapeHtml(LilacAnimeMeta.episodeLabel(a))}</span>`:''].join('');const heroCopy=hero.querySelector('p'),heroKey=animeTitleKey(a),showHeroCopy=text=>{text=cleanSynopsis(text);if(!text||hero.querySelector('h1').dataset.titleFor!==heroKey)return false;heroCopy.textContent=text;return true};let heroKorean=/[가-힣]/.test(a.synopsis||'');heroCopy.textContent='';showHeroCopy(a.synopsis);koreanOverview(a).then(text=>{if(showHeroCopy(text))heroKorean=true});if(!a.synopsis)heroDetail(a).then(detail=>{if(!heroKorean)showHeroCopy(detail?.synopsis)}).catch(()=>{});hero.querySelector('.primary').onclick=()=>openDetail(a.mal_id);updateLibraryButton(libraryButton,saved(a.mal_id));libraryButton.onclick=e=>toggleLibrary(a,e.currentTarget);showHeroLogo(hero,a,heroKey);}
+// The spotlight's Korean title logo, with the text title kept small under it (it says the season). Asked ahead in
+// renderHero, so a pick switched to shows its logo at once.
+function showHeroLogo(hero,a,key){
+  const title=hero.querySelector('h1'),logo=hero.querySelector('.hero-logo')||Object.assign(document.createElement('img'),{className:'hero-logo',alt:''});
+  if(!logo.isConnected)title.before(logo);logo.hidden=true;title.classList.remove('under-logo');
+  readyArtwork(a).then(art=>{if(title.dataset.titleFor!==key||!art.logo)return;logo.src=art.logo.url;logo.classList.toggle('contrast',art.logo.contrast);logo.hidden=false;title.classList.add('under-logo')});
+}
 // Catalogue rows carry no synopsis; the hero asks the same source the detail page uses, and shows it in whatever
 // language it comes in until a Korean overview turns up.
 function heroDetail(a){const id=String(a.mal_id);if(id.startsWith('linkkf:'))return window.lilac.linkkfDetail(id.slice(7)).then(r=>r?.data);if(/^(animenosub|reanime|miruro|ohli24|linkani):/.test(id))return window.lilac.providerDetail(a).then(r=>r?.data);return window.lilac.detail(id).then(r=>r?.data)}
 function cleanSynopsis(text){return String(text||'').replace(/<[^>]*>/g,' ').replace(/\s*[(\[](?:Source|출처)[^)\]]*[)\]]\s*$/i,'').replace(/\s+/g,' ').trim()}
-// The detail header's wide picture (TMDB backdrop or AniList banner) in place of the stretched poster, and the Korean
-// title logo above the text title, which stays for screen readers and the title updates. Each only once loaded, so a
-// missing or broken one leaves the page as it was. Of the logos, the one that stands out on the theme: the lightest
-// on the dark page, the darkest on the light one; one that still blends in gets an outline (.contrast).
-function showDetailArtwork(a,token){
-  window.lilac.animeArtwork({provider:a.provider||'',id:a.id??null,mal_id:a.mal_id??null,title:a.title||'',title_english:a.title_english||'',title_japanese:a.title_japanese||'',romaji:a.romaji||'',type:a.type||'',anilistId:a.anilistId||null,malId:a.malId||null}).then(async({banner,logos=[]}={})=>{
-    const current=()=>openDetail.token===token;
-    if(banner){const url=await displayImage(banner),picture=new Image();picture.onload=()=>{const hero=$('#detailContent .detail-hero');if(!current()||!hero)return;hero.style.backgroundImage=`url(${JSON.stringify(url)})`;hero.classList.add('banner')};picture.src=url}
+// A work's artwork, loaded: the wide header picture (TMDB backdrop or AniList banner) and its Korean title logo, each
+// '' / null when there is none or it does not load. Of the logos, the one that stands out on the theme: the lightest
+// on the dark page, the darkest on the light one; one that still blends in gets an outline (contrast). Asked once per
+// work: the detail page and the home spotlight share it, and the spotlight's picks are asked ahead.
+const artworkReady=new Map();
+function loadedImage(url){return url?displayImage(url).then(src=>new Promise(resolve=>{const image=new Image();image.onload=()=>resolve(src);image.onerror=()=>resolve('');image.src=src})):Promise.resolve('')}
+function readyArtwork(a){
+  const key=`${a.provider||'jikan'}:${a.id??a.mal_id}:${document.body.classList.contains('light')?'light':'dark'}${a.title_japanese?':ja':''}${a.anilistId?':al':''}`;
+  if(!artworkReady.has(key))artworkReady.set(key,window.lilac.animeArtwork({provider:a.provider||'',id:a.id??null,mal_id:a.mal_id??null,title:a.title||'',title_english:a.title_english||'',title_japanese:a.title_japanese||'',romaji:a.romaji||'',type:a.type||'',anilistId:a.anilistId||null,malId:a.malId||null}).then(async({banner,logos=[]}={})=>{
     const light=document.body.classList.contains('light'),logo=logos.slice().sort((x,y)=>light?x.light-y.light:y.light-x.light)[0];
-    if(logo){const url=await displayImage(logo.url),image=new Image();image.className=`detail-logo${(light?logo.light>.7:logo.light<.35)?' contrast':''}`;image.alt='';image.onload=()=>{const title=$('#detailContent .detail-info h1');if(!current()||!title||title.previousElementSibling?.classList.contains('detail-logo'))return;title.before(image);title.classList.add('has-logo')};image.src=url}
-  }).catch(()=>{});
+    const [bannerUrl,logoUrl]=await Promise.all([loadedImage(banner),loadedImage(logo?.url)]);
+    return {banner:bannerUrl,logo:logoUrl?{url:logoUrl,contrast:light?logo.light>.7:logo.light<.35}:null};
+  }).catch(()=>({banner:'',logo:null})));
+  return artworkReady.get(key);
+}
+const within=(promise,ms,fallback)=>Promise.race([promise,new Promise(resolve=>setTimeout(()=>resolve(fallback),ms))]);
+const logoMarkup=logo=>`<img class="detail-logo${logo.contrast?' contrast':''}" src="${escapeHtml(logo.url)}" alt="">`;
+// On the detail page, the header picture and the logo, with the text title kept small under the logo: the logo is
+// the series', so the title tells which season it is.
+function applyDetailArtwork(art,token){
+  if(!art||openDetail.token!==token)return;
+  const hero=$('#detailContent .detail-hero'),title=$('#detailContent .detail-info h1');
+  if(art.banner&&hero){hero.style.backgroundImage=`url(${JSON.stringify(art.banner)})`;hero.classList.add('banner')}
+  if(art.logo&&title&&!title.previousElementSibling?.classList.contains('detail-logo')){title.insertAdjacentHTML('beforebegin',logoMarkup(art.logo));title.classList.add('under-logo')}
 }
 async function openDetail(id) {
   const dialog=$('#detailDialog'),token=Symbol(id);openDetail.token=token;$('#detailContent').innerHTML='<div class="empty-state"><p>작품 정보를 불러오는 중...</p></div>';if(!dialog.open)dialog.showModal();$('#detailContent').scrollTop=0;
   try {
     const isLinkkf=String(id).startsWith('linkkf:'); const isExternal=/^(animenosub|reanime|miruro|ohli24|linkani):/.test(String(id));
     const known=animeById(id);if(isExternal&&!known)throw new Error('작품 정보를 찾지 못했습니다. 목록에서 다시 선택해 주세요.');
+    // The artwork is asked for alongside the work's details (from its card when there is one); when the card's titles
+    // do not find both pictures, the details' (with the original title) are tried too.
+    const earlyArt=known?readyArtwork(known):null;
     const providerResult=isExternal?await window.lilac.providerDetail(known):null;if(providerResult?.data?.provider==='ohli24')linkLegacyDownloads(providerResult.data,providerResult.episodes);
-    const {data:a}=isLinkkf?await window.lilac.linkkfDetail(String(id).slice(7)):isExternal?providerResult:await window.lilac.detail(id);if(openDetail.token!==token)return;const isSaved=saved(a.mal_id),isReAnime=a.provider==='reanime';
+    const {data:a}=isLinkkf?await window.lilac.linkkfDetail(String(id).slice(7)):isExternal?providerResult:await window.lilac.detail(id);if(openDetail.token!==token)return;
+    // The page appears whole: header picture, logo and Korean story are waited for (at most 1.5 s, cached ones are
+    // at hand); what is not ready by then is filled in when it comes.
+    const artReady=earlyArt?earlyArt.then(found=>found.banner&&found.logo?found:readyArtwork(a)):readyArtwork(a),overviewReady=koreanOverview(a),[art,overview]=await within(Promise.all([artReady,overviewReady]),1500,[null,null]);if(openDetail.token!==token)return;const isSaved=saved(a.mal_id),isReAnime=a.provider==='reanime';
     const native=a.title_japanese&&a.title_japanese!==titleOf(a)?a.title_japanese:'';
     const meta=[a.type,a.year,a.status,a.aired,(a.studios||[]).slice(0,2).map(x=>x.name).join(', ')].filter(Boolean).map(x=>escapeHtml(String(x))).join(' · ');
-    $('#detailContent').innerHTML=`<div class="detail-hero"></div><div class="detail-body"><img alt=""><div class="detail-info"><span class="eyebrow">${escapeHtml(a.type||'ANIME')} · ${a.score?`★ ${a.score}`:isLinkkf?'LINKKF':'평점 없음'}</span><h1 ${titleAttr(a)}>${escapeHtml(titleOf(a))}</h1>${native?`<p class="detail-native">${escapeHtml(native)}</p>`:''}${meta?`<p class="detail-meta">${meta}</p>`:''}<p class="detail-stats hidden"></p><div class="tags">${(a.genres||[]).slice(0,5).map(g=>`<span>${escapeHtml(g.name)}</span>`).join('')}</div><p class="detail-synopsis">${escapeHtml(a.synopsis||'등록된 줄거리가 없습니다.')}</p><div class="detail-actions"><button class="primary detail-play" ${providerResult?.unavailable?'disabled':''}>${providerResult?.unavailable?'현재 재생 불가':isLinkkf?'회차 불러오기':playLabel('플레이어 열기')}</button><button class="ghost detail-save library-toggle ${isSaved?'saved':''}">${heartIcon()}<span>내 목록</span></button>${a.url?'<button class="ghost detail-web"><svg class="external-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg><span>작품 정보</span></button>':''}</div><div class="detail-tabs hidden" role="tablist"><button type="button" role="tab" data-detail-tab="episodes" class="selected" aria-selected="true">회차</button><button type="button" role="tab" data-detail-tab="related" aria-selected="false">관련 작품</button></div><div id="episodeBlock" class="episode-block">${providerResult?.unavailable?'<p class="episode-loading">현재 제공처에 영상이 없는 작품입니다. 설정에서 다른 콘텐츠 소스를 선택해 주세요.</p>':''}</div><div id="relatedBlock" class="related-block hidden"></div></div></div>`;
-    setBackgroundImage($('#detailContent .detail-hero'),imageOf(a));showDetailArtwork(a,token);koreanOverview(a).then(text=>{const p=$('#detailContent .detail-synopsis');if(text&&p&&openDetail.token===token){p.textContent=text;p.title='줄거리: TMDB'}});setImageSource($('#detailContent .detail-body img'),imageOf(a));
+    $('#detailContent').innerHTML=`<div class="detail-hero"></div><div class="detail-body"><img alt=""><div class="detail-info"><span class="eyebrow">${escapeHtml(a.type||'ANIME')} · ${a.score?`★ ${a.score}`:isLinkkf?'LINKKF':'평점 없음'}</span>${art?.logo?logoMarkup(art.logo):''}<h1 ${art?.logo?'class="under-logo" ':''}${titleAttr(a)}>${escapeHtml(titleOf(a))}</h1>${native?`<p class="detail-native">${escapeHtml(native)}</p>`:''}${meta?`<p class="detail-meta">${meta}</p>`:''}<p class="detail-stats hidden"></p><div class="tags">${(a.genres||[]).slice(0,5).map(g=>`<span>${escapeHtml(g.name)}</span>`).join('')}</div><p class="detail-synopsis"${overview?' title="줄거리: TMDB"':''}>${escapeHtml(overview||a.synopsis||'등록된 줄거리가 없습니다.')}</p><div class="detail-actions"><button class="primary detail-play" ${providerResult?.unavailable?'disabled':''}>${providerResult?.unavailable?'현재 재생 불가':isLinkkf?'회차 불러오기':playLabel('플레이어 열기')}</button><button class="ghost detail-save library-toggle ${isSaved?'saved':''}">${heartIcon()}<span>내 목록</span></button>${a.url?'<button class="ghost detail-web"><svg class="external-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg><span>작품 정보</span></button>':''}</div><div class="detail-tabs hidden" role="tablist"><button type="button" role="tab" data-detail-tab="episodes" class="selected" aria-selected="true">회차</button><button type="button" role="tab" data-detail-tab="related" aria-selected="false">관련 작품</button></div><div id="episodeBlock" class="episode-block">${providerResult?.unavailable?'<p class="episode-loading">현재 제공처에 영상이 없는 작품입니다. 설정에서 다른 콘텐츠 소스를 선택해 주세요.</p>':''}</div><div id="relatedBlock" class="related-block hidden"></div></div></div>`;
+    if(art?.banner)applyDetailArtwork({banner:art.banner,logo:null},token);else setBackgroundImage($('#detailContent .detail-hero'),imageOf(a));if(!art)artReady.then(ready=>applyDetailArtwork(ready,token));if(overview==null)overviewReady.then(text=>{const p=$('#detailContent .detail-synopsis');if(text&&p&&openDetail.token===token){p.textContent=text;p.title='줄거리: TMDB'}});setImageSource($('#detailContent .detail-body img'),imageOf(a));
     $$('#detailContent [data-detail-tab]').forEach(button=>button.onclick=()=>selectDetailTab(button.dataset.detailTab));
     const playProvider=ep=>{dialog.close();return resolveIntoPlayer(()=>window.lilac.providerResolve(ep),`${titleOf(a)} · ${episodeTitle(ep)}`,{episode:ep,subtitleTitle:titleOf(a),image:imageOf(a),comparisonEpisodes:nearbyEpisodes(providerResult.episodes,ep),seriesEpisodes:providerResult.episodes,anime:normalize(a)},titleOf(a),ep.number||1)};
     if(isExternal&&providerResult.episodes?.length&&!providerResult.unavailable){const target=resumeEpisode(a,providerResult.episodes);if(target.episode)$('.detail-play').innerHTML=playLabel(`${episodeTitle(target.episode)} ${target.resume?'이어보기':'재생'}`)}
