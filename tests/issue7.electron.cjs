@@ -22,7 +22,7 @@ app.whenReady().then(async () => {
     document.head.innerHTML='<style>'+${JSON.stringify(css)}+'</style>';document.body.innerHTML='<div id="groups" style="padding:20px"></div>';
     let calls=[],toggles=0,confirmation=false;
     const escapeHtml=value=>String(value).replace(/[<>&"]/g,'_'),storedTitle=job=>job.title,titleAttr=()=>'',renderDownloads=()=>{toggles++},toast=value=>{throw Error(value)},ipcMessage=error=>error.message;
-    window.lilac={controlDownloads:async(action,ids)=>calls.push({action,ids})};window.confirm=()=>confirmation;
+    window.lilac={controlDownloads:async(action,ids)=>calls.push({action,ids})};const askConfirm=async()=>confirmation;
     const removeDownload=async job=>calls.push({action:'remove',id:job.id});
     ${section('function downloadIcon(', 'function updateLibraryButton(')}
     ${section('const openDownloadGroups=', 'function renderDownloads(')}

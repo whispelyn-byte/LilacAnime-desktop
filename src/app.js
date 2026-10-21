@@ -16,6 +16,10 @@ let activeSkipKey = null;
 let opEdAnalysisKey = null;
 let currentSubtitlePath = null;
 let viewBeforePlayer = 'home';
+// Leaving the player goes back to where it was opened from (GitHub issue #16): the page's scroll position, and the
+// anime's page with its episode list when an episode was played from there.
+let scrollBeforePlayer = 0;
+let detailBeforePlayer = null;
 let controlsTimer = null;
 let playerWindowFullscreen = false;
 let currentHistoryKey = null;
@@ -82,6 +86,13 @@ function updateLibraryButton(button,isSaved,withLabel=true){if(!button)return;bu
 const knownAnime=new Map();
 function rememberAnime(a){if(a?.mal_id!=null&&!knownAnime.has(String(a.mal_id)))knownAnime.set(String(a.mal_id),a);return a}
 function animeById(id) { return [...(state.current||[]),...(state.airing||[]),...state.season,...state.top,...state.library].find(x=>String(x.mal_id)===String(id))||knownAnime.get(String(id)); }
+// Asking before an action: the browser's own confirm box is not used, as on Windows that native box leaves the page unable to take
+// typing (the search box ignores keys) until the window loses and regains focus (GitHub issue #16).
+function askConfirm(message,{title='확인',ok='확인',danger=false}={}){
+  const dialog=$('#confirmDialog'),okButton=$('#confirmOk');$('#confirmTitle').textContent=title;$('#confirmText').textContent=message;
+  okButton.textContent=ok;okButton.className=danger?'changelog-secondary danger-text':'primary';dialog.returnValue='';dialog.showModal();(danger?$('#confirmCancel'):okButton).focus();
+  return new Promise(resolve=>dialog.addEventListener('close',()=>resolve(dialog.returnValue==='ok'),{once:true}));
+}
 function toast(message) { const el=$('#toast'); el.textContent=message; el.classList.add('show'); clearTimeout(toast.t); toast.t=setTimeout(()=>el.classList.remove('show'),2200); }
 
 // 설정 > 재생 시작 화면 (GitHub issue #1): full screen, or the app window as it is. Going on to another episode inside
@@ -89,8 +100,8 @@ function toast(message) { const el=$('#toast'); el.textContent=message; el.class
 function enterPlayer(){const already=$('.view.active')?.id==='playerView';switchView('player');if(!already)playerWindowFullscreen=(localStorage.getItem('playerStart')||'fullscreen')!=='window';setPlayerWindowed();window.lilac.setPlayerFullscreen(playerWindowFullscreen)}
 function switchView(name) {
   if(name!=='player'&&typeof finishSpaceHold==='function')finishSpaceHold(false);
-  const current=$('.view.active')?.id?.replace(/View$/,'');
-  if(name==='player'&&current&&current!=='player')viewBeforePlayer=current;
+  const current=$('.view.active')?.id?.replace(/View$/,''),main=document.querySelector('main');
+  if(name==='player'&&current&&current!=='player'){viewBeforePlayer=current;scrollBeforePlayer=main.scrollTop}
   document.body.classList.toggle('player-mode',name==='player');
   $$('.view').forEach(v => v.classList.toggle('active', v.id === `${name}View`));
   $$('.nav').forEach(n => n.classList.toggle('active', n.dataset.view === name));
@@ -99,7 +110,16 @@ function switchView(name) {
   if (name === 'history') renderHistory();
   // Where the local model last ran changes with each translation.
   if (name === 'settings') {window.lilac.geminiSettings().then(value=>{translationSettings=value||translationSettings;renderLocalAi(value)}).catch(()=>{});renderSubtitleCache()}
-  if(name!=='player')document.querySelector('main').scrollTo({top:0,behavior:'smooth'});
+  // The page under the player is hidden, so its scroll position is lost meanwhile and is put back on the way out.
+  if(name!=='player'){if(current==='player'&&name===viewBeforePlayer)main.scrollTop=scrollBeforePlayer;else main.scrollTo({top:0,behavior:'smooth'})}
+}
+// An anime's page is closed for the player (it would sit above it), its contents kept: the episode page, tab and
+// scroll position are all still there when it is shown again.
+function closeDetailForPlayer(){const dialog=$('#detailDialog');if(!dialog.open)return;detailBeforePlayer={token:openDetail.token,scroll:$('#detailContent').scrollTop};dialog.close()}
+function reopenDetailAfterPlayer(){
+  const saved=detailBeforePlayer,dialog=$('#detailDialog');detailBeforePlayer=null;
+  if(!saved||saved.token!==openDetail.token||dialog.open)return;
+  dialog.showModal();$('#detailContent').scrollTop=saved.scroll;openDetail.refresh?.();
 }
 
 function card(a) {
@@ -153,7 +173,7 @@ function downloadGroupCard(key,jobs){
   head.onclick=event=>{if(!event.target.closest('[data-group-action]'))toggle()};
   for(const button of head.querySelectorAll('[data-group-action]'))button.onclick=async event=>{
     event.stopPropagation();const action=button.dataset.groupAction;
-    if(action==='remove'&&!confirm(`${storedTitle(first)}의 다운로드 ${jobs.length}개를 모두 삭제할까요?\n저장한 영상과 자막도 함께 삭제됩니다.`))return;
+    if(action==='remove'&&!await askConfirm(`${storedTitle(first)}의 다운로드 ${jobs.length}개를 모두 삭제할까요?\n저장한 영상과 자막도 함께 삭제됩니다.`,{title:'다운로드 전체 삭제',ok:'전체 삭제',danger:true}))return;
     button.disabled=true;
     try{if(action==='remove')await Promise.all(jobs.map(removeDownload));else await window.lilac.controlDownloads(action,jobs.filter(job=>(action==='cancel'?['queued','resolving','downloading']:['paused','failed']).includes(job.status)).map(job=>job.id))}catch(error){toast(`다운로드 작업에 실패했습니다: ${ipcMessage(error)}`)}finally{button.disabled=false}
   };
@@ -321,7 +341,7 @@ function applyDetailArtwork(art,token){
   if(art.logo&&title&&!title.previousElementSibling?.classList.contains('detail-logo')){title.insertAdjacentHTML('beforebegin',logoMarkup(art.logo));title.classList.add('under-logo')}
 }
 async function openDetail(id) {
-  const dialog=$('#detailDialog'),token=Symbol(id);openDetail.token=token;$('#detailContent').innerHTML='<div class="empty-state"><p>작품 정보를 불러오는 중...</p></div>';if(!dialog.open)dialog.showModal();$('#detailContent').scrollTop=0;
+  const dialog=$('#detailDialog'),token=Symbol(id);openDetail.token=token;openDetail.refresh=null;$('#detailContent').innerHTML='<div class="empty-state"><p>작품 정보를 불러오는 중...</p></div>';if(!dialog.open)dialog.showModal();$('#detailContent').scrollTop=0;
   try {
     const isLinkkf=String(id).startsWith('linkkf:'); const isExternal=/^(animenosub|reanime|miruro|ohli24|linkani):/.test(String(id));
     const known=animeById(id);if(isExternal&&!known)throw new Error('작품 정보를 찾지 못했습니다. 목록에서 다시 선택해 주세요.');
@@ -338,8 +358,8 @@ async function openDetail(id) {
     $('#detailContent').innerHTML=`<div class="detail-hero"></div><div class="detail-body"><img alt=""><div class="detail-info"><span class="eyebrow">${escapeHtml(a.type||'ANIME')} · ${a.score?`★ ${a.score}`:isLinkkf?'LINKKF':'평점 없음'}</span>${art?.logo?logoMarkup(art.logo):''}<h1 ${art?.logo?'class="under-logo" ':''}${titleAttr(a)}>${escapeHtml(titleOf(a))}</h1>${native?`<p class="detail-native">${escapeHtml(native)}</p>`:''}${meta?`<p class="detail-meta">${meta}</p>`:''}<p class="detail-stats hidden"></p><div class="tags">${(a.genres||[]).slice(0,5).map(g=>`<span>${escapeHtml(g.name)}</span>`).join('')}</div><p class="detail-synopsis"${overview?' title="줄거리: TMDB"':''}>${escapeHtml(overview||a.synopsis||'등록된 줄거리가 없습니다.')}</p><div class="detail-actions"><button class="primary detail-play" ${providerResult?.unavailable?'disabled':''}>${providerResult?.unavailable?'현재 재생 불가':isLinkkf?'회차 불러오기':playLabel('플레이어 열기')}</button><button class="ghost detail-save library-toggle ${isSaved?'saved':''}">${heartIcon()}<span>내 목록</span></button>${a.url?'<button class="ghost detail-web"><svg class="external-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg><span>작품 정보</span></button>':''}</div><div class="detail-tabs hidden" role="tablist"><button type="button" role="tab" data-detail-tab="episodes" class="selected" aria-selected="true">회차</button><button type="button" role="tab" data-detail-tab="related" aria-selected="false">관련 작품</button></div><div id="episodeBlock" class="episode-block">${providerResult?.unavailable?'<p class="episode-loading">현재 제공처에 영상이 없는 작품입니다. 설정에서 다른 콘텐츠 소스를 선택해 주세요.</p>':''}</div><div id="relatedBlock" class="related-block hidden"></div></div></div>`;
     if(art?.banner)applyDetailArtwork({banner:art.banner,logo:null},token);else setBackgroundImage($('#detailContent .detail-hero'),imageOf(a));if(!art)artReady.then(ready=>applyDetailArtwork(ready,token));if(overview==null)overviewReady.then(text=>{const p=$('#detailContent .detail-synopsis');if(text&&p&&openDetail.token===token){p.textContent=text;p.title='줄거리: TMDB'}});setImageSource($('#detailContent .detail-body img'),imageOf(a));
     $$('#detailContent [data-detail-tab]').forEach(button=>button.onclick=()=>selectDetailTab(button.dataset.detailTab));
-    const playProvider=ep=>{dialog.close();return resolveIntoPlayer(()=>window.lilac.providerResolve(ep),`${titleOf(a)} · ${episodeTitle(ep)}`,{episode:ep,subtitleTitle:titleOf(a),image:imageOf(a),comparisonEpisodes:nearbyEpisodes(providerResult.episodes,ep),seriesEpisodes:providerResult.episodes,anime:normalize(a)},titleOf(a),ep.number||1)};
-    if(isExternal&&providerResult.episodes?.length&&!providerResult.unavailable){const target=resumeEpisode(a,providerResult.episodes);if(target.episode)$('.detail-play').innerHTML=playLabel(`${episodeTitle(target.episode)} ${target.resume?'이어보기':'재생'}`)}
+    const playProvider=ep=>{closeDetailForPlayer();return resolveIntoPlayer(()=>window.lilac.providerResolve(ep),`${titleOf(a)} · ${episodeTitle(ep)}`,{episode:ep,subtitleTitle:titleOf(a),image:imageOf(a),comparisonEpisodes:nearbyEpisodes(providerResult.episodes,ep),seriesEpisodes:providerResult.episodes,anime:normalize(a)},titleOf(a),ep.number||1)};
+    if(isExternal&&providerResult.episodes?.length&&!providerResult.unavailable){openDetail.refresh=()=>{const target=resumeEpisode(a,providerResult.episodes);if(target.episode)$('.detail-play').innerHTML=playLabel(`${episodeTitle(target.episode)} ${target.resume?'이어보기':'재생'}`)};openDetail.refresh()}
     if(isExternal&&providerResult.episodes?.length)mountEpisodeList($('#episodeBlock'),{heading:'회차',episodes:providerResult.episodes,anime:a,onPlay:playProvider});
     if((isReAnime||a.provider==='miruro')&&a.related?.length){const groups=new Map();a.related.forEach(item=>{const name=relationLabel(item.relationType)||'관련 작품';if(!groups.has(name))groups.set(name,[]);groups.get(name).push(item)});renderRelated([...groups].map(([name,items])=>({name,items})))}
     const showStats=stats=>{if(!stats||openDetail.token!==token)return;const el=$('#detailContent .detail-stats');el.textContent=`조회수 오늘 ${stats.day.toLocaleString()} · 주간 ${stats.week.toLocaleString()} · 월간 ${stats.month.toLocaleString()} · 전체 ${stats.total.toLocaleString()}`;el.classList.remove('hidden')};
@@ -348,7 +368,7 @@ async function openDetail(id) {
       // Android records a view once the detail page has stayed open for 9 seconds, then refreshes the counters.
       setTimeout(()=>{if(openDetail.token===token&&dialog.open)window.lilac.linkkfRecordView(a.id).then(showStats).catch(()=>{})},9000);
     }
-    const playLinkkf=(ep,episodes)=>{const episodeNumber=episodeNumberOf(ep)||1;dialog.close();return resolveIntoPlayer(()=>window.lilac.linkkfResolve(ep),`${titleOf(a)} · ${episodeTitle(ep)}`,{episode:ep,subtitleTitle:titleOf(a),image:imageOf(a),seriesEpisodes:episodes,resolveKind:'linkkf',anime:normalize(a)},titleOf(a),episodeNumber)};
+    const playLinkkf=(ep,episodes)=>{const episodeNumber=episodeNumberOf(ep)||1;closeDetailForPlayer();return resolveIntoPlayer(()=>window.lilac.linkkfResolve(ep),`${titleOf(a)} · ${episodeTitle(ep)}`,{episode:ep,subtitleTitle:titleOf(a),image:imageOf(a),seriesEpisodes:episodes,resolveKind:'linkkf',anime:normalize(a)},titleOf(a),episodeNumber)};
     // Linkkf episodes load with the page, like Android, so "재생" can resume the last played one.
     let linkkfServers=null;
     if(isLinkkf){
@@ -357,12 +377,12 @@ async function openDetail(id) {
         if(openDetail.token!==token)return;linkkfServers=servers;block.replaceChildren();
         if(!servers.length){block.innerHTML='<p class="episode-loading">등록된 회차가 없습니다.</p>';return}
         servers.forEach(server=>mountEpisodeList(block,{heading:server.name,episodes:server.episodes,anime:a,resolveKind:'linkkf',onPlay:ep=>playLinkkf(ep,server.episodes)}));
-        const target=linkkfResumeTarget(a,servers);if(target.episode){playButton.disabled=false;playButton.innerHTML=playLabel(`${episodeTitle(target.episode)} ${target.resume?'이어보기':'재생'}`)}
+        openDetail.refresh=()=>{const target=linkkfResumeTarget(a,servers);if(target.episode){playButton.disabled=false;playButton.innerHTML=playLabel(`${episodeTitle(target.episode)} ${target.resume?'이어보기':'재생'}`)}};openDetail.refresh()
       }).catch(e=>{if(openDetail.token===token)block.innerHTML=`<p class="episode-loading">${escapeHtml(e.message)}</p>`});
     }
     $('.detail-play').onclick=async()=>{
       if(isExternal){const ep=resumeEpisode(a,providerResult.episodes||[]).episode;if(ep)await playProvider(ep);else toast(providerResult.unavailable?'현재 제공처에 영상이 없는 작품입니다.':'회차 목록을 불러오지 못했습니다. 작품 정보 버튼으로 제공처 상태를 확인해 주세요.');return;}
-      if(!isLinkkf){dialog.close();$('#playerTitle').textContent=titleOf(a);switchView('player');return;}
+      if(!isLinkkf){closeDetailForPlayer();$('#playerTitle').textContent=titleOf(a);switchView('player');return;}
       const target=linkkfServers?linkkfResumeTarget(a,linkkfServers):null;if(target?.episode)await playLinkkf(target.episode,target.episodes);
     };
     $('.detail-save').onclick=e=>toggleLibrary(a,e.currentTarget);
@@ -1134,6 +1154,7 @@ $('#changeDownloadRoot').onclick=async()=>{try{const result=await window.lilac.c
 // 목록 비우기: the list only; the videos stay in the folder, and episodes being downloaded stay in the list.
 $('#clearDownloads').onclick=()=>{const count=state.downloads.filter(job=>!['queued','resolving','downloading'].includes(job.status)).length;if(!count){toast('비울 다운로드가 없어요.');return}$('#clearDownloadsText').textContent=`다운로드 ${count}개를 목록에서 지울까요?`;$('#clearDownloadsDialog').showModal()};
 $('#clearDownloadsCancel').onclick=()=>$('#clearDownloadsDialog').close();
+$('#confirmCancel').onclick=()=>$('#confirmDialog').close();$('#confirmOk').onclick=()=>$('#confirmDialog').close('ok');
 $('#clearDownloadsList').onclick=async()=>{$('#clearDownloadsDialog').close();try{const count=await window.lilac.clearDownloads();toast(`다운로드 목록 ${count}개를 비웠어요. 영상 파일은 폴더에 남아 있어요.`)}catch(error){toast(`비우지 못했습니다: ${ipcMessage(error)}`)}};
 window.lilac.onDownloadsChanged(downloads=>{state.downloads=downloads;renderDownloads()});
 $('#globalSearch').addEventListener('keydown',e=>{if(e.key==='Enter')doSearch(e.target.value)});$('#pageSearch').addEventListener('keydown',e=>{if(e.key==='Enter')doSearch(e.target.value)});$('#searchButton').onclick=()=>doSearch($('#pageSearch').value);
@@ -1153,7 +1174,7 @@ for(const [id,way] of [['#rewindPlayer','뒤로'],['#forwardPlayer','앞으로']
 $('#forwardPlayer').onclick=()=>{const seconds=Number(localStorage.getItem('seekSeconds')||10);seekPlayer(Math.min($('#video').duration||Infinity,$('#video').currentTime+seconds))};
 $('#playerSeek').oninput=e=>{const duration=playbackDuration();if(duration)seekPlayer(duration*Number(e.target.value)/1000)};
 $('#fullscreenPlayer').onclick=async()=>{try{playerWindowFullscreen=!playerWindowFullscreen;setPlayerWindowed();await window.lilac.setPlayerFullscreen(playerWindowFullscreen)}catch(e){toast(`전체 화면 오류: ${e.message}`)}};
-$('#playerBack').onclick=async()=>{saveHistorySoon();playbackRequestId++;window.LilacAss?.destroy();playerWindowFullscreen=false;setPlayerWindowed();setPlayerLocked(false);openPlayerSettings(false);await window.lilac.setPlayerFullscreen(false);$('#video').pause();renderContinue();renderHistory();switchView(viewBeforePlayer)};
+$('#playerBack').onclick=async()=>{saveHistorySoon();playbackRequestId++;window.LilacAss?.destroy();playerWindowFullscreen=false;setPlayerWindowed();setPlayerLocked(false);openPlayerSettings(false);await window.lilac.setPlayerFullscreen(false);$('#video').pause();renderContinue();renderHistory();switchView(viewBeforePlayer);reopenDetailAfterPlayer()};
 $('#subtitleEnabled').onchange=e=>{const track=$('#video').textTracks[0];setVttVisible();window.LilacAss?.setVisible(e.target.checked)};
 ['mousedown','touchstart'].forEach(type=>$('#immersivePlayer').addEventListener(type,event=>{if(event.target!==$('#video'))showPlayerControls()},{passive:true}));
 $('#video').addEventListener('click',()=>{const player=$('#immersivePlayer');if(playerLocked){flashUnlockButton();return}if(playerSettingsOpen()){openPlayerSettings(false);return}if(player.classList.contains('controls-visible')){clearTimeout(controlsTimer);player.classList.remove('controls-visible')}else showPlayerControls()});
@@ -1265,14 +1286,14 @@ async function savePrompt(change,message){
   try{const value=await window.lilac.setGeminiSettings(change);for(const id of ['promptExtra','promptRules'])delete $(`#${id}`).dataset.dirty;renderTranslationSettings(value);toast(message)}catch(error){toast(`저장하지 못했습니다: ${ipcMessage(error)}`)}
 }
 $('#savePrompt').onclick=()=>savePrompt({promptExtra:$('#promptExtra').value,promptRules:$('#promptRules').value},'번역 프롬프트를 저장했어요. 이후 번역부터 적용돼요.');
-$('#resetPrompt').onclick=()=>{if(confirm('번역 프롬프트를 지우고 앱의 기본 규칙으로 되돌릴까요?'))savePrompt({promptExtra:'',promptRules:''},'번역 프롬프트를 기본으로 되돌렸어요.')};
-$('#loadDefaultRules').onclick=async()=>{const box=$('#promptRules');if(box.value.trim()&&!confirm('쓰던 규칙을 기본 규칙으로 바꿀까요?'))return;box.value=await window.lilac.defaultTranslationRules();box.dataset.dirty='1';box.focus()};
+$('#resetPrompt').onclick=async()=>{if(await askConfirm('번역 프롬프트를 지우고 앱의 기본 규칙으로 되돌릴까요?',{ok:'되돌리기'}))savePrompt({promptExtra:'',promptRules:''},'번역 프롬프트를 기본으로 되돌렸어요.')};
+$('#loadDefaultRules').onclick=async()=>{const box=$('#promptRules');if(box.value.trim()&&!await askConfirm('쓰던 규칙을 기본 규칙으로 바꿀까요?',{ok:'바꾸기'}))return;box.value=await window.lilac.defaultTranslationRules();box.dataset.dirty='1';box.focus()};
 // 자막 캐시: how much the subtitle files take, and how much of it no saved subtitle uses.
 const megabytes=bytes=>bytes>=1e9?`${(bytes/1e9).toFixed(1)}GB`:`${Math.max(bytes?0.1:0,bytes/1e6).toFixed(1)}MB`;
 async function renderSubtitleCache(message){try{const usage=await window.lilac.subtitleCacheUsage();$('#subtitleCacheState').textContent=`${message?`${message} `:''}자막 파일 ${megabytes(usage.total)} 중 ${megabytes(usage.removable)}를 지울 수 있어요.`;$('#cleanSubtitleCache').disabled=!usage.removable}catch{$('#subtitleCacheState').textContent='자막 파일 용량을 확인하지 못했습니다.'}}
 $('#cleanSubtitleCache').onclick=async()=>{const button=$('#cleanSubtitleCache');button.disabled=true;try{const result=await window.lilac.cleanSubtitleCache();renderSubtitleCache(`파일 ${result.removed}개(${megabytes(result.bytes)})를 지웠어요.`)}catch(error){toast(`지우지 못했습니다: ${ipcMessage(error)}`);button.disabled=false}};
 // 모든 자막 지우기: the saved subtitles and translations of every episode too (fetched and translated again when watched).
-$('#clearSubtitleCache').onclick=async()=>{if(!confirm('회차마다 저장된 자막과 번역본까지 모든 자막 파일을 지울까요?\n다음에 볼 때 자막을 다시 받고, 번역도 다시 해야 해요.'))return;const button=$('#clearSubtitleCache');button.disabled=true;try{const result=await window.lilac.clearSubtitleCache();renderSubtitleCache(`파일 ${result.removed}개(${megabytes(result.bytes)})를 지웠어요.`)}catch(error){toast(`지우지 못했습니다: ${ipcMessage(error)}`)}finally{button.disabled=false}};
+$('#clearSubtitleCache').onclick=async()=>{if(!await askConfirm('회차마다 저장된 자막과 번역본까지 모든 자막 파일을 지울까요?\n다음에 볼 때 자막을 다시 받고, 번역도 다시 해야 해요.',{title:'모든 자막 지우기',ok:'모두 지우기',danger:true}))return;const button=$('#clearSubtitleCache');button.disabled=true;try{const result=await window.lilac.clearSubtitleCache();renderSubtitleCache(`파일 ${result.removed}개(${megabytes(result.bytes)})를 지웠어요.`)}catch(error){toast(`지우지 못했습니다: ${ipcMessage(error)}`)}finally{button.disabled=false}};
 // 번역 방식 (번역 API / 로컬 AI) and the local models: presets downloaded with progress, or a GGUF file added from disk.
 const localModelProgress={};
 async function saveTranslation(change){try{renderTranslationSettings(await window.lilac.setGeminiSettings(change))}catch(error){toast(`저장하지 못했습니다: ${ipcMessage(error)}`)}}
@@ -1287,11 +1308,11 @@ function renderLocalAi(value){
     const state=selected?'사용 중':model.installed?'받음 · 눌러서 사용':progress!=null?'받는 중':'받지 않음';
     const memoryNote=model.lowMemory?`<small class="local-model-run partial">이 PC의 램 ${model.memory}GB로는 부족해요 (${model.ram}GB 이상). 번역이 아주 느리거나 PC가 멈출 수 있어요.</small>`:'';
     row.innerHTML=`<button type="button" class="local-model-pick"><b>${escapeHtml(model.label)}</b><small>${escapeHtml(model.note||'')}</small>${memoryNote}${model.installed&&model.run?`<small class="local-model-run${model.run.layers<model.run.total||!model.run.layers?' partial':''}">${escapeHtml(localRunText(model.run))}</small>`:''}</button><span class="local-model-state">${state}</span><button type="button" class="local-model-action"></button>`;
-    const pick=row.querySelector('.local-model-pick'),action=row.querySelector('.local-model-action');pick.disabled=!model.installed||selected;pick.onclick=()=>{if(!model.lowMemory||confirm(lowMemoryQuestion(model,'쓸까요')))saveTranslation({localModel:model.id})};
+    const pick=row.querySelector('.local-model-pick'),action=row.querySelector('.local-model-action');pick.disabled=!model.installed||selected;pick.onclick=async()=>{if(!model.lowMemory||await askConfirm(lowMemoryQuestion(model,'쓸까요'),{ok:'쓰기'}))saveTranslation({localModel:model.id})};
     // While it downloads the button stops it; a stopped (or broken off) download goes on from where it was.
     if(progress!=null){action.textContent=`받는 중 ${progress}% · 취소`;action.onclick=()=>window.lilac.cancelLocalModelInstall(model.id)}
-    else if(model.installed){action.textContent=model.path?'목록에서 빼기':'삭제';action.onclick=async()=>{if(!confirm(`${model.label} 모델을 ${model.path?'목록에서 뺄까요':'삭제할까요'}?`))return;renderTranslationSettings(await window.lilac.removeLocalModel(model.id))}}
-    else{action.textContent=model.partial?`이어 받기 · ${Math.round(model.partial/model.size*100)}% 받음`:`받기 · ${(model.size/1e9).toFixed(1)}GB`;action.onclick=()=>{if(!model.lowMemory||confirm(lowMemoryQuestion(model,'받을까요')))installLocalModel(model.id)}}
+    else if(model.installed){action.textContent=model.path?'목록에서 빼기':'삭제';action.onclick=async()=>{if(!await askConfirm(`${model.label} 모델을 ${model.path?'목록에서 뺄까요':'삭제할까요'}?`,{ok:model.path?'목록에서 빼기':'삭제',danger:!model.path}))return;renderTranslationSettings(await window.lilac.removeLocalModel(model.id))}}
+    else{action.textContent=model.partial?`이어 받기 · ${Math.round(model.partial/model.size*100)}% 받음`:`받기 · ${(model.size/1e9).toFixed(1)}GB`;action.onclick=async()=>{if(!model.lowMemory||await askConfirm(lowMemoryQuestion(model,'받을까요'),{ok:'받기'}))installLocalModel(model.id)}}
     if(model.path){
       row.classList.add('local-model-custom');
       const options=document.createElement('details');options.className='local-model-options';
