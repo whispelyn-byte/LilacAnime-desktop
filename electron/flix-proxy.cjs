@@ -8,7 +8,7 @@ function kind(url){const p=new URL(url).pathname.toLowerCase();if(p.endsWith('.m
 function encode(value){return Buffer.from(value).toString('base64url')}
 function proxyUrl(port,id,url){return `http://127.0.0.1:${port}/__flix/${id}/${encode(url)}`}
 // Media playlists also note each segment's place, so the segments after the one asked for can be fetched ahead.
-function rewrite(text,base,id,port){const list=[],lines=text.split(/\r?\n/).map(line=>{const t=line.trim();if(!t)return line;if(t.startsWith('#'))return line.replace(/URI="([^"]+)"/gi,(_,u)=>`URI="${proxyUrl(port,id,new URL(u,base).href)}"`);const url=new URL(t,base).href;list.push(url);return proxyUrl(port,id,url)});const data=sessions.get(id);if(data)list.forEach((url,index)=>data.order.set(url,{list,index}));return lines.join('\n')}
+function rewrite(text,base,id,port){const data=sessions.get(id),list=[];let aes128=false;const lines=text.split(/\r?\n/).map(line=>{const t=line.trim();if(!t)return line;if(t.startsWith('#')){if(t.startsWith('#EXT-X-KEY:'))aes128=/(?:^|,)METHOD=AES-128(?:,|$)/.test(t.slice(11));return line.replace(/URI="([^"]+)"/gi,(_,u)=>`URI="${proxyUrl(port,id,new URL(u,base).href)}"`)}const url=new URL(t,base).href;list.push(url);if(data){data.encrypted ||= new Set();if(aes128)data.encrypted.add(url);else data.encrypted.delete(url)}return proxyUrl(port,id,url)});if(data)list.forEach((url,index)=>data.order.set(url,{list,index}));return lines.join('\n')}
 function decodeManifest(body,pk,url,id,port){let text=body.toString('latin1').trim();if(!text.startsWith('#EXTM3U')){const encrypted=Buffer.from(text,'base64'),key=Buffer.from(pk.trim(),'base64');if(!key.length)throw new Error('FlixCloud 키가 비어 있습니다.');const plain=Buffer.alloc(encrypted.length);for(let i=0;i<encrypted.length;i++)plain[i]=encrypted[i]^key[i%key.length];text=plain.toString('utf8').trim();if(!text.startsWith('#EXTM3U'))throw new Error('FlixCloud 재생목록 복호화에 실패했습니다.')}return Buffer.from(rewrite(text,url,id,port))}
 function decodeSegment(body){let payload;if(body.length>=12&&body.subarray(0,4).toString()==='RIFF'&&body.subarray(8,12).toString()==='WEBP')payload=Buffer.from(body.subarray(12));else if(body.length>=8&&body.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])))payload=Buffer.from(body.subarray(8));else return body;if(!payload.length||payload[0]===71)return payload;const key=Buffer.from([157,42,241,71,179,142,92,112,166,25,228,59,216,98,15,197]);for(let i=0;i<payload.length;i++)payload[i]^=key[i%key.length];return payload}
 // A decoded media segment must be MPEG-TS (0x47 sync every 188 bytes) or fragmented MP4.
@@ -82,6 +82,9 @@ async function handle(req,res){try{const parts=new URL(req.url,'http://127.0.0.1
     else{const hold=Boolean(req.headers['x-lilac-hold']),held=!attempt&&type==='m3u8'?heldLists.get(target):null;if(held&&tokenLive(target))({upstream,raw}=held);else{upstream=await fetch(target,{headers});raw=Buffer.from(await upstream.arrayBuffer())}if(type==='m3u8'){if(hold&&upstream.ok)heldLists.set(target,{session:parts[1],upstream,raw});else heldLists.delete(target)}}
     if(!upstream.ok){res.writeHead(upstream.status,{'content-type':upstream.headers.get('content-type')||'text/plain'});res.end(raw);return}
     if(type==='m3u8'){body=decodeManifest(raw,data.pk,target,parts[1],server.address().port);break}
+    // AES-128 ciphertext is decrypted by HLS using the rewritten EXT-X-KEY URI.
+    // It has no media signature until then, and must pass through byte for byte.
+    if(data.encrypted?.has(target)){body=raw;break}
     body=decodeSegment(raw);if(isMedia(body))break;
     const ts=findTs(body)||findTs(raw);if(ts){body=ts;break}
     if(type!=='segment'&&!/\.(ts|m4s|mp4|webp|png|jpe?g|gif|ico|js|css|html?)$/i.test(new URL(target).pathname)){body=raw;break}
@@ -89,9 +92,8 @@ async function handle(req,res){try{const parts=new URL(req.url,'http://127.0.0.1
   }
   if(!body)throw new Error('영상 조각 데이터가 올바르지 않습니다.');res.writeHead(200,{'content-type':type==='m3u8'?'application/vnd.apple.mpegurl':type==='segment'?'video/mp4':upstream.headers.get('content-type')||'application/octet-stream','content-length':body.length,'access-control-allow-origin':'*','cache-control':'no-store','accept-ranges':'none'});res.end(req.method==='HEAD'?undefined:body)}catch(error){const body=Buffer.from(`FLIX_DECODE_FAILED: ${error.message}`);res.writeHead(502,{'content-type':'text/plain; charset=utf-8','content-length':body.length});res.end(body)}}
 // Whether a proxied stream's segments can be read: its first segment's first bytes, fetched before the stream is used.
-// One of FlixCloud's CDNs (vault-90.rundowncdn.top, behind RE:Anime's HD-1) now serves segments without the fake
-// image header and with other bytes than this decoder knows, so every one of them failed in the player (HTTP 502,
-// "Death Note" and others). The playlists are read with x-lilac-hold, so the player's first ask takes them from here.
+// AES-128 segments are ciphertext, so media signature checks apply only to clear segments.
+// The playlists are read with x-lilac-hold, so the player's first ask takes them from here.
 // false only when the bytes are there and are not media; a failed check (network) leaves the stream to the player.
 async function flixReadable(url){
   const get=async address=>{const response=await fetch(address,{headers:{'x-lilac-hold':'1'}});if(!response.ok)throw new Error(`HTTP ${response.status}`);return response.text()};
@@ -101,6 +103,7 @@ async function flixReadable(url){
   const entry=firstEntry(text);if(!entry)return true;
   const parts=new URL(entry,base).pathname.split('/').filter(Boolean),data=sessions.get(parts[1]);if(parts[0]!=='__flix'||!data)return true;
   const target=Buffer.from(parts.slice(2).join('/'),'base64url').toString();if(kind(target)!=='segment')return true;
+  if(data.encrypted?.has(target))return true;
   const {body}=await fetchHedged(target,requestHeaders(data),0,4095),decoded=decodeSegment(Buffer.from(body));
   return isMedia(decoded)||Boolean(findTs(decoded)||findTs(body));
 }

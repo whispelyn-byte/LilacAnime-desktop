@@ -760,7 +760,7 @@ if(localStorage.getItem('subtitleSyncCheck')!=='false')window.lilac.prepareSubti
 $('#subtitleSyncCheck').checked=localStorage.getItem('subtitleSyncCheck')!=='false';
 $('#subtitleSyncCheck').onchange=event=>localStorage.setItem('subtitleSyncCheck',String(event.target.checked));
 // 설정 > 재생 > 다음 화 미리 준비 (each on until turned off).
-for(const id of ['prepareNextVideo','prepareNextSubtitle','prepareNextTranslation']){$(`#${id}`).checked=localStorage.getItem(id)!=='false';$(`#${id}`).onchange=event=>localStorage.setItem(id,String(event.target.checked))}
+for(const id of ['prepareNextVideo','prepareNextSubtitle','prepareNextTranslation','arrowVolume']){$(`#${id}`).checked=localStorage.getItem(id)!=='false';$(`#${id}`).onchange=event=>localStorage.setItem(id,String(event.target.checked))}
 async function ensureSubtitle(stream,title,episode,{skipSaved=false}={}){
   const requestId=playbackRequestId,preferred=localStorage.getItem('subtitleSource')||'reanime',key=subtitleStoreKey();
   $('#subtitleOffer').classList.add('hidden');

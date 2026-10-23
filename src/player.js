@@ -8,6 +8,10 @@ let playerLocked = false, unlockTimer = null, usingKeyboard = false;
 // Focus is only moved into menus for keyboard/remote users; mouse users would just see a stray focus ring.
 window.addEventListener('keydown', () => { usingKeyboard = true; }, true);
 window.addEventListener('pointerdown', () => { usingKeyboard = false; }, true);
+// A control focused by a click keeps the keys for the player (GitHub issue #17): the arrows move between controls only
+// after the focus got there by keyboard or remote.
+let focusByPointer = false;
+window.addEventListener('focusin', () => { focusByPointer = !usingKeyboard; }, true);
 const autoSkipState = { enteredKey: null, enteredAt: 0, pausedAt: null, skippedKey: null, manualSeekTime: null };
 
 const PLAYER_ASPECTS = { original: 0, '16:9': 16 / 9, '21:9': 21 / 9, '4:3': 4 / 3, fill: 0 };
@@ -691,7 +695,7 @@ for (const name of ['pause', 'ended', 'emptied', 'loadstart']) $('#video').addEv
 function handlePlayerKey(event) {
   const video = $('#video'), key = event.key, player = $('#immersivePlayer');
   if (playerLocked) { event.preventDefault(); flashUnlockButton(); return; }
-  const focusInPlayer = player.contains(document.activeElement) && document.activeElement !== video;
+  const focusInPlayer = player.contains(document.activeElement) && document.activeElement !== video && !focusByPointer;
   const typing = document.activeElement?.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName) && !['checkbox', 'range'].includes(document.activeElement?.type);
   if (key === 'Escape' || key === 'BrowserBack' || key === 'GoBack') {
     finishSpaceHold(false);
@@ -717,6 +721,13 @@ function handlePlayerKey(event) {
     const seconds = Number(localStorage.getItem('seekSeconds') || 10) * (arrow === 'left' ? -1 : 1);
     seekPlayer(Math.min(video.duration || Infinity, Math.max(0, video.currentTime + seconds))); showPlayerControls(); return;
   }
+  // Up / down: the volume by 5 % (설정 > 재생), or into the controls for a remote.
+  if (arrow && playerFlag('arrowVolume')) {
+    event.preventDefault();
+    const level = Math.round(Math.max(0, Math.min(1, (video.muted ? 0 : video.volume) + (arrow === 'up' ? .05 : -.05))) * 100);
+    const slider = $('#playerVolume'); slider.value = String(level); slider.dispatchEvent(new Event('input'));
+    toast(level ? `볼륨 ${level}%` : '음소거'); return;
+  }
   if (arrow) { event.preventDefault(); showPlayerControls(); $('#togglePlayer').focus(); return; }
   if (event.code === 'Space' || key === ' ') {
     if (event.ctrlKey || event.altKey || event.metaKey || event.isComposing) return;
@@ -731,8 +742,7 @@ function handlePlayerKey(event) {
   if (letter === 'f') { $('#fullscreenPlayer').click(); showPlayerControls(); return; }
   if (letter === 'm') { $('#mutePlayer').click(); showPlayerControls(); return; }
   // C: subtitles on / off; Z / X: subtitles half a second earlier / later (the 자막 싱크 setting); S: skip the opening or
-  // ending on screen; P: screenshot; 0-9: to that tenth of the episode; [ / ]: slower / faster. Each says what it did. (Up and down stay
-  // for moving the focus with a remote.)
+  // ending on screen; P: screenshot; 0-9: to that tenth of the episode; [ / ]: slower / faster. Each says what it did.
   if (letter === 'c') { const box = $('#subtitleEnabled'); box.checked = !box.checked; box.dispatchEvent(new Event('change')); toast(box.checked ? '자막을 켰어요' : '자막을 껐어요'); return; }
   if (letter === 'z' || letter === 'x') {
     const next = Number(localStorage.getItem('subtitleSync') || 0) + (letter === 'z' ? -500 : 500);
