@@ -88,9 +88,25 @@ async function handle(req,res){try{const parts=new URL(req.url,'http://127.0.0.1
     body=null;
   }
   if(!body)throw new Error('영상 조각 데이터가 올바르지 않습니다.');res.writeHead(200,{'content-type':type==='m3u8'?'application/vnd.apple.mpegurl':type==='segment'?'video/mp4':upstream.headers.get('content-type')||'application/octet-stream','content-length':body.length,'access-control-allow-origin':'*','cache-control':'no-store','accept-ranges':'none'});res.end(req.method==='HEAD'?undefined:body)}catch(error){const body=Buffer.from(`FLIX_DECODE_FAILED: ${error.message}`);res.writeHead(502,{'content-type':'text/plain; charset=utf-8','content-length':body.length});res.end(body)}}
+// Whether a proxied stream's segments can be read: its first segment's first bytes, fetched before the stream is used.
+// One of FlixCloud's CDNs (vault-90.rundowncdn.top, behind RE:Anime's HD-1) now serves segments without the fake
+// image header and with other bytes than this decoder knows, so every one of them failed in the player (HTTP 502,
+// "Death Note" and others). The playlists are read with x-lilac-hold, so the player's first ask takes them from here.
+// false only when the bytes are there and are not media; a failed check (network) leaves the stream to the player.
+async function flixReadable(url){
+  const get=async address=>{const response=await fetch(address,{headers:{'x-lilac-hold':'1'}});if(!response.ok)throw new Error(`HTTP ${response.status}`);return response.text()};
+  const firstEntry=text=>text.split(/\r?\n/).map(line=>line.trim()).find(line=>line&&!line.startsWith('#'));
+  let base=url,text=await get(url);
+  if(!/#EXTINF/i.test(text)){const variant=firstEntry(text);if(!variant)return true;base=new URL(variant,url).href;text=await get(base)}
+  const entry=firstEntry(text);if(!entry)return true;
+  const parts=new URL(entry,base).pathname.split('/').filter(Boolean),data=sessions.get(parts[1]);if(parts[0]!=='__flix'||!data)return true;
+  const target=Buffer.from(parts.slice(2).join('/'),'base64url').toString();if(kind(target)!=='segment')return true;
+  const {body}=await fetchHedged(target,requestHeaders(data),0,4095),decoded=decodeSegment(Buffer.from(body));
+  return isMedia(decoded)||Boolean(findTs(decoded)||findTs(body));
+}
 async function ensureServer(){if(server?.listening)return;server=http.createServer(handle);await new Promise((resolve,reject)=>server.once('error',reject).listen(0,'127.0.0.1',resolve))}
 async function createFlixProxyUrl(url,pk,headers={}){await ensureServer();const id=crypto.randomUUID().replaceAll('-','');sessions.set(id,{pk,headers,order:new Map()});return proxyUrl(server.address().port,id,url)}
 async function createFlixAvProxyUrl(videoUrl,audioUrl,pk,headers={}){await ensureServer();const id=crypto.randomUUID().replaceAll('-','');sessions.set(id,{pk,headers,videoUrl,audioUrl,order:new Map()});return `http://127.0.0.1:${server.address().port}/__flix/${id}/master.m3u8`}
 function closeFlixProxy(){sessions.clear();ahead.clear();primed.clear();heldLists.clear();server?.close();server=null}
 
-module.exports={createFlixProxyUrl,createFlixAvProxyUrl,closeFlixProxy,fetchHedged,primeFlix};
+module.exports={createFlixProxyUrl,createFlixAvProxyUrl,closeFlixProxy,fetchHedged,primeFlix,flixReadable};

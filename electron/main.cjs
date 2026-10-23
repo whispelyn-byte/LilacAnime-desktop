@@ -8,7 +8,7 @@ const { pipeline } = require('stream/promises');
 const AdmZip = require('adm-zip');
 const { spawn } = require('child_process');
 const { pathToFileURL } = require('url');
-const { createFlixProxyUrl, createFlixAvProxyUrl, closeFlixProxy, primeFlix } = require('./flix-proxy.cjs');
+const { createFlixProxyUrl, createFlixAvProxyUrl, closeFlixProxy, primeFlix, flixReadable } = require('./flix-proxy.cjs');
 const { createCatalogBrowser } = require('./catalog-browser.cjs');
 const { createWeeklySchedule } = require('./weekly-schedule.cjs');
 const { createProviderSchedule } = require('./provider-schedule.cjs');
@@ -435,7 +435,12 @@ async function resolveProviderEpisode(episode) {
   if(episode.provider==='reanime') {
     const ordered=await reanimeServers(episode);
     if(!ordered.length)throw new Error('이 작품은 현재 RE:Anime에서 재생할 수 없습니다. 다른 콘텐츠 소스를 선택해주세요.');
-    return firstAnswering(ordered,(server,signal)=>resolveStreamPage(server.url,`${REANIME_WEB}/`,30000,{signal}),6000);
+    // A server whose segments this app cannot read (HD-1's CDN at present) is passed over for the next one.
+    return firstAnswering(ordered,async(server,signal)=>{
+      const stream=await resolveStreamPage(server.url,`${REANIME_WEB}/`,30000,{signal});
+      if(!await flixReadable(stream.url).catch(()=>true))throw new Error(`RE:Anime ${server.name||''} 서버의 영상을 읽을 수 없습니다. 다른 서버도 안 되면 다른 콘텐츠 소스로 재생해 주세요.`);
+      return stream;
+    },6000);
   }
   if(episode.provider==='animenosub'){
     const servers=animenosubServers(await providerFetch(episode.url,{referer:`${ANIMENOSUB_WEB}/`}),episode.url);
@@ -804,7 +809,7 @@ async function ohliStreamFromPage(playerUrl){
   try{
     win.loadURL(playerUrl,{httpReferrer:`${OHLI24_WEB}/`,userAgent:LINKKF_UA}).catch(()=>{});
     // A player waiting for a click is started every 2 s; it is given 30 s in all.
-    nudge=setInterval(()=>win.webContents.executeJavaScript(`try{window.jwplayer?.().play?.()}catch{};document.querySelectorAll('video').forEach(v=>{v.muted=true;v.play().catch(()=>{})})`,true).catch(()=>{}),2000);
+    nudge=setInterval(()=>win.webContents.mainFrame.executeJavaScript(`try{window.jwplayer?.().play?.()}catch{};document.querySelectorAll('video').forEach(v=>{v.muted=true;v.play().catch(()=>{})})`,true).catch(()=>{}),2000);
     await Promise.race([seen,new Promise(resolve=>{timer=setTimeout(resolve,30000)})]);
     if(!master&&!media)throw new Error('애니24 영상 주소를 찾지 못했습니다.');
     const subtitle=await ohliCaption(win,playerUrl);
@@ -819,7 +824,7 @@ async function ohliStreamFromPage(playerUrl){
 // host, michealcdn.com/subtitles/2016/뉴게임01.srt). Its bytes are kept as they are (an old SRT can be EUC-KR, which
 // readSubtitleText reads). Nothing when the player has none or the file does not come.
 async function ohliCaption(win,playerUrl){
-  const files=await win.webContents.executeJavaScript(`(()=>{try{const item=window.jwplayer?.().getPlaylist?.()?.[0]||{};return [...(item.tracks||[]),...(item.sources||[]).flatMap(source=>source.tracks||[])].filter(track=>/^(captions|subtitles)$/i.test(track.kind||'')&&track.file).map(track=>String(track.file))}catch{return []}})()`,true).catch(()=>[]);
+  const files=await win.webContents.mainFrame.executeJavaScript(`(()=>{try{const item=window.jwplayer?.().getPlaylist?.()?.[0]||{};return [...(item.tracks||[]),...(item.sources||[]).flatMap(source=>source.tracks||[])].filter(track=>/^(captions|subtitles)$/i.test(track.kind||'')&&track.file).map(track=>String(track.file))}catch{return []}})()`,true).catch(()=>[]);
   return ohliSubtitleFile(files,playerUrl,(url,options)=>win.webContents.session.fetch(url,options));
 }
 // The first of these subtitle files that comes, as {data, ext}.
@@ -987,6 +992,13 @@ async function saveRemoteSubtitle(url,{referer='',userAgent=LINKKF_UA,headers={}
 // A session has one request hook; a second one replaces the first. Player pages open side by side in one session
 // (Re:Anime's servers, each in the session that keeps FlixCloud's cookies), so the session's hook hands each request
 // to the page it came from.
+// An ad's video: a known ad network, or "ad"/"ads"/"adserver" as a word of its host or path. The query is not looked at:
+// a stream's random token often holds the letters "ad" (…?token=a87cad42…), which threw away Animenosub's real stream
+// about one time in four and left the episode waiting for its 15 s limit, then the next kind of server.
+function isAdMedia(url){
+  let where=String(url);try{const parsed=new URL(url);where=parsed.hostname+parsed.pathname}catch{}
+  return /runative|magsrv|juneworewyjyna|pxltag/i.test(String(url))||/(?:^|[./_-])ad(?:s|server|vert\w*)?(?=[./_-]|$)/i.test(where);
+}
 const resolverHooks=new Map();
 function hookResolver(ses,webContentsId,handler){
   let handlers=resolverHooks.get(ses);
@@ -1004,7 +1016,7 @@ async function resolveStreamPage(targetUrl, referer = '', timeoutMs = 30000, { p
   const resolver=new BrowserWindow({show:false,width:960,height:640,webPreferences:{partition,contextIsolation:true,nodeIntegration:false,sandbox:true,autoplayPolicy:'no-user-gesture-required',backgroundThrottling:false}});
   resolver.webContents.setUserAgent(browserUa);
   const ses=resolver.webContents.session;let stream=null,subtitle=null,lastHeaders={},flixPk='',flixVideo='',flixAudio='';const streams=new Map();
-  const unhook=hookResolver(ses,resolver.webContents.id,(details,callback)=>{const lower=details.url.toLowerCase(),headers=details.requestHeaders||{};if(isFlixCloud){headers['User-Agent']=ANDROID_WEBVIEW_UA;headers['sec-ch-ua']='"Chromium";v="131", "Not_A Brand";v="24"';headers['sec-ch-ua-mobile']='?1';headers['sec-ch-ua-platform']='"Android"';headers['Accept-Language']='en-US,en;q=0.9,ko;q=0.7'}const adMedia=/runative|magsrv|juneworewyjyna|pxltag/i.test(lower),media=lower.includes('.m3u8')||/\.(mp4|webm)(?:\?|$)/i.test(lower);if(media&&!adMedia&&!lower.includes('ad')){streams.set(details.url,{...headers});if(!stream){stream=details.url;lastHeaders={...headers}}}if(!isFlixCloud&&lower.includes('.vtt')&&!/thumbnail/i.test(lower))subtitle ||= details.url;callback({requestHeaders:headers});});
+  const unhook=hookResolver(ses,resolver.webContents.id,(details,callback)=>{const lower=details.url.toLowerCase(),headers=details.requestHeaders||{};if(isFlixCloud){headers['User-Agent']=ANDROID_WEBVIEW_UA;headers['sec-ch-ua']='"Chromium";v="131", "Not_A Brand";v="24"';headers['sec-ch-ua-mobile']='?1';headers['sec-ch-ua-platform']='"Android"';headers['Accept-Language']='en-US,en;q=0.9,ko;q=0.7'}const adMedia=isAdMedia(details.url),media=lower.includes('.m3u8')||/\.(mp4|webm)(?:\?|$)/i.test(lower);if(media&&!adMedia){streams.set(details.url,{...headers});if(!stream){stream=details.url;lastHeaders={...headers}}}if(!isFlixCloud&&lower.includes('.vtt')&&!/thumbnail/i.test(lower))subtitle ||= details.url;callback({requestHeaders:headers});});
   const stop=()=>{if(!resolver.isDestroyed())resolver.destroy()};signal?.addEventListener('abort',stop);
   try {
     // The address is looked for while the page loads: a player page can keep loading ads for half a minute after the
@@ -1015,7 +1027,7 @@ async function resolveStreamPage(targetUrl, referer = '', timeoutMs = 30000, { p
     while(!stream&&!resolver.isDestroyed()&&Date.now()<streamDeadline){
       if(isFlixCloud&&loaded&&!blockChecked){
         blockChecked=true;
-        const blocked=await resolver.webContents.executeJavaScript(`(()=>{const text=(document.title+' '+(document.body?.innerText||'')).toLowerCase();return text.includes('sorry, you have been blocked')||text.includes('you have been blocked')})()`,true).catch(()=>false);
+        const blocked=await resolver.webContents.mainFrame.executeJavaScript(`(()=>{const text=(document.title+' '+(document.body?.innerText||'')).toLowerCase();return text.includes('sorry, you have been blocked')||text.includes('you have been blocked')})()`,true).catch(()=>false);
         if(blocked)throw new Error('FlixCloud가 이 앱 세션을 차단했습니다. 다른 영상 서버로 전환합니다.');
       }
       for(const frame of resolver.webContents.mainFrame.frames){
@@ -1026,11 +1038,13 @@ async function resolveStreamPage(targetUrl, referer = '', timeoutMs = 30000, { p
     if(isFlixCloud&&stream&&!resolver.isDestroyed()){
       // Done as soon as the playlists (a master, or video and audio) and the key are there; a page that offers
       // something else is taken once its list of addresses has stopped growing for 1.5 s.
+      // The page is asked through its main frame: webContents.executeJavaScript waits until the page stops loading, and a
+      // FlixCloud page keeps loading ads for half a minute after its playlists and key are there (RE:Anime took 30 s).
       const has=pattern=>[...streams.keys()].some(url=>pattern.test(new URL(url).pathname));
       const complete=()=>has(/master/i)||(has(/\/video(?:\/|\.|$)/i)&&has(/\/audio(?:\/|\.|$)/i));
       const readyDeadline=Date.now()+10000;let previousSize=-1,stableSince=Date.now();
       while(!resolver.isDestroyed()&&Date.now()<readyDeadline){
-        if(!flixPk)flixPk=await resolver.webContents.executeJavaScript(`window.__pk||''`,true).catch(()=>'');
+        if(!flixPk)flixPk=await resolver.webContents.mainFrame.executeJavaScript(`window.__pk||''`,true).catch(()=>'');
         if(streams.size!==previousSize){previousSize=streams.size;stableSince=Date.now()}
         if(flixPk&&(complete()||Date.now()-stableSince>=1500))break;
         await new Promise(resolve=>setTimeout(resolve,150));
@@ -1049,14 +1063,14 @@ async function resolveStreamPage(targetUrl, referer = '', timeoutMs = 30000, { p
     if(isFlixCloud&&!resolver.isDestroyed()){
       // FlixCloud embeds the complete track list in the player HTML. Report every track so the
       // player can offer a choice, and only auto-select Korean (Android v0.3.9).
-      const html=await resolver.webContents.executeJavaScript(`document.documentElement.innerHTML||''`,true).catch(()=>'');
+      const html=await resolver.webContents.mainFrame.executeJavaScript(`document.documentElement.innerHTML||''`,true).catch(()=>'');
       subtitleTracks=parseFlixSubtitleTracks(html);
       subtitle=subtitleTracks.find(isKoreanTrack)?.url||null;
     }
     if(stream&&!subtitle&&!isFlixCloud&&waitSubtitle){const subtitleDeadline=Date.now()+2500;while(Date.now()<subtitleDeadline&&!subtitle)await new Promise(resolve=>setTimeout(resolve,200));}
     if(!stream)throw new Error(resolver.isDestroyed()?'플레이어 창이 닫혀 스트림 탐색을 중단했습니다.':'영상 주소를 찾지 못했습니다 (응답 시간 초과).');
     // The key appears with the player; a page that never sets it is given up instead of waiting forever.
-    if(isFlixCloud){const keyDeadline=Date.now()+15000;while(!flixPk&&!resolver.isDestroyed()&&Date.now()<keyDeadline){flixPk=await resolver.webContents.executeJavaScript(`window.__pk||''`,true).catch(()=>'');if(!flixPk)await new Promise(resolve=>setTimeout(resolve,250))}if(!flixPk)throw new Error(resolver.isDestroyed()?'플레이어 창이 닫혀 복호화 키 탐색을 중단했습니다.':'FlixCloud 복호화 키를 찾지 못했습니다.');const headers={...lastHeaders,Referer:targetUrl,'User-Agent':ANDROID_WEBVIEW_UA};stream=flixVideo&&flixAudio?await createFlixAvProxyUrl(flixVideo,flixAudio,flixPk,headers):await createFlixProxyUrl(stream,flixPk,headers);}
+    if(isFlixCloud){const keyDeadline=Date.now()+15000;while(!flixPk&&!resolver.isDestroyed()&&Date.now()<keyDeadline){flixPk=await resolver.webContents.mainFrame.executeJavaScript(`window.__pk||''`,true).catch(()=>'');if(!flixPk)await new Promise(resolve=>setTimeout(resolve,250))}if(!flixPk)throw new Error(resolver.isDestroyed()?'플레이어 창이 닫혀 복호화 키 탐색을 중단했습니다.':'FlixCloud 복호화 키를 찾지 못했습니다.');const headers={...lastHeaders,Referer:targetUrl,'User-Agent':ANDROID_WEBVIEW_UA};stream=flixVideo&&flixAudio?await createFlixAvProxyUrl(flixVideo,flixAudio,flixPk,headers):await createFlixProxyUrl(stream,flixPk,headers);}
     let subtitleUrl=subtitle,subtitlePath=null,subtitleAss=null;if(subtitle){try{const saved=subtitleResult(await saveRemoteSubtitle(subtitle,{referer:targetUrl,userAgent:browserUa,headers:lastHeaders}));subtitleUrl=saved.url;subtitlePath=saved.path;subtitleAss=saved.assUrl?{url:saved.assUrl,path:saved.assPath}:null}catch{/* Community subtitle fallback remains available. */}}
     resolvedStreamHeaders.set(new URL(stream).host,{...lastHeaders,Referer:targetUrl});return {url:stream,subtitleUrl,subtitlePath,subtitleAss,subtitleTracks,headers:lastHeaders,referer:targetUrl};
   } finally {signal?.removeEventListener('abort',stop);unhook();if(!resolver.isDestroyed())resolver.destroy();}

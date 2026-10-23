@@ -441,7 +441,18 @@ async function resolveWithVideoServer(episode,koreanSearch,anime,failedServers=[
   koreanSearch.then(found=>{if(!found||!show)return;const list=koreanShows().filter(key=>key!==show);list.unshift(show);try{localStorage.setItem(KOREAN_SHOWS_KEY,JSON.stringify(list.slice(0,300)))}catch{}});
   if(!picked){
     const saved=await window.lilac.savedSubtitles(episodeRef(episode)).catch(()=>[]);
-    if(saved.some(entry=>entry.source!=='provider')||(show&&koreanShows().includes(show))||await Promise.race([koreanSearch,new Promise(resolve=>setTimeout(()=>resolve(null),8000))]))prefer='raw';
+    if(saved.some(entry=>entry.source!=='provider')||(show&&koreanShows().includes(show)))prefer='raw';
+    else{
+      // The stream is asked for while the subtitle search runs, not after it (it took 2-8 s): a clean video (RAW, or
+      // Miruro's SOFT with its subtitle apart) suits either answer and plays at once. Only an English-burned one waits
+      // for the search, and is asked for again as RAW when a Korean subtitle is found.
+      const korean=Promise.race([koreanSearch,new Promise(resolve=>setTimeout(()=>resolve(null),8000))]);
+      const first=await resolve({...episode,server:'',prefer:'sub',failedServers}).catch(error=>({error}));
+      const kind=first.servers?.find(server=>server.label===first.server)?.kind;
+      if(!first.error&&['raw','soft'].includes(kind))return first;
+      if(!await korean){if(first.error)throw first.error;return first}
+      prefer='raw';
+    }
   }
   return resolve({...episode,server:picked,prefer,failedServers});
 }
