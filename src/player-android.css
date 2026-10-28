@@ -255,6 +255,7 @@ body.light .episode-sheet .episode-pick-progress { background: #0000001a; }
 /* 이어서 보기: the card's ⌄ opens the sheet (Netflix's episodes button). */
 .continue-card { position: relative; }
 .continue-card > b, .continue-card > span { padding-right: 40px; }
+.continue-card > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .continue-episodes { position: absolute; right: 0; bottom: 0; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 1.5px solid var(--muted, #ffffff80); border-radius: 50%; background: transparent; color: var(--text, #fff); cursor: pointer; }
 .continue-episodes:hover, .continue-episodes:focus-visible { border-color: var(--text, #fff); background: #8882; }
 .continue-episodes svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
