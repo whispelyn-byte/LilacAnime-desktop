@@ -368,6 +368,38 @@ function createLocalAi(userData) {
     }
     throw new Error('llama.cpp 실행 파일을 찾지 못했습니다.');
   }
+  // 설정 > 로컬 AI > 실행 환경: the build this PC would start with and whether it is on disk, and a button that downloads
+  // it before the first translation (with the Vulkan build to fall back on), the way Whisper's runtime is installed.
+  // Sizes are for the settings only (about what the Windows builds weigh).
+  const RUNTIME_SIZE = { vulkan: 33e6, cuda12: 600e6, cuda13: 600e6, rocm: 260e6, sycl: 150e6, openvino: 90e6 };
+  let runtimeInstall = null, runtimeProgress = null;
+  const wantedRuntimes = async () => [...new Set([(await preferredRuntimes())[0], 'vulkan'])];
+  async function runtimeStatus() {
+    const wanted = await wantedRuntimes(), best = wanted[0], missing = wanted.filter(kind => !runtimeExe(kind));
+    return {
+      best: { kind: best, label: RUNTIMES[best].label, installed: Boolean(runtimeExe(best)) },
+      installed: [...new Set(Object.keys(RUNTIMES).filter(kind => runtimeExe(kind)).map(kind => RUNTIMES[kind].label))],
+      installing: runtimeProgress || (installing.size ? { label: RUNTIMES[[...installing.keys()][0]].label, done: 0, total: 0 } : null),
+      size: missing.reduce((sum, kind) => sum + RUNTIME_SIZE[kind], 0)
+    };
+  }
+  function installRuntimes(progress = () => {}) {
+    runtimeInstall ||= (async () => {
+      const wanted = await wantedRuntimes(); let failed = null;
+      for (const kind of wanted) {
+        if (runtimeExe(kind)) continue;
+        const label = RUNTIMES[kind].label;
+        runtimeProgress = { label, done: 0, total: RUNTIME_SIZE[kind] }; progress(runtimeProgress);
+        try { await ensureRuntime(kind, (done, total) => { runtimeProgress = { label, done, total }; progress(runtimeProgress); }); }
+        catch (error) { failed ||= error; }
+      }
+      // The card's build failing still leaves Vulkan to translate with (the button stays for another try).
+      if (failed && !wanted.some(kind => runtimeExe(kind))) throw failed;
+      runtimeProgress = null;
+      return runtimeStatus();
+    })().finally(() => { runtimeInstall = null; runtimeProgress = null; });
+    return runtimeInstall;
+  }
   async function installModel(id, progress = () => {}) {
     const model = MODELS.find(item => item.id === id); if (!model) throw new Error('모델을 찾지 못했습니다.');
     if (downloads.has(id)) throw new Error('이미 받는 중입니다.');
@@ -616,7 +648,7 @@ function createLocalAi(userData) {
     return { translations: result, model };
   }
 
-  return { models, installModel, cancelInstall, removeModel, addFile, setModelOptions, translateLines, stop, modelPath };
+  return { models, runtimeStatus, installRuntimes, installModel, cancelInstall, removeModel, addFile, setModelOptions, translateLines, stop, modelPath };
 }
 
 // The prompt a model is asked with, as part of the translation cache key (a changed prompt is not hidden behind

@@ -184,3 +184,44 @@ test('an address with ( ) ! \' * escaped is the same entry as one without', () =
   const long = `ohli24:https://ani.ohli24.com/e/${encodeURIComponent('가'.repeat(520) + ' (2기) 1화')}`;
   assert.equal(sync.fitId(long.replace(/[()]/g, mark => `%${mark.charCodeAt(0).toString(16).toUpperCase()}`)), sync.fitId(long));
 });
+
+// The Android app (DeviceSyncMapping.kt) sends history in this app's shape; where it cannot tell an episode's address
+// it keys it by its own episode id.
+const nosub = (number, progress, updated) => ({ key: `animenosub:https://animenosub.to/bleach-tybw-episode-${number}/`, src: '', name: `Bleach · ${number}화`, episode: { provider: 'animenosub', number, name: String(number), url: `https://animenosub.to/bleach-tybw-episode-${number}/`, dub: false }, anime: { provider: 'animenosub', id: 'bleach', mal_id: 'animenosub:bleach', title: 'Bleach' }, progress, updated });
+const fromPhone = (number, progress, updated) => ({ collection: 'history', id: `animenosub:bleach:animenosub:bleach_ep_${number}`, updated,
+  data: { key: `animenosub:bleach:animenosub:bleach_ep_${number}`, src: '', name: `Bleach · ${number}화`, anime: { provider: 'animenosub', id: 'bleach', mal_id: 'animenosub:bleach', url: 'https://animenosub.to/anime/bleach/', title: 'Bleach' },
+    episode: { provider: 'animenosub', number, name: String(number), key: `animenosub:bleach_ep_${number}` }, progress, updated, androidAnimeId: 'animenosub:bleach', androidEpisodeKey: `animenosub:bleach_ep_${number}`, episodeNumber: number } });
+
+test('each source\'s episode has the Android app\'s key', () => {
+  assert.equal(sync.androidEpisodeKey(nosub(5, 0, 1)), 'animenosub:bleach:animenosub:bleach_ep_5');
+  assert.equal(sync.androidEpisodeKey({ ...nosub(5, 0, 1), episode: { ...nosub(5, 0, 1).episode, dub: true } }), 'animenosub:bleach:animenosub:bleach_dub_ep_5');
+  assert.equal(sync.androidEpisodeKey({ anime: { provider: 'reanime', id: 'kaguya' }, episode: { number: 2, name: '2', url: 'x' } }), 'reanime:kaguya:reanime:kaguya:ep-2');
+  assert.equal(sync.androidEpisodeKey({ anime: { provider: 'miruro', id: 123 }, episode: { number: 4, name: '4', url: 'x' } }), 'miruro:123:miruro:123:4');
+  assert.equal(sync.androidEpisodeKey({ anime: { provider: 'linkani', id: '19848' }, episode: { number: 3, name: '3', url: 'https://linkani.tv/watch/19848/a1/k3/' } }), '19848:19848_ep_3');
+  assert.equal(sync.androidEpisodeKey({ anime: { provider: 'ohli24', id: '슬라임' }, episode: { number: 5, name: '5', url: `https://ani.ohli24.com/e/${encodeURIComponent('슬라임 5화')}` } }), 'ohli24:슬라임:ohli24:슬라임:슬라임 5화');
+});
+
+test('an Animenosub episode watched on the phone is this side\'s entry for it', async () => {
+  const api = server(), pc = device(api, { history: [nosub(5, 20, 2000)] });
+  await pc.engine.run();
+  await api.push([fromPhone(5, 70, 5000)]);
+  pc.clock = 6000; await pc.engine.run();
+  assert.equal(pc.lists.history.length, 1);
+  assert.equal(pc.lists.history[0].key, nosub(5, 0, 0).key);
+  assert.equal(pc.lists.history[0].progress, 70);
+  assert.equal(pc.lists.history[0].episode.url, nosub(5, 0, 0).episode.url);
+  // Its removal on the phone removes it here.
+  await api.push([{ collection: 'history', id: 'animenosub:bleach:animenosub:bleach_ep_5', updated: 7000, deleted: true }]);
+  pc.clock = 8000; await pc.engine.run();
+  assert.equal(pc.lists.history.length, 0);
+});
+
+test('an episode only the phone watched comes as it is, to play by its number', async () => {
+  const api = server(), pc = device(api, { history: [nosub(5, 20, 2000)] });
+  await api.push([fromPhone(6, 30, 3000)]);
+  await pc.engine.run();
+  const six = pc.lists.history.find(item => item.episode.number === 6);
+  assert.equal(six.key, 'animenosub:bleach:animenosub:bleach_ep_6');
+  assert.equal(six.anime.provider, 'animenosub');
+  assert.equal(pc.lists.history.length, 2);
+});
