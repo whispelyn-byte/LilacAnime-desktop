@@ -1335,6 +1335,39 @@ async function anilistBanner(anime={}){
   const response=await fetch('https://graphql.anilist.co',{signal:AbortSignal.timeout(20000),method:'POST',headers:{Accept:'application/json','Content-Type':'application/json','User-Agent':'LilacAnime Android'},body:JSON.stringify({query,variables})});
   return response.ok?String((await response.json())?.data?.Media?.bannerImage||''):'';
 }
+// 회차 썸네일 for the episode lists (player's 회차 panel, 이어서 보기's sheet) where the source has none (Animenosub,
+// Linkkf, 애니24, 링크애니, some Re:Anime episodes), from two places that need no key: AniList's streaming episodes
+// (Crunchyroll's pictures, "Episode 3 - …"; most recent series) and Kitsu's episode pictures (older ones too), found
+// through Kitsu's mapping of the work's MAL or AniList id. AniList is asked by the id it knows, else by the English or
+// Japanese title. Episode number -> picture; Kitsu up to 600 episodes (20 a page, five pages at a time).
+const kitsuJson=async url=>{const response=await fetch(url,{signal:AbortSignal.timeout(15000),headers:{Accept:'application/vnd.api+json','User-Agent':'LilacAnime-Desktop'}});if(!response.ok)throw new Error(`Kitsu HTTP ${response.status}`);return response.json()};
+async function kitsuThumbnails(malId,anilistId){
+  let kitsuId=null;
+  for(const [site,id] of [['myanimelist/anime',malId],['anilist/anime',anilistId]]){
+    if(!id||kitsuId)continue;
+    const root=await kitsuJson(`https://kitsu.io/api/edge/mappings?filter[externalSite]=${site}&filter[externalId]=${id}&include=item`).catch(()=>null);
+    kitsuId=root?.included?.find(item=>item.type==='anime')?.id||null;
+  }
+  if(!kitsuId)return {};
+  const page=offset=>kitsuJson(`https://kitsu.io/api/edge/anime/${kitsuId}/episodes?page[limit]=20&page[offset]=${offset}&sort=number&fields[episodes]=number,thumbnail`);
+  const first=await page(0),count=Math.min(600,Number(first.meta?.count)||0),pages=[first];
+  for(let offset=20;offset<count;offset+=100)pages.push(...await Promise.all(Array.from({length:Math.min(5,Math.ceil((count-offset)/20))},(_,i)=>page(offset+i*20).catch(()=>({data:[]})))));
+  const thumbs={};
+  for(const item of pages.flatMap(root=>root.data||[])){const number=Number(item.attributes?.number),url=item.attributes?.thumbnail?.original||item.attributes?.thumbnail?.large;if(number>0&&/^https:/.test(url||''))thumbs[number]=url}
+  return thumbs;
+}
+async function episodeThumbnails(anime={}){
+  const anilistId=Number(anime.anilistId)||null,malId=Number(anime.malId||(/^\d+$/.test(String(anime.mal_id??''))?anime.mal_id:''))||null;
+  const search=[anime.title_english,anime.romaji,anime.title_japanese,anime.title].map(value=>String(value||'').trim()).find(value=>value&&!hasHangul(value))||'';
+  let media=null;
+  if(anilistId||malId||search){
+    const response=await fetch('https://graphql.anilist.co',{signal:AbortSignal.timeout(20000),method:'POST',headers:{Accept:'application/json','Content-Type':'application/json','User-Agent':'LilacAnime Android'},body:JSON.stringify({query:'query($id:Int,$mal:Int,$search:String){Media(id:$id,idMal:$mal,search:$search,type:ANIME){id idMal streamingEpisodes{title thumbnail}}}',variables:anilistId?{id:anilistId}:malId?{mal:malId}:{search}})}).catch(()=>null);
+    media=response?.ok?(await response.json().catch(()=>null))?.data?.Media:null;
+  }
+  const kitsu=await kitsuThumbnails(malId||media?.idMal,anilistId||media?.id).catch(()=>({})),thumbs={...kitsu};
+  for(const item of media?.streamingEpisodes||[]){const number=Number(String(item.title||'').match(/^Episode\s+(\d+)/i)?.[1]);if(number>0&&/^https:/.test(item.thumbnail||''))thumbs[number]=item.thumbnail}
+  return thumbs;
+}
 // Fallbacks when TMDB has no Korean name (or no key is set): AniList's Korean synonyms, then the Korean
 // Wikidata labels of the work and its series, looked up by MAL/AniList ID.
 function titleCompareKey(value=''){return String(value).normalize('NFKC').toLowerCase().replace(/…/g,'...').replace(/[\s:：'’"“”!！?？.,·・\-–—~〜()（）]/g,'')}
@@ -2641,6 +2674,13 @@ app.whenReady().then(async () => {
   };
   // A series' page is asked for again within moments (the home banner reads it, then opening the series does): the
   // answer is kept for 5 minutes, and a second ask while the first is on its way waits for it. A failed one is not kept.
+  // Kept for the session per work; a lookup that fails is tried again next time.
+  const episodeThumbs=new Map();
+  ipcMain.handle('episode:thumbnails',(_,anime={})=>{
+    const key=`${anime?.provider}|${anime?.id??anime?.mal_id}`;
+    if(!episodeThumbs.has(key)){const promise=episodeThumbnails(anime||{});episodeThumbs.set(key,promise);promise.catch(()=>episodeThumbs.delete(key))}
+    return episodeThumbs.get(key).catch(()=>({}));
+  });
   const providerDetails=new Map();
   ipcMain.handle('provider:detail', (_, anime) => {
     const key=`${anime?.provider}|${anime?.url||anime?.id||anime?.mal_id}`,kept=providerDetails.get(key);
@@ -2922,6 +2962,9 @@ app.whenReady().then(async () => {
     try{await translator().local.installModel(String(id||''),(done,total)=>send({done,total}));send({finished:true})}catch(error){send({error:error.message});throw error}
     return translator().settings();
   });
+  // llama.cpp itself, ahead of the first translation (설정 > 로컬 AI > 실행 환경).
+  ipcMain.handle('localai:runtime-status',()=>translator().local.runtimeStatus());
+  ipcMain.handle('localai:runtime-install',()=>translator().local.installRuntimes(value=>broadcast('localai:runtime-progress',value)));
   ipcMain.handle('localai:add-file',async()=>{
     const result=await dialog.showOpenDialog({title:'GGUF 모델 파일 선택',properties:['openFile'],filters:[{name:'GGUF',extensions:['gguf']}]});
     if(result.canceled||!result.filePaths[0])return null;

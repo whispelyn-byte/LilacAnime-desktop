@@ -27,6 +27,39 @@
   // FNV-1a of the item's JSON: whether it changed, without keeping a copy of it.
   function hash(item) { const text = JSON.stringify(item ?? null); let h = 0x811c9dc5; for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 0x01000193); } return (h >>> 0).toString(36); }
   function byId(collection, list) { const map = new Map(); for (const item of list || []) if (syncable(collection, item)) map.set(idOf(collection, item), item); return map; }
+  // The Android app (dream150/LilacAnime, DeviceSyncMapping.kt) sends its history in this app's shape, but keys an
+  // episode by its own episode id ("<anime id>:reanime:<slug>:ep-3", "animenosub:<slug>:animenosub:<slug>_ep_3") when
+  // it cannot tell the episode's address (Animenosub, 애니24, 링크애니). Such an entry, or its removal, is this side's
+  // entry for that episode when there is one (found by the Android key of each, worked out as that app's parsers make
+  // it), so one episode stays one entry; else it stays as it came and plays by its number (see playHistoryItem).
+  function androidEpisodeKey(item) {
+    const anime = item?.anime, episode = item?.episode;
+    if (item?.androidAnimeId && item?.androidEpisodeKey) return `${item.androidAnimeId}:${item.androidEpisodeKey}`;
+    if (!anime?.provider || anime.id == null || !episode) return '';
+    const id = String(anime.id), name = String(episode.name ?? ''), display = /^\d+[a-z]?$/i.test(name) ? name : String(episode.number ?? '');
+    if (!display) return '';
+    switch (anime.provider) {
+      case 'reanime': return `reanime:${id}:reanime:${id}:ep-${display}`;
+      case 'miruro': return `miruro:${id}:miruro:${id}:${display}`;
+      case 'animenosub': return `animenosub:${id}:animenosub:${id}_${episode.dub ? 'dub_' : ''}ep_${display}`;
+      case 'linkani': { const bare = id.replace(/^linkani:/, ''); return `${bare}:${bare}_ep_${display.toLowerCase()}`; }
+      case 'ohli24': { const slug = String(episode.url || '').split('/').pop(); try { return slug ? `ohli24:${id}:ohli24:${id}:${decodeURIComponent(slug)}` : ''; } catch { return ''; } }
+      default: return '';
+    }
+  }
+  function fold(incoming, history) {
+    const mine = new Map();
+    for (const item of history || []) { const key = androidEpisodeKey(item); if (key && item.episode?.url && (item.key || item.src)) mine.set(key, item); }
+    if (!mine.size) return incoming;
+    return incoming.map(item => {
+      if (item.collection !== 'history' || item.data?.episode?.url) return item;
+      const own = mine.get(item.deleted ? item.id : androidEpisodeKey(item.data) || item.id);
+      if (!own || fitId(own.key || own.src) === item.id) return item;
+      const id = fitId(own.key || own.src);
+      return item.deleted ? { ...item, id } : { ...item, id, data: { ...own, progress: item.data.progress, updated: item.data.updated, androidAnimeId: item.data.androidAnimeId, androidEpisodeKey: item.data.androidEpisodeKey } };
+    });
+  }
+
   function hashes(local) { return Object.fromEntries(COLLECTIONS.map(collection => [collection, Object.fromEntries([...byId(collection, local[collection])].map(([id, item]) => [id, hash(item)]))])); }
 
   // What to send: items added or changed since the snapshot, and removals. A history entry carries its own time of
@@ -93,7 +126,7 @@
           // What was sent stands for the snapshot, so the server's own echo of it changes nothing here.
           const sent = Object.fromEntries(COLLECTIONS.map(collection => [collection, { ...(saved.snapshot?.[collection] || {}) }]));
           for (const item of outgoing) { if (item.deleted) delete sent[item.collection][item.id]; else sent[item.collection][item.id] = planned[item.collection][item.id]; }
-          const fresh = read(), merged = merge(fresh, incoming, sent);
+          const fresh = read(), merged = merge(fresh, fold(incoming, fresh.history), sent);
           if (COLLECTIONS.some(collection => hash(merged.local[collection]) !== hash(fresh[collection]))) write(merged.local);
           state.set({ ...saved, rev: since, snapshot: merged.snapshot, at: now() });
           status({ state: 'done', at: now(), sent: outgoing.length, received: incoming.length });
@@ -105,6 +138,6 @@
     return { run, schedule, get running() { return Boolean(running); } };
   }
 
-  const api = { COLLECTIONS, idOf, fitId, hash, hashes, plan, merge, createSync };
+  const api = { COLLECTIONS, idOf, fitId, hash, hashes, plan, merge, createSync, androidEpisodeKey, fold };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.LilacSync = api;
 })(typeof window !== 'undefined' ? window : globalThis);

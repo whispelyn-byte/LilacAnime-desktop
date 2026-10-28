@@ -34,7 +34,9 @@ function applyPlayerAspect() {
 new ResizeObserver(applyPlayerAspect).observe($('#immersivePlayer'));
 $('#video').addEventListener('loadedmetadata', applyPlayerAspect);
 
-function playerSettingsOpen() { return $('#playerSettings').classList.contains('open'); }
+// Either sheet, 설정 or 회차 (episode panel), keeps the controls up and closes on Esc or a click on the picture.
+const openPlayerSheet = () => [$('#playerSettings'), $('#episodePanel')].find(sheet => sheet.classList.contains('open')) || null;
+function playerSettingsOpen() { return Boolean(openPlayerSheet()); }
 // The sheet is split into 재생 / 자막 / 자막 모양; the tab used last opens next time.
 function showPlayerSettingsTab(name) {
   if (!$(`[data-ps-pane="${name}"]`)) name = 'play';
@@ -47,6 +49,7 @@ $$('[data-ps-tab]').forEach(button => button.onclick = () => showPlayerSettingsT
 showPlayerSettingsTab((() => { try { return localStorage.getItem('playerSettingsTab'); } catch { return null; } })() || 'play');
 function openPlayerSettings(open, focusSection = null) {
   if (open) finishSpaceHold(false);
+  openEpisodePanel(false, false);
   const panel = $('#playerSettings');
   panel.classList.toggle('open', open); panel.setAttribute('aria-hidden', String(!open));
   $('#playerSettingsButton').setAttribute('aria-expanded', String(open));
@@ -401,7 +404,73 @@ function siblingEpisode(step) {
   for (let i = index + step; i >= 0 && i < list.length; i += step) if (!list[i].dub === !current.dub) return list[i];
   return null;
 }
-function updateEpisodeButtons() { $('#previousEpisode').disabled = !siblingEpisode(-1); $('#nextEpisode').disabled = !siblingEpisode(1); }
+function updateEpisodeButtons() {
+  $('#previousEpisode').disabled = !siblingEpisode(-1); $('#nextEpisode').disabled = !siblingEpisode(1);
+  $('#episodeListButton').classList.toggle('hidden', (currentPlaybackContext.seriesEpisodes || []).length < 2);
+  if (episodePanelOpen()) renderEpisodePanel();
+}
+
+// 회차 목록 (Wavve's 에피소드 panel): every episode of the work, to jump to any of them from the player, and from a card
+// of 이어서 보기 on the home page (see openContinueEpisodes) without opening the work's page. Each row has how far it was
+// watched (시청 기록); the order (첫회부터 / 최신회부터) is remembered for both.
+const episodeHistoryProgress = ep => { const ref = episodeRef(ep); return Number(state.history.find(item => item.episode && episodeRef(item.episode) === ref)?.progress) || 0; };
+const episodesNewestFirst = () => { try { return localStorage.getItem('episodePickerNewestFirst') === 'true'; } catch { return false; } };
+// Pictures for the episodes the source gives none (AniList's or Kitsu's, by the work; see episodeThumbnails in main.cjs): asked
+// once a work, the list drawn again (where it was scrolled to) when they come.
+const episodeThumbs = new Map();
+function episodeThumbsFor(anime) {
+  const key = `${anime.provider}|${anime.id ?? anime.mal_id}`;
+  if (!episodeThumbs.has(key)) {
+    const entry = { map: null }, fields = ['provider', 'id', 'mal_id', 'anilistId', 'malId', 'title', 'title_english', 'title_japanese', 'romaji'];
+    entry.promise = window.lilac.episodeThumbnails(Object.fromEntries(fields.map(field => [field, anime[field] ?? null]))).catch(() => ({})).then(map => { entry.map = map || {}; return entry.map; });
+    episodeThumbs.set(key, entry);
+  }
+  return episodeThumbs.get(key);
+}
+// current: the episode playing (not picked again), or with pickCurrent the one last watched (picked to resume it).
+function renderEpisodePicks(list, options) {
+  const { episodes, current, onPick, anime, currentLabel = '재생 중', pickCurrent = false, refresh = false } = options;
+  const playing = current ? episodeIndex(episodes, current) : -1, order = episodes.map((_, i) => i), scroll = list.scrollTop;
+  const thumbs = anime && episodes.some(ep => !/^https?:/.test(ep.thumbnail || '')) ? episodeThumbsFor(anime) : null, token = list.dataset.thumbToken = String(Math.random());
+  if (thumbs && !thumbs.map) thumbs.promise.then(map => { if (list.isConnected && list.dataset.thumbToken === token && Object.keys(map).length) renderEpisodePicks(list, { ...options, refresh: true }); });
+  if (episodesNewestFirst()) order.reverse();
+  list.replaceChildren(...order.map(i => {
+    const ep = episodes[i], button = document.createElement('button'), progress = Math.min(100, episodeHistoryProgress(ep));
+    const title = ep.title && ep.title !== `Episode ${ep.number}` ? ep.title : '', saved = jobByRef(episodeRef(ep))?.status === 'completed';
+    const meta = [i === playing ? currentLabel : '', ep.dub ? '더빙' : '', ep.airedDate ? ep.airedDate.split('T')[0] : '', saved ? '저장됨' : '', ep.playable === false ? '재생 불가' : ''].filter(Boolean).join(' · ');
+    button.type = 'button'; button.className = `episode-pick${i === playing ? ' current' : ''}`; button.disabled = ep.playable === false || (i === playing && !pickCurrent);
+    // With a picture (Re:Anime) the row is the picture, its number and title beside it, the watched part under the picture.
+    const bar = progress > 0 ? `<span class="episode-pick-progress"><i style="width:${progress}%"></i></span>` : '', thumb = /^https?:/.test(ep.thumbnail || '') ? ep.thumbnail : thumbs?.map?.[episodeNumberOf(ep)] || '';
+    button.innerHTML = `${thumb ? `<span class="episode-pick-thumb">${bar}</span>` : ''}${thumb ? '' : `<span class="episode-pick-number">${escapeHtml(episodeTitle(ep))}</span>`}<span class="episode-pick-copy">${thumb ? `<b>${escapeHtml(title || episodeTitle(ep))}</b><small>${escapeHtml([title ? episodeTitle(ep) : '', meta].filter(Boolean).join(' · '))}</small>` : `${title ? `<b>${escapeHtml(title)}</b>` : ''}${meta ? `<small>${escapeHtml(meta)}</small>` : ''}`}</span>${thumb ? '' : bar}`;
+    if (thumb) { button.classList.add('with-thumb'); setBackgroundImage(button.querySelector('.episode-pick-thumb'), thumb); }
+    button.onclick = () => onPick(ep);
+    return button;
+  }));
+  if (refresh) list.scrollTop = scroll; else list.querySelector('.current')?.scrollIntoView({ block: 'center' });
+}
+function setEpisodeOrderButtons() { $$('.episode-order').forEach(button => { button.textContent = episodesNewestFirst() ? '최신회부터' : '첫회부터'; }); }
+$$('.episode-order').forEach(button => button.onclick = () => {
+  try { localStorage.setItem('episodePickerNewestFirst', String(!episodesNewestFirst())); } catch { /* the order is only a convenience */ }
+  setEpisodeOrderButtons(); if (episodePanelOpen()) renderEpisodePanel(); if ($('#episodeSheet').open) renderContinueEpisodes();
+});
+setEpisodeOrderButtons();
+function episodePanelOpen() { return $('#episodePanel').classList.contains('open'); }
+function renderEpisodePanel() {
+  const episodes = currentPlaybackContext.seriesEpisodes || [];
+  $('#episodePanelCount').textContent = `${currentPlaybackContext.subtitleTitle || ''}${episodes.length ? ` · ${episodes.length}화` : ''}`;
+  renderEpisodePicks($('#episodePanelList'), { episodes, current: currentPlaybackContext.episode, anime: currentPlaybackContext.anime, onPick: episode => { openEpisodePanel(false); playSiblingEpisode(episode); } });
+}
+function openEpisodePanel(open, controls = true) {
+  const panel = $('#episodePanel'); if (!open && !episodePanelOpen()) return;
+  if (open) { finishSpaceHold(false); openPlayerSettings(false); }
+  panel.classList.toggle('open', open); panel.setAttribute('aria-hidden', String(!open));
+  $('#episodeListButton').setAttribute('aria-expanded', String(open));
+  if (open) { renderEpisodePanel(); if (usingKeyboard) ($('#episodePanelList .current') || $('#episodePanelList button:not(:disabled)'))?.focus({ preventScroll: true }); }
+  if (controls) showPlayerControls();
+}
+$('#episodeListButton').onclick = () => openEpisodePanel(!episodePanelOpen());
+$('#closeEpisodePanel').onclick = () => { openEpisodePanel(false); $('#episodeListButton').focus(); };
+$('#episodePanel').addEventListener('pointerdown', event => event.stopPropagation());
 async function playSiblingEpisode(episode) {
   if (!episode) return;
   const episodes = currentPlaybackContext.seriesEpisodes || [], title = currentPlaybackContext.subtitleTitle || $('#playerTitle').textContent.split(' · ')[0];
@@ -717,7 +786,7 @@ function handlePlayerKey(event) {
     event.preventDefault();
     // Esc steps back one level: the settings sheet, then full screen (to the window), then out of the player. The mouse's
     // back button goes straight out.
-    if (playerSettingsOpen()) { openPlayerSettings(false); $('#playerSettingsButton').focus(); }
+    if (playerSettingsOpen()) { const button = episodePanelOpen() ? $('#episodeListButton') : $('#playerSettingsButton'); openPlayerSettings(false); button.focus(); }
     else if (document.fullscreenElement) document.exitFullscreen();
     else if (key === 'Escape' && playerWindowFullscreen) $('#fullscreenPlayer').click();
     else $('#playerBack').click();
@@ -729,7 +798,7 @@ function handlePlayerKey(event) {
   if (arrow && focusInPlayer && (controlsShown || playerSettingsOpen())) {
     // Range inputs keep their own left/right handling.
     if (document.activeElement?.type === 'range' && (arrow === 'left' || arrow === 'right')) { showPlayerControls(); return; }
-    event.preventDefault(); moveFocus(arrow, playerSettingsOpen() ? $('#playerSettings') : player); showPlayerControls(); return;
+    event.preventDefault(); moveFocus(arrow, openPlayerSheet() || player); showPlayerControls(); return;
   }
   if (arrow === 'left' || arrow === 'right') {
     event.preventDefault();
