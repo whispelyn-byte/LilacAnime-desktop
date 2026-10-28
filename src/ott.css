@@ -239,6 +239,10 @@ body.light #homeView .hero-copy h1,body.light #homeView .hero p,body.light .hero
 body.light .hero-meta .hero-badge{border-color:var(--muted)}
 body.light #homeView .hero-actions .ghost{background:#1c1b1f1a;color:var(--text)}
 body.light #homeView .hero-actions .primary{background:#1c1b1f;color:#fff}
+/* Light theme: the picture fades into the white page with eased stops, over a longer stretch at the bottom (three
+   linear stops washed it out to grey and ended it at a line), and the active poster's shadow is a soft one. */
+body.light #homeView .hero-shade{background:linear-gradient(90deg,var(--bg) 0%,color-mix(in srgb,var(--bg) 90%,transparent) 18%,color-mix(in srgb,var(--bg) 70%,transparent) 30%,color-mix(in srgb,var(--bg) 42%,transparent) 44%,color-mix(in srgb,var(--bg) 18%,transparent) 58%,color-mix(in srgb,var(--bg) 5%,transparent) 70%,transparent 80%),linear-gradient(0deg,var(--bg) 0%,var(--bg) 4%,color-mix(in srgb,var(--bg) 88%,transparent) 12%,color-mix(in srgb,var(--bg) 66%,transparent) 22%,color-mix(in srgb,var(--bg) 40%,transparent) 34%,color-mix(in srgb,var(--bg) 18%,transparent) 46%,color-mix(in srgb,var(--bg) 5%,transparent) 58%,transparent 66%),linear-gradient(180deg,color-mix(in srgb,var(--bg) 55%,transparent) 0%,transparent 18%)}
+body.light .hero-pick.active{box-shadow:0 18px 40px #1c1b1f40,0 0 0 1px #1c1b1f14}
 
 /* Player: every secondary control is the same plain icon, the play button the one filled circle; the lock sits in
    the bottom row with the other buttons, and the loading message takes the centre on its own. */
