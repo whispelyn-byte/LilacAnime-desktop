@@ -230,7 +230,7 @@
 .episode-pick-copy b { overflow: hidden; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .episode-pick-copy small { color: #ffffff80; font-size: 11px; }
 .episode-pick-progress { position: absolute; left: 12px; right: 12px; bottom: 4px; height: 3px; border-radius: 2px; background: #ffffff24; overflow: hidden; }
-.episode-pick-progress i { display: block; height: 100%; background: #e50914; }
+.episode-pick-progress i { display: block; height: 100%; background: var(--lilac, #c8a2c8); }
 .episode-pick.with-thumb { min-height: 0; padding: 6px; }
 .episode-pick-thumb { position: relative; flex: none; width: 128px; height: 72px; border-radius: 6px; background: #ffffff14 center / cover no-repeat; overflow: hidden; }
 .episode-pick-thumb .episode-pick-progress { left: 0; right: 0; bottom: 0; border-radius: 0; background: #0008; }
