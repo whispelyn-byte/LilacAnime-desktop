@@ -396,7 +396,9 @@ async function openDetail(id) {
 }
 
 async function doSearch(query) {
-  query=query.trim(); if(!query)return; switchView('search'); $('#pageSearch').value=query; $('#searchStatus').textContent='검색 중...'; $('#searchGrid').replaceChildren();
+  query=query.trim(); if(!query)return; switchView('search'); $('#pageSearch').value=query;
+  // The page's title says what was searched (the header's search box, not one on the page, is where it was typed).
+  $('#searchView .page-head h1').textContent=`“${query}”`;$('#searchView .page-head p').textContent=''; $('#searchStatus').textContent='검색 중...'; $('#searchGrid').replaceChildren();
   $('#filterMore').classList.add('hidden');if(state.source==='linkkf')$('#searchStatus').textContent='Linkkf 전체 목록에서 검색 중... (처음 검색은 목록을 받느라 조금 걸립니다)';
   const searchToken=(doSearch.token||0)+1;
   const search=text=>PROVIDER_SOURCES.includes(state.source)?window.lilac.providerCatalog(state.source,text):state.source==='linkkf'?window.lilac.linkkfSearch(text):window.lilac.search(text);

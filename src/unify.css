@@ -113,3 +113,7 @@ dialog:not(#detailDialog), .player-settings { border-radius: var(--radius-panel)
 #playerSettings .ps-sources button.selected small { color: #1c1b1fb3; }
 /* The track boxes (Re:Anime 트랙, Anissia, Jimaku) keep a one-line tag. */
 #playerSettings .ps-box-note { display: block; margin: 2px 0 8px; color: #ffffff8c; font-size: 11px; }
+
+/* 검색: the header's search box does the searching; the page's own is there only when the window is narrow enough
+   to hide the header's (860px and below, see ott.css). */
+@media (min-width: 861px) { #searchView .big-search { display: none; } }
