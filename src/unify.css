@@ -1,0 +1,78 @@
+/* One look across the app (DESIGN.md), loaded last over the Android-port and OTT styles, which grew their own sizes:
+   - text buttons, chips and fields have 6px corners and one height (34px; the spotlight's and the work's main
+     buttons stay larger); panels, sheets and dialogs 10px; icon-only buttons are round;
+   - screen titles are 28px / 800 in the same place on every screen;
+   - one lilac focus ring;
+   - the player's controls and sheets are the app's: the same surfaces, corners and hover. */
+:root {
+  --radius-control: 6px;
+  --radius-panel: 10px;
+  --control-h: 34px;
+  --player-surface: #141416f2;
+  --player-line: #ffffff17;
+}
+
+/* Screen titles: 전체, 시청기록, 내 목록, 설정. */
+.page-head { padding: 24px 0 20px; }
+.page-head h1, #settingsView h1 { font-size: 28px; font-weight: 800; letter-spacing: -.025em; margin: 0 0 6px; }
+.page-head p { font-size: 13px; }
+
+/* Text buttons and chips. */
+:is(#searchView, #allView, #libraryView, #historyView) :is(.primary, .ghost),
+.changelog-dialog :is(.primary, .changelog-secondary),
+:is(.episode-order, .skip-chip, .sheet-button),
+#playerSettings :is(.ps-chips button, .ps-tabs button, button.selected),
+:is(.sort-chips, .library-tabs, .choice-row) button,
+:is(#searchButton, #scheduleToday, #scheduleRetry, #updateBannerAction, #psChooseFont, .source-notice button) { border-radius: var(--radius-control); }
+/* 설정's title sits in its own column, at the other screens' height. */
+#settingsView .settings-nav h1 { margin-top: 12px; }
+.changelog-dialog :is(.primary, .changelog-secondary) { min-height: var(--control-h); padding: 0 16px; font-size: 14px; font-weight: 600; }
+:is(#searchView, #allView, #libraryView) :is(.primary, .ghost) { min-height: var(--control-h); padding: 0 16px; font-size: 14px; font-weight: 600; }
+.episode-order { height: 30px; }
+
+/* Fields. */
+:is(input[type=text], input[type=password], input[type=search], input[type=number], input:not([type]), select, textarea):not(.player-seek) { border-radius: var(--radius-control); }
+
+/* Panels, sheets and dialogs. */
+dialog:not(#detailDialog), .player-settings { border-radius: var(--radius-panel); }
+
+/* Focus. */
+:is(button, a, input, select, textarea, [tabindex]):focus-visible { outline: 2px solid var(--lilac); outline-offset: 2px; }
+
+/* ---- Player ---------------------------------------------------------------------------------------------------- */
+
+/* Top bar: the work, then the episode and where it plays from; the status as a quiet tag. */
+.player-top h1 { font-size: 20px; font-weight: 800; letter-spacing: -.01em; }
+.player-top p { margin-top: 3px; color: #ffffffb3; font-size: 13px; font-weight: 600; }
+.player-status { align-self: center; padding: 5px 10px; border-radius: var(--radius-control); background: #ffffff14; color: #ffffffc4; font-size: 12px; font-weight: 600; }
+.player-status:empty { display: none; }
+
+/* Centre: the episode and 10-second buttons as one set of round glass buttons, 재생 the white one. */
+.player-center { gap: 28px; }
+:is(.player-episode, .player-skip) { width: 56px; height: 56px; border: 0; border-radius: 50%; background: #0000004d; color: #fff; backdrop-filter: blur(10px); transition: background .14s ease, transform .14s ease; }
+:is(.player-episode, .player-skip):hover:not(:disabled) { background: #ffffff29; }
+:is(.player-episode, .player-skip):active:not(:disabled) { transform: scale(.94); }
+:is(.player-episode, .player-skip) svg { width: 26px; height: 26px; }
+.player-episode:disabled { opacity: .35; cursor: default; }
+.player-play { width: 76px; height: 76px; background: #fff; box-shadow: 0 14px 40px #0009; transition: transform .14s ease; }
+.player-play:hover { transform: scale(1.04); }
+.player-play:active { transform: scale(.96); }
+
+/* Bottom: a slim lilac seek bar that grows under the pointer, the time, and the buttons in one row. */
+.player-seek { -webkit-appearance: none; appearance: none; height: 18px; background: transparent; --seek: 0%; }
+.player-seek::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: linear-gradient(90deg, var(--lilac) var(--seek), #ffffff40 var(--seek)); transition: height .14s ease; }
+.player-seek:hover::-webkit-slider-runnable-track { height: 6px; }
+.player-seek::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; margin-top: -5px; border: 2px solid #fff; border-radius: 50%; background: var(--lilac); box-shadow: 0 1px 6px #0008; transform: scale(0); transition: transform .14s ease, margin-top .14s ease; }
+.player-seek:hover::-webkit-slider-thumb, .player-seek:focus-visible::-webkit-slider-thumb { transform: scale(1); margin-top: -4px; }
+.player-bottom-row { margin-top: 8px; }
+#playerTime { font-size: 13px; font-weight: 600; color: #ffffffe0; }
+.player-actions { gap: 4px; }
+.player-actions .player-icon, .player-lock { width: 40px; height: 40px; }
+.player-actions .player-icon svg { width: 22px; height: 22px; }
+.player-top .player-icon { width: 40px; height: 40px; }
+.player-top .player-icon:hover { background: #ffffff1c; }
+
+/* Sheets (설정, 회차): the app's panel. */
+.player-settings { background: var(--player-surface); border-color: var(--player-line); box-shadow: 0 24px 64px #000c; }
+.player-settings .ps-head { border-color: var(--player-line); }
+.player-settings .ps-badge { border-radius: var(--radius-control); }
