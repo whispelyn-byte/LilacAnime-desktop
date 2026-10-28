@@ -56,7 +56,7 @@ let whisperRun = null;
 const whisperRunning = () => whisperRun && whisperRun.requestId === playbackRequestId;
 function whisperChip() { return $('#psSubtitleSources [data-source="whisper"] small'); }
 function showWhisperProgress(text) {
-  const chip = whisperChip(); if (chip) chip.textContent = text || '일본어 음성 → 번역';
+  const chip = whisperChip(); if (chip) chip.textContent = text || '음성 인식';
   if (whisperRunning() && text) $('#subtitleState').textContent = `Whisper ${text}`;
 }
 // A line as cue text, as electron/whisper.cjs writes it in the file (and the translator reads it back).
