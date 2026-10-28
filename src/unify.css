@@ -1,12 +1,14 @@
 /* One look across the app (DESIGN.md), loaded last over the Android-port and OTT styles, which grew their own sizes:
-   - text buttons, chips and fields have 6px corners and one height (34px; the spotlight's and the work's main
-     buttons stay larger); panels, sheets and dialogs 10px; icon-only buttons are round;
+   - round: text buttons and chips are pills with one height (34px; the spotlight's and the work's main buttons stay
+     larger), fields 12px, posters and cards 10px, panels, sheets and dialogs 18px; icon-only buttons are circles;
    - screen titles are 28px / 800 in the same place on every screen;
    - one lilac focus ring;
    - the player's controls and sheets are the app's: the same surfaces, corners and hover. */
 :root {
-  --radius-control: 6px;
-  --radius-panel: 10px;
+  --radius-control: 999px;
+  --radius-field: 12px;
+  --radius-panel: 18px;
+  --ott-radius: 10px;
   --control-h: 34px;
   --player-surface: #141416f2;
   --player-line: #ffffff17;
@@ -31,7 +33,12 @@
 .episode-order { height: 30px; }
 
 /* Fields. */
-:is(input[type=text], input[type=password], input[type=search], input[type=number], input:not([type]), select, textarea):not(.player-seek) { border-radius: var(--radius-control); }
+:is(input[type=text], input[type=password], input[type=search], input[type=number], input:not([type]), select, textarea):not(.player-seek) { border-radius: var(--radius-field); }
+
+/* The work's and the spotlight's buttons, the settings' cards. */
+:is(#homeView .hero-actions, #detailDialog .detail-actions) button { border-radius: var(--radius-control); }
+#settingsView :is(.setting-block, .setting-switch, .local-model) { border-radius: 14px; }
+#settingsView .settings-nav button { border-radius: var(--radius-control); }
 
 /* Panels, sheets and dialogs. */
 dialog:not(#detailDialog), .player-settings { border-radius: var(--radius-panel); }
@@ -44,7 +51,7 @@ dialog:not(#detailDialog), .player-settings { border-radius: var(--radius-panel)
 /* Top bar: the work, then the episode and where it plays from; the status as a quiet tag. */
 .player-top h1 { font-size: 20px; font-weight: 800; letter-spacing: -.01em; }
 .player-top p { margin-top: 3px; color: #ffffffb3; font-size: 13px; font-weight: 600; }
-.player-status { align-self: center; padding: 5px 10px; border-radius: var(--radius-control); background: #ffffff14; color: #ffffffc4; font-size: 12px; font-weight: 600; }
+.player-status { align-self: center; padding: 5px 12px; border-radius: var(--radius-control); background: #ffffff14; color: #ffffffc4; font-size: 12px; font-weight: 600; }
 .player-status:empty { display: none; }
 
 /* Centre: the episode and 10-second buttons as one set of round glass buttons, 재생 the white one. */
@@ -75,4 +82,27 @@ dialog:not(#detailDialog), .player-settings { border-radius: var(--radius-panel)
 /* Sheets (설정, 회차): the app's panel. */
 .player-settings { background: var(--player-surface); border-color: var(--player-line); box-shadow: 0 24px 64px #000c; }
 .player-settings .ps-head { border-color: var(--player-line); }
-.player-settings .ps-badge { border-radius: var(--radius-control); }
+.player-settings .ps-badge { border-radius: 50%; }
+
+/* 플레이어 설정, short: each option its name and its control, the explanations and the shortcut list left to the
+   settings page and tooltips; the tabs one segmented control; sections apart by space, not lines. */
+#playerSettings .ps-head small, #playerSettings .ps-note:not(.ps-playing):not(:empty), #playerSettings .ps-switch small,
+#playerSettings .ps-shortcuts, #playerSettings .ps-sources small { display: none; }
+#playerSettings .ps-head { padding: 14px 12px 12px 18px; }
+#playerSettings .ps-tabs { display: flex; gap: 2px; margin: 12px 16px 4px; padding: 3px; border-radius: var(--radius-control); background: #ffffff12; }
+#playerSettings .ps-tabs button { flex: 1; height: 30px; border: 0; border-radius: var(--radius-control); background: transparent; color: #ffffffb3; font-size: 13px; font-weight: 600; }
+#playerSettings .ps-tabs button.selected { background: #ffffff; color: #141416; }
+#playerSettings .ps-body { padding: 6px 0 16px; }
+#playerSettings .ps-section { margin: 0; padding: 8px 0; border: 0; }
+/* The chosen speed / step is the highlighted chip; the value under the name only repeated it. */
+#playerSettings .ps-speed > span > small { display: none; }
+#playerSettings .ps-group, #playerSettings .ps-label { margin: 14px 0 8px; color: #fff; font-size: 13px; font-weight: 600; }
+#playerSettings .ps-section > .ps-group:first-child { margin-top: 6px; }
+#playerSettings .ps-row, #playerSettings .ps-switch { padding: 6px 0; }
+#playerSettings .ps-row b, #playerSettings .ps-switch b { font-size: 13px; font-weight: 600; }
+#playerSettings .ps-chips { gap: 6px; }
+#playerSettings .ps-chips button { min-height: 30px; padding: 0 12px; border: 0; border-radius: var(--radius-control); background: #ffffff14; color: #ffffffe0; font-size: 12px; font-weight: 600; }
+#playerSettings .ps-chips button:hover { background: #ffffff24; }
+#playerSettings .ps-chips button.selected { background: var(--lilac); color: #1c1b1f; }
+#playerSettings .sheet-button { min-height: 32px; padding: 0 14px; border-radius: var(--radius-control); }
+#playerSettings .ps-sync-input input { border-radius: var(--radius-field); }
