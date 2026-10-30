@@ -1,0 +1,659 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LilacAnime Desktop</title>
+<meta name="description" content="여러 사이트의 애니를 한 화면에서 찾아 보고, 한국어 자막을 자동으로 찾아 입히고, 없으면 AI로 번역해 주는 Windows · macOS · Linux 데스크톱 앱.">
+<meta property="og:title" content="LilacAnime Desktop">
+<meta property="og:description" content="애니 찾기부터 한국어 자막, 번역, 오프라인 저장까지 한 앱에서.">
+<meta property="og:image" content="assets/home.jpg">
+<meta name="theme-color" content="#121212">
+<link rel="icon" href="assets/icon.png">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<style>
+  :root {
+    --primary: #C8A2C8;
+    --primary-dark: #9A7B9A;
+    --bg: #121212;
+    --surface: #1E1E1E;
+    --surface-2: #181818;
+    --line: rgba(255,255,255,.08);
+    --text: #F2F0F3;
+    --muted: #A9A3AC;
+    --gutter: max(16px, 4vw);
+    --radius: 10px;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 72px; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI Variable", "Pretendard Variable", Pretendard, -apple-system, sans-serif;
+    font-size: 16px;
+    line-height: 1.65;
+    word-break: keep-all;
+    -webkit-font-smoothing: antialiased;
+  }
+  img { display: block; max-width: 100%; }
+  a { color: inherit; }
+  .wrap { width: 100%; max-width: 1240px; margin: 0 auto; padding: 0 var(--gutter); }
+  .icon { width: 18px; height: 18px; flex: none; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* Header */
+  header {
+    position: fixed; inset: 0 0 auto; z-index: 10;
+    transition: background-color 200ms ease-out, border-color 200ms ease-out;
+    border-bottom: 1px solid transparent;
+  }
+  header.solid { background: rgba(18,18,18,.92); backdrop-filter: blur(12px); border-color: var(--line); }
+  .nav { display: flex; align-items: center; gap: 32px; height: 64px; }
+  .logo { display: flex; flex: none; }
+  .logo img { height: 26px; width: auto; }
+  .nav ul { display: flex; gap: 24px; list-style: none; margin: 0; padding: 0; }
+  .nav ul a { text-decoration: none; color: var(--muted); font-weight: 600; font-size: 15px; transition: color 140ms; }
+  .nav ul a:hover { color: var(--text); }
+  .nav .gh { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; text-decoration: none; font-weight: 600; font-size: 14px; color: var(--muted); transition: color 140ms; }
+  .nav .gh:hover { color: var(--text); }
+
+  /* Buttons */
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+    height: 48px; padding: 0 24px; border-radius: 6px;
+    font: inherit; font-weight: 700; font-size: 16px; text-decoration: none;
+    border: 0; cursor: pointer; transition: background-color 140ms, transform 140ms;
+  }
+  .btn:active { transform: scale(.98); }
+  .btn-primary { background: #fff; color: #111; }
+  .btn-primary:hover { background: #e9e6ea; }
+  .btn-ghost { background: rgba(255,255,255,.12); color: var(--text); }
+  .btn-ghost:hover { background: rgba(255,255,255,.2); }
+  :focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; border-radius: 6px; }
+
+  /* Hero */
+  .hero { position: relative; overflow: hidden; padding: 140px 0 96px; }
+  .hero::before {
+    content: ""; position: absolute; inset: -20% -10% auto auto; width: 70%; height: 120%;
+    background: radial-gradient(closest-side, rgba(200,162,200,.22), transparent 70%);
+    pointer-events: none;
+  }
+  .hero-grid { position: relative; display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 56px; align-items: center; }
+  .kicker { display: flex; align-items: center; gap: 12px; color: var(--primary); font-weight: 700; font-size: 14px; margin-bottom: 18px; }
+  .kicker i { width: 28px; height: 1px; background: var(--muted); opacity: .6; }
+  .kicker em { font-style: normal; color: var(--muted); font-weight: 600; }
+  h1 { font-size: clamp(38px, 5.2vw, 64px); line-height: 1.12; font-weight: 900; letter-spacing: -0.02em; margin: 0 0 22px; }
+  .lead { color: #D3CFD5; font-size: 18px; margin: 0 0 32px; max-width: 34em; }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; }
+  .alt-dl { margin-top: 18px; font-size: 14px; color: var(--muted); }
+  .alt-dl a { color: var(--muted); text-underline-offset: 3px; transition: color 140ms; }
+  .alt-dl a:hover { color: var(--text); }
+
+  .shot {
+    border-radius: var(--radius); overflow: hidden; background: var(--surface);
+    border: 1px solid var(--line);
+    box-shadow: 0 30px 80px -20px rgba(0,0,0,.7), 0 0 0 1px rgba(0,0,0,.4);
+  }
+  .shot .bar { display: flex; gap: 6px; padding: 10px 12px; background: #1a1a1a; border-bottom: 1px solid var(--line); }
+  .shot .bar i { width: 10px; height: 10px; border-radius: 50%; background: #3a3a3a; }
+  .shot img { width: 100%; height: auto; aspect-ratio: 16 / 10; object-fit: cover; }
+  .shot img.wide { aspect-ratio: 16 / 9; }
+
+  /* Sections */
+  section { padding: 88px 0; }
+  .sec-title { display: flex; align-items: center; gap: 14px; font-size: clamp(26px, 3vw, 34px); font-weight: 800; letter-spacing: -0.01em; margin: 0 0 12px; }
+  .sec-title::before { content: ""; width: 4px; height: 1.05em; border-radius: 2px; background: var(--primary); }
+  .sec-lead { color: var(--muted); margin: 0 0 48px; max-width: 46em; }
+
+  .feature { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr); gap: 56px; align-items: center; padding: 40px 0; }
+  .feature + .feature { border-top: 1px solid var(--line); }
+  .feature.flip .copy { order: 2; }
+  .feature h3 { font-size: 24px; font-weight: 800; margin: 0 0 12px; line-height: 1.35; }
+  .feature p { color: #CFCAD1; margin: 0 0 16px; }
+  .feature ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+  .feature li { display: flex; gap: 10px; color: var(--muted); font-size: 15px; }
+  .feature li .icon { margin-top: 4px; color: var(--primary); width: 16px; height: 16px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+  .chip { padding: 4px 12px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); font-size: 14px; font-weight: 600; color: #DDD8DF; }
+
+  /* Subtitle order */
+  .steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; counter-reset: step; list-style: none; margin: 0; padding: 0; }
+  .steps li { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 24px 22px; counter-increment: step; }
+  .steps li::before { content: counter(step, decimal-leading-zero); display: block; font-weight: 800; font-size: 14px; color: var(--primary); margin-bottom: 12px; }
+  .steps h4 { margin: 0 0 8px; font-size: 17px; font-weight: 700; }
+  .steps p { margin: 0; color: var(--muted); font-size: 14.5px; }
+  .providers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 16px; }
+  .providers div { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px 22px; }
+  .providers h5 { margin: 0 0 10px; font-size: 14px; color: var(--muted); font-weight: 600; }
+
+  /* Sources table */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; min-width: 640px; }
+  th, td { text-align: left; padding: 14px 18px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 13.5px; background: var(--surface-2); }
+  tr:last-child td { border-bottom: 0; }
+  td:first-child { font-weight: 700; white-space: nowrap; }
+  td { color: #D6D1D8; }
+
+  /* Install */
+  .tabs { display: inline-flex; gap: 4px; padding: 4px; background: var(--surface); border-radius: 8px; border: 1px solid var(--line); margin-bottom: 24px; }
+  .tabs button { font: inherit; font-weight: 600; font-size: 15px; height: 36px; padding: 0 18px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; transition: background-color 140ms, color 140ms; }
+  .tabs button[aria-selected="true"] { background: var(--primary); color: #1b141b; }
+  .tabs button:hover:not([aria-selected="true"]) { color: var(--text); }
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 32px; }
+  .panel[hidden] { display: none; }
+  .panel .dl { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 28px; }
+  .panel ol { margin: 0; padding-left: 1.3em; display: grid; gap: 10px; color: #D6D1D8; }
+  .panel ol li::marker { color: var(--primary); font-weight: 700; }
+  .panel .note { margin: 20px 0 0; color: var(--muted); font-size: 14.5px; }
+  code { font-family: "Cascadia Code", Consolas, monospace; font-size: .9em; background: rgba(255,255,255,.08); padding: 2px 6px; border-radius: 4px; color: #EDE6EE; }
+
+  /* TMDB */
+  .tmdb { background: linear-gradient(180deg, rgba(200,162,200,.07), transparent 70%); border-top: 1px solid rgba(200,162,200,.18); }
+  .badge { display: inline-block; margin-bottom: 14px; padding: 4px 12px; border-radius: 999px; background: var(--primary); color: #1b141b; font-weight: 800; font-size: 13px; }
+  .sec-lead b { color: var(--text); }
+  .tmdb-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-bottom: 24px; }
+  .tmdb-step { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 26px 28px; }
+  .step-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+  .step-head h3 { margin: 0; font-size: 20px; font-weight: 800; }
+  .step-no { width: 30px; height: 30px; border-radius: 50%; background: var(--primary); color: #1b141b; font-weight: 800; display: grid; place-items: center; flex: none; }
+  .tmdb-step ol, ol.num { margin: 0; padding-left: 1.3em; display: grid; gap: 10px; color: #D6D1D8; }
+  .tmdb-step ol li::marker, ol.num li::marker { color: var(--primary); font-weight: 800; }
+  .tmdb-step a, .guide-panel a, .faq a { color: var(--primary); text-underline-offset: 3px; }
+  .hint { margin: 16px 0 0; color: var(--muted); font-size: 14.5px; }
+  .tmdb-shot { margin: 0; }
+  .faq { margin-top: 16px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); }
+  .faq summary { cursor: pointer; padding: 18px 24px; font-weight: 700; list-style: none; display: flex; align-items: center; justify-content: space-between; }
+  .faq summary::-webkit-details-marker { display: none; }
+  .faq summary::after { content: ""; width: 9px; height: 9px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(45deg) translateY(-3px); transition: transform 200ms ease-out; }
+  .faq[open] summary::after { transform: rotate(-135deg) translateY(-3px); }
+  .faq dl { margin: 0; padding: 0 24px 22px; display: grid; gap: 4px; }
+  .faq dt { font-weight: 700; margin-top: 12px; font-size: 15px; }
+  .faq dd { margin: 0; color: var(--muted); font-size: 14.5px; }
+
+  /* Guide */
+  .guide { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 32px; align-items: start; }
+  .guide-tabs { display: flex; flex-direction: column; gap: 4px; position: sticky; top: 88px; }
+  .guide-tabs button { position: relative; text-align: left; font: inherit; font-weight: 600; font-size: 15px; padding: 10px 14px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; transition: background-color 140ms, color 140ms; }
+  .guide-tabs button:hover { color: var(--text); }
+  .guide-tabs button[aria-selected="true"] { background: var(--surface); color: var(--text); }
+  .guide-tabs button[aria-selected="true"]::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px; border-radius: 2px; background: var(--primary); }
+  .guide-panel[hidden] { display: none; }
+  .guide-panel .shot { margin-bottom: 24px; }
+  .guide-panel > p { color: #D6D1D8; margin: 0 0 12px; }
+  kbd { font: 600 .85em "Cascadia Code", Consolas, monospace; padding: 1px 6px; border-radius: 4px; border: 1px solid rgba(255,255,255,.2); background: rgba(255,255,255,.06); }
+
+  /* Footer */
+  footer { border-top: 1px solid var(--line); padding: 48px 0 64px; color: var(--muted); font-size: 14px; }
+  footer .cols { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 32px; }
+  footer p { margin: 0 0 8px; }
+  footer a { color: #D6D1D8; text-underline-offset: 3px; }
+  footer .tmdb { margin-top: 24px; font-size: 13px; opacity: .8; }
+
+  /* Reveal */
+  .reveal { opacity: 0; transform: translateY(14px); transition: opacity 320ms ease-out, transform 320ms ease-out; }
+  .reveal.in { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .reveal { opacity: 1; transform: none; transition: none; }
+    .btn, header { transition: none; }
+  }
+
+  @media (max-width: 1100px) {
+    .hero-grid { grid-template-columns: 1fr; gap: 48px; }
+    .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (max-width: 860px) {
+    .nav ul { display: none; }
+    .hero { padding: 112px 0 64px; }
+    section { padding: 64px 0; }
+    .feature, .feature.flip { grid-template-columns: 1fr; gap: 24px; }
+    .feature.flip .copy { order: 0; }
+    .providers { grid-template-columns: 1fr; }
+    .panel { padding: 22px; }
+    .tmdb-grid { grid-template-columns: 1fr; }
+    .tmdb-step { padding: 22px; }
+    .guide { grid-template-columns: 1fr; gap: 20px; }
+    .guide-tabs { position: static; flex-direction: row; overflow-x: auto; margin: 0 calc(var(--gutter) * -1); padding: 0 var(--gutter) 4px; scrollbar-width: none; }
+    .guide-tabs button { flex: none; white-space: nowrap; }
+    .guide-tabs button[aria-selected="true"]::before { left: 14px; right: 14px; top: auto; bottom: 2px; width: auto; height: 2px; }
+  }
+  @media (max-width: 560px) {
+    .steps { grid-template-columns: 1fr; }
+    .cta .btn { flex: 1 1 100%; }
+    .tabs { display: flex; }
+    .tabs button { flex: 1; padding: 0 8px; }
+    .nav .gh span { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-github" viewBox="0 0 24 24"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.9a3.4 3.4 0 0 0-.9-2.6c3.1-.3 6.4-1.5 6.4-7a5.4 5.4 0 0 0-1.5-3.8 5 5 0 0 0-.1-3.8s-1.2-.3-3.9 1.5a13.4 13.4 0 0 0-7 0C6.3 1.6 5.1 1.9 5.1 1.9a5 5 0 0 0-.1 3.8A5.4 5.4 0 0 0 3.5 9.5c0 5.4 3.3 6.6 6.4 7a3.4 3.4 0 0 0-.9 2.6V22"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="m10.7 12.3 9.8-9.8"/><path d="m16 7 3 3"/><path d="m19 4 2 2"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+</svg>
+
+<header id="top">
+  <div class="wrap nav">
+    <a class="logo" href="#top"><img src="assets/logo.png" width="379" height="104" alt="LilacAnime"></a>
+    <ul>
+      <li><a href="#features">기능</a></li>
+      <li><a href="#install">설치</a></li>
+      <li><a href="#tmdb">TMDB 키</a></li>
+      <li><a href="#guide">사용법</a></li>
+      <li><a href="#sources">콘텐츠 소스</a></li>
+    </ul>
+    <a class="gh" href="https://github.com/whispelyn-byte/LilacAnime-desktop"><svg class="icon"><use href="#i-github"/></svg><span>GitHub</span></a>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <div class="kicker">데스크톱용 LilacAnime <i></i><em id="version">Windows · macOS · Linux</em></div>
+        <h1>애니 찾기부터<br>한국어 자막까지,<br>한 화면에서.</h1>
+        <p class="lead">여러 사이트의 애니를 한곳에서 찾아 보고, 한국어 자막을 알아서 찾아 입힙니다. 자막이 없으면 일본어·영어 자막을 한국어로 번역해 드립니다.</p>
+        <div class="cta">
+          <a class="btn btn-primary" id="primary-dl" href="https://github.com/whispelyn-byte/LilacAnime-desktop/releases/latest/download/LilacAnime-Setup.exe">
+            <svg class="icon"><use href="#i-download"/></svg><span>Windows용 받기</span>
+          </a>
+          <a class="btn btn-ghost" href="#tmdb">처음 설정하기</a>
+        </div>
+        <p class="alt-dl">무료 · <a href="#install">다른 운영체제</a> · <a href="https://github.com/whispelyn-byte/LilacAnime-desktop/releases">모든 릴리즈</a> · <a href="https://github.com/dream150/LilacAnime">Android 원작</a></p>
+      </div>
+      <div class="shot">
+        <div class="bar"><i></i><i></i><i></i></div>
+        <img src="assets/home.jpg" width="1440" height="900" alt="LilacAnime 홈 화면: 이번 시즌 추천과 신작 목록">
+      </div>
+    </div>
+  </section>
+
+  <section id="features">
+    <div class="wrap">
+      <h2 class="sec-title">주요 기능</h2>
+      <p class="sec-lead">Android LilacAnime의 기능과 용어는 그대로, 화면은 넓은 데스크톱에 맞게 옮겼습니다.</p>
+
+      <article class="feature reveal">
+        <div class="copy">
+          <h3>여러 사이트를 한 곳에서</h3>
+          <p>영어 제목 사이트의 작품도 한국어 제목으로 보여 주고, 한국어로 검색합니다. TMDB 키를 넣으면 줄거리까지 한국어로 나옵니다.</p>
+          <div class="chips">
+            <span class="chip">RE:Anime</span><span class="chip">Miruro</span><span class="chip">Animenosub</span>
+            <span class="chip">애니24</span><span class="chip">링크애니</span><span class="chip">Linkkf</span>
+          </div>
+        </div>
+        <div class="shot"><img src="assets/detail.jpg" width="1440" height="900" alt="작품 상세 화면: 회차 목록과 이어보기" loading="lazy"></div>
+      </article>
+
+      <article class="feature flip reveal">
+        <div class="copy">
+          <h3>한국어 자막은 알아서</h3>
+          <p>사이트의 한국어 트랙, Kairan · Csora · Anissia 블로그 자막을 동시에 찾아 바로 입힙니다. 따로 할 일은 없습니다.</p>
+          <ul>
+            <li><svg class="icon"><use href="#i-check"/></svg>자막 크기 · 위치 · 싱크 · 글꼴 조절</li>
+            <li><svg class="icon"><use href="#i-check"/></svg>OP/ED 건너뛰기, 다음 화 자동 재생</li>
+            <li><svg class="icon"><use href="#i-check"/></svg>이어보기 · 스크린샷 · 키보드 단축키</li>
+          </ul>
+        </div>
+        <div class="shot"><img src="assets/player.jpg" width="1440" height="900" alt="재생 화면: Anissia 한국어 자막이 입혀진 장면" loading="lazy"></div>
+      </article>
+
+      <article class="feature reveal">
+        <div class="copy">
+          <h3>없으면 AI가 번역</h3>
+          <p>Jimaku 일본어 자막이나 사이트의 일본어·영어 트랙을 번역합니다. 보고 있는 장면부터 번역해 번역된 줄은 바로 한국어로 바뀌고, 다음 화는 보는 동안 미리 번역해 둡니다.</p>
+          <ul>
+            <li><svg class="icon"><use href="#i-check"/></svg>번역 API: Gemini · OpenAI · DeepL · Qwen · Claude</li>
+            <li><svg class="icon"><use href="#i-check"/></svg>내 PC의 로컬 AI: Gemma 4 · Aya · Hy-MT2</li>
+          </ul>
+        </div>
+        <div class="shot"><img src="assets/settings-translate.jpg" width="1440" height="900" alt="설정 > 자막 자동 번역: 로컬 AI 모델 목록" loading="lazy"></div>
+      </article>
+
+      <article class="feature flip reveal">
+        <div class="copy">
+          <h3>내려받아 오프라인으로</h3>
+          <p>회차를 자막 · OP/ED 구간까지 함께 저장해 인터넷 없이도 그대로 봅니다. 외장하드로 옮겨도 저장 폴더만 바꾸면 다시 이어집니다.</p>
+        </div>
+        <div class="shot"><img src="assets/downloads.jpg" width="1440" height="900" alt="내 목록 > 다운로드: 작품별로 묶인 회차" loading="lazy"></div>
+      </article>
+
+      <article class="feature reveal">
+        <div class="copy">
+          <h3>휴대폰과 이어서 보기</h3>
+          <p>내 목록과 시청 기록(이어 보기 위치 포함)을 Android 앱과 맞춥니다. 데이터는 내가 직접 만든 서버에만 저장됩니다.</p>
+          <ul>
+            <li><svg class="icon"><use href="#i-check"/></svg><span><a href="https://github.com/whispelyn-byte/LilacAnime-server">LilacAnime 서버</a>를 Vercel에 한 번 배포</span></li>
+            <li><svg class="icon"><use href="#i-check"/></svg>앱을 열 때, 5분마다, 바뀐 직후 자동 동기화</li>
+          </ul>
+        </div>
+        <div class="shot"><img src="assets/guide-sync.jpg" width="1440" height="900" alt="설정 > 기기 동기화" loading="lazy"></div>
+      </article>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="wrap">
+      <h2 class="sec-title">설치</h2>
+      <p class="sec-lead">설치한 뒤에는 새 버전이 나오면 앱이 알려 주고, 설정 &gt; 업데이트 · 정보에서 바로 받을 수 있습니다.</p>
+
+      <div class="tabs" role="tablist" aria-label="운영체제">
+        <button role="tab" id="tab-win" aria-controls="p-win" aria-selected="true">Windows</button>
+        <button role="tab" id="tab-mac" aria-controls="p-mac" aria-selected="false" tabindex="-1">macOS</button>
+        <button role="tab" id="tab-linux" aria-controls="p-linux" aria-selected="false" tabindex="-1">Linux</button>
+      </div>
+
+      <div class="panel" id="p-win" role="tabpanel" aria-labelledby="tab-win">
+        <div class="dl">
+          <a class="btn btn-primary" href="https://github.com/whispelyn-byte/LilacAnime-desktop/releases/latest/download/LilacAnime-Setup.exe"><svg class="icon"><use href="#i-download"/></svg>LilacAnime-Setup.exe</a>
+        </div>
+        <ol>
+          <li>받은 설치 파일을 실행합니다. Windows 10 / 11을 지원합니다.</li>
+          <li>설치 위치를 고르고 설치합니다. 바탕 화면에 바로가기가 생깁니다.</li>
+        </ol>
+      </div>
+
+      <div class="panel" id="p-mac" role="tabpanel" aria-labelledby="tab-mac" hidden>
+        <div class="dl">
+          <a class="btn btn-primary" href="https://github.com/whispelyn-byte/LilacAnime-desktop/releases/latest/download/LilacAnime-mac-arm64.dmg"><svg class="icon"><use href="#i-download"/></svg>Apple Silicon (M1 이상)</a>
+          <a class="btn btn-ghost" href="https://github.com/whispelyn-byte/LilacAnime-desktop/releases/latest/download/LilacAnime-mac-x64.dmg"><svg class="icon"><use href="#i-download"/></svg>Intel</a>
+        </div>
+        <ol>
+          <li>Apple 메뉴 &gt; 이 Mac에 관하여에서 칩을 확인하고 맞는 파일을 받습니다.</li>
+          <li>받은 <code>.dmg</code>를 열고 LilacAnime을 응용 프로그램 폴더로 끌어 놓습니다.</li>
+          <li>처음 열 때 "악성 코드가 없음을 확인할 수 없습니다"가 나오면 <b>완료</b>를 누른 뒤 시스템 설정 &gt; 개인정보 보호 및 보안의 <b>그래도 열기</b>를 누릅니다.</li>
+        </ol>
+        <p class="note">그래도 열리지 않으면 터미널에서 <code>xattr -cr /Applications/LilacAnime.app</code>을 실행한 뒤 다시 엽니다.</p>
+      </div>
+
+      <div class="panel" id="p-linux" role="tabpanel" aria-labelledby="tab-linux" hidden>
+        <div class="dl">
+          <a class="btn btn-primary" href="https://github.com/whispelyn-byte/LilacAnime-desktop/releases/latest/download/LilacAnime-linux-amd64.deb"><svg class="icon"><use href="#i-download"/></svg>.deb (x64)</a>
+          <a class="btn btn-ghost" href="https://github.com/whispelyn-byte/LilacAnime-desktop/releases/latest/download/LilacAnime-linux-arm64.deb"><svg class="icon"><use href="#i-download"/></svg>arm64</a>
+        </div>
+        <ol>
+          <li>Ubuntu · Debian · Linux Mint 등 .deb를 쓰는 배포판에서 설치할 수 있습니다.</li>
+          <li>터미널에서 설치합니다: <code>sudo apt install ./LilacAnime-linux-amd64.deb</code> (arm64면 그 파일 이름). 앱 메뉴에 LilacAnime이 생깁니다.</li>
+        </ol>
+        <p class="note">지우려면 <code>sudo apt remove lilacanime-desktop</code>. 한국어 자막에는 <code>fonts-noto-cjk</code> 또는 <code>fonts-nanum</code>을 권장합니다.</p>
+      </div>
+
+    </div>
+  </section>
+
+  <section id="tmdb" class="tmdb">
+    <div class="wrap">
+      <div class="badge">설치하고 가장 먼저</div>
+      <h2 class="sec-title">TMDB 키 넣기</h2>
+      <p class="sec-lead"><b>한국어 자막을 찾는 데 가장 중요한 설정입니다.</b> RE:Anime · Miruro · Animenosub는 작품 제목이 영어라서, 한국어 자막(Kairan · Csora · Anissia)을 찾으려면 한국어 제목을 알아야 합니다. TMDB 키가 있으면 훨씬 많은 작품의 한국어 제목을 찾아 자막이 더 많이 붙고, 제목과 줄거리도 한국어로 나옵니다. 키는 무료이고 PC 브라우저로 5분쯤 걸립니다.</p>
+
+      <div class="tmdb-grid">
+        <div class="tmdb-step reveal">
+          <div class="step-head"><span class="step-no">1</span><h3>TMDB에서 키 받기</h3></div>
+          <ol>
+            <li><a href="https://www.themoviedb.org/signup">themoviedb.org에 가입</a>하고, 받은 메일의 링크를 눌러 인증합니다.</li>
+            <li>로그인한 뒤 <a href="https://www.themoviedb.org/settings/api">설정 &gt; API</a>로 갑니다.</li>
+            <li><b>Create / Request an API Key</b>를 누르고 <b>Developer</b>를 고른 뒤 약관에 동의합니다.</li>
+            <li>신청서를 채웁니다. 용도는 개인(Personal), 앱 이름은 <code>LilacAnime</code>, 주소는 아무 주소(예: GitHub 주소), 설명은 "개인용 애니 제목 검색"이면 됩니다.</li>
+            <li>바로 나오는 <b>API 키</b>(영문 · 숫자 32자)를 복사합니다. 그 아래 긴 <b>읽기 액세스 토큰</b>을 써도 됩니다.</li>
+          </ol>
+          <p class="hint">TMDB 신청 화면은 휴대폰에서 잘 안 되니 PC로 해 주세요.</p>
+        </div>
+        <div class="tmdb-step reveal">
+          <div class="step-head"><span class="step-no">2</span><h3>앱에 넣기</h3></div>
+          <ol>
+            <li>오른쪽 위 <b>설정</b>(톱니바퀴)을 누릅니다.</li>
+            <li>왼쪽에서 <b>한국어 제목 검색</b>을 고릅니다.</li>
+            <li><b>TMDB API 키</b> 칸에 붙여 넣고 <b>저장</b>을 누릅니다. "TMDB API 키를 사용 중입니다"가 나오면 성공입니다.</li>
+            <li>아래 칸에서 한국어 제목을 찾아 갑니다. 처음엔 몇 분 걸리고, 그동안에도 앱은 그대로 쓸 수 있습니다.</li>
+          </ol>
+        </div>
+      </div>
+
+      <figure class="shot tmdb-shot reveal">
+        <img src="assets/guide-tmdb.jpg" width="1440" height="900" alt="설정 > 한국어 제목 검색: 1 설정 버튼, 2 한국어 제목 검색, 3 TMDB API 키 입력과 저장, 4 한국어 제목 진행 상황" loading="lazy">
+      </figure>
+
+      <details class="faq reveal">
+        <summary>잘 안 될 때</summary>
+        <dl>
+          <dt>"저장하지 못했습니다" · "TMDB API 키나 사용 권한을 확인해 주세요"</dt>
+          <dd>키를 앞뒤 공백 없이 다시 복사해 넣어 보세요. API 키 대신 읽기 액세스 토큰을 넣어도 됩니다.</dd>
+          <dt>"TMDB에 연결하지 못했어요" · "응답 시간이 초과됐어요"</dt>
+          <dd>인터넷이나 TMDB 서버 문제입니다. 앱이 켜져 있으면 30분 뒤 알아서 다시 시도합니다.</dd>
+          <dt>"TMDB 요청 제한으로 잠시 쉬는 중"</dt>
+          <dd>정상입니다. 잠시 기다렸다가 이어서 찾습니다.</dd>
+          <dt>숫자가 전체 작품 수까지 안 올라가요</dt>
+          <dd>표시되는 숫자는 진행률이 아니라 한국어 제목을 찾은 작품 수입니다. 한국어 제목이 없는 작품도 있어서 정상입니다.</dd>
+        </dl>
+      </details>
+    </div>
+  </section>
+
+  <section id="guide">
+    <div class="wrap">
+      <h2 class="sec-title">사용법</h2>
+      <p class="sec-lead">화면 속 번호가 아래 순서와 같습니다.</p>
+
+      <div class="guide">
+        <div class="guide-tabs" role="tablist" aria-label="사용법">
+          <button role="tab" id="g-watch" aria-controls="gp-watch" aria-selected="true">애니 찾기</button>
+          <button role="tab" id="g-detail" aria-controls="gp-detail" aria-selected="false" tabindex="-1">회차 재생 · 저장</button>
+          <button role="tab" id="g-sub" aria-controls="gp-sub" aria-selected="false" tabindex="-1">자막 고르기</button>
+          <button role="tab" id="g-style" aria-controls="gp-style" aria-selected="false" tabindex="-1">자막 크기 · 싱크</button>
+          <button role="tab" id="g-trans" aria-controls="gp-trans" aria-selected="false" tabindex="-1">번역 시작하기</button>
+          <button role="tab" id="g-off" aria-controls="gp-off" aria-selected="false" tabindex="-1">오프라인으로 보기</button>
+          <button role="tab" id="g-sync" aria-controls="gp-sync" aria-selected="false" tabindex="-1">휴대폰과 동기화</button>
+        </div>
+
+        <div class="guide-panel" id="gp-watch" role="tabpanel" aria-labelledby="g-watch">
+          <div class="shot"><img src="assets/guide-home.jpg" width="1440" height="900" alt="홈 화면: 1 검색창, 2 이번 시즌 추천, 3 전체" loading="lazy"></div>
+          <ol class="num">
+            <li>위쪽 검색창에 제목을 <b>한국어로</b> 입력하고 Enter를 누릅니다.</li>
+            <li>또는 <b>이번 시즌 추천</b>에서 고릅니다. 작은 포스터는 그 작품으로 바꾸고, 큰 포스터는 작품 화면을 엽니다.</li>
+            <li><b>전체 &gt; 상세 필터</b>에서 장르 · 연도 · 상태 같은 조건으로 찾아봅니다.</li>
+          </ol>
+        </div>
+
+        <div class="guide-panel" id="gp-detail" role="tabpanel" aria-labelledby="g-detail" hidden>
+          <div class="shot"><img src="assets/guide-detail.jpg" width="1440" height="900" alt="작품 화면: 1 재생, 2 회차, 3 회차 저장, 4 전체 저장" loading="lazy"></div>
+          <ol class="num">
+            <li><b>○화 재생</b>은 첫 화부터, 본 적이 있으면 <b>이어보기</b>로 멈춘 곳부터 재생합니다.</li>
+            <li>보고 싶은 회차를 골라 눌러도 됩니다.</li>
+            <li>회차 옆 버튼은 그 회차만 내려받습니다. 받은 회차는 휴지통 버튼으로 지웁니다.</li>
+            <li><b>전체 저장</b>은 모든 회차를 내려받습니다.</li>
+          </ol>
+          <p class="hint">자막은 앱이 알아서 찾아 입힙니다. 홈의 이어서 보기나 위쪽 시청기록에서 멈춘 곳부터 이어집니다.</p>
+        </div>
+
+        <div class="guide-panel" id="gp-sub" role="tabpanel" aria-labelledby="g-sub" hidden>
+          <div class="shot"><img src="assets/guide-player-subtitle.jpg" width="1440" height="900" alt="플레이어 설정 > 자막: 1 설정 버튼, 2 자막 탭, 3 자막 가져올 곳, 4 자막 제작자, 5 다시 찾기와 파일 열기" loading="lazy"></div>
+          <ol class="num">
+            <li>재생 화면 오른쪽 위의 <b>플레이어 설정</b>을 누릅니다.</li>
+            <li><b>자막</b> 탭을 엽니다.</li>
+            <li><b>자막 가져올 곳:</b> 다른 블로그를 골라 보거나, 다른 회차 자막이 나오면 <b>AI 번역</b>을 누릅니다.</li>
+            <li><b>자막 제작자 · 트랙:</b> 다른 분의 자막이나 사이트의 다른 언어 트랙으로 바꿉니다.</li>
+            <li><b>한국어 자막 다시 찾기</b> · <b>내 PC의 자막 파일 열기</b>(ASS · SSA · SRT · VTT · SMI)</li>
+          </ol>
+        </div>
+
+        <div class="guide-panel" id="gp-style" role="tabpanel" aria-labelledby="g-style" hidden>
+          <div class="shot"><img src="assets/guide-player-style.jpg" width="1440" height="900" alt="플레이어 설정 > 자막 모양: 1 탭, 2 크기와 높이, 3 타이밍, 4 글꼴" loading="lazy"></div>
+          <ol class="num">
+            <li>플레이어 설정에서 <b>자막 모양</b> 탭을 엽니다.</li>
+            <li><b>자막 크기 · 줄 간격 · 높이:</b> 막대를 끌어 바꿉니다.</li>
+            <li><b>자막 타이밍:</b> 자막이 늦으면 <b>빠르게</b>, 먼저 나오면 <b>늦게</b>. 보면서 <kbd>Z</kbd> · <kbd>X</kbd> 키로도 바꿉니다.</li>
+            <li><b>글꼴:</b> 내 PC의 글꼴 파일(TTF · OTF)을 고르면 자막이 그 글꼴로 나옵니다.</li>
+          </ol>
+          <p class="hint">싱크가 어긋나면 앱이 영상 음성에 맞춰 자동으로 맞춥니다. 플레이어 위 알림의 되돌리기로 원래대로 돌아갈 수 있어요.</p>
+        </div>
+
+        <div class="guide-panel" id="gp-trans" role="tabpanel" aria-labelledby="g-trans" hidden>
+          <div class="shot"><img src="assets/guide-settings-translate.jpg" width="1440" height="900" alt="설정 > 자막 자동 번역: 1 번역 API, 2 API 키, 3 로컬 AI 모델" loading="lazy"></div>
+          <p>한국어 자막이 없는 작품도 보려면 둘 중 하나만 준비하면 됩니다.</p>
+          <ol class="num">
+            <li><b>번역 API (추천: Gemini, 무료):</b> 설정 &gt; <b>자막 자동 번역</b>에서 <b>Gemini</b>를 고릅니다.</li>
+            <li><a href="https://aistudio.google.com/apikey">Google AI Studio</a>에서 <b>Create API key</b>로 만든 키를 붙여 넣고 <b>저장</b>합니다.</li>
+            <li><b>로컬 AI (인터넷 없이):</b> <b>Gemma 4 E4B</b>의 <b>받기</b>를 누릅니다(5.2GB). 다 받으면 <b>사용 중</b>으로 바뀝니다.</li>
+          </ol>
+          <p class="hint">준비가 되면 한국어 자막이 없는 회차를 열기만 하면 됩니다. 보고 있는 장면부터 번역해 몇 초 뒤면 대사가 한국어로 바뀝니다.</p>
+        </div>
+
+        <div class="guide-panel" id="gp-off" role="tabpanel" aria-labelledby="g-off" hidden>
+          <div class="shot"><img src="assets/guide-downloads.jpg" width="1440" height="900" alt="내 목록 > 다운로드 완료: 1 내 목록, 2 다운로드 완료 탭, 3 저장 폴더 바꾸기" loading="lazy"></div>
+          <ol class="num">
+            <li>위쪽 <b>내 목록</b>을 누릅니다.</li>
+            <li><b>다운로드 완료</b> 탭에 받은 회차가 작품별로 모여 있습니다. 자막까지 그대로 나옵니다.</li>
+            <li><b>저장 폴더 바꾸기:</b> 받은 파일을 외장하드로 옮겼다면 옮긴 폴더를 고르면 다시 이어집니다.</li>
+          </ol>
+        </div>
+
+        <div class="guide-panel" id="gp-sync" role="tabpanel" aria-labelledby="g-sync" hidden>
+          <div class="shot"><img src="assets/guide-sync.jpg" width="1440" height="900" alt="설정 > 기기 동기화: 2 기기 동기화, 3 서버 주소, 4 비밀번호와 연결" loading="lazy"></div>
+          <ol class="num">
+            <li><a href="https://github.com/whispelyn-byte/LilacAnime-server">LilacAnime 서버</a>를 내 Vercel에 배포하고, Upstash Redis를 연결한 뒤 <code>LILAC_PASSWORD</code>(8자 이상)를 정합니다. 한 번만 하면 됩니다.</li>
+            <li>설정 &gt; <b>기기 동기화</b>를 엽니다.</li>
+            <li><b>서버 주소</b>에 배포한 주소를 넣습니다.</li>
+            <li><b>비밀번호</b>를 넣고 <b>연결</b>을 누릅니다. 휴대폰 앱에도 같은 주소와 비밀번호를 넣습니다.</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="subtitles">
+    <div class="wrap">
+      <h2 class="sec-title">자막을 고르는 순서</h2>
+      <p class="sec-lead">재생을 시작하면 이 순서로 자막을 정합니다. 플레이어 설정 &gt; 자막에서 언제든 직접 바꿀 수 있습니다.</p>
+      <ol class="steps">
+        <li class="reveal"><h4>저장해 둔 자막</h4><p>이 회차에 직접 고르거나 번역해 둔 자막</p></li>
+        <li class="reveal"><h4>영상의 한국어 트랙</h4><p>RE:Anime · Miruro의 한국어 트랙, Linkkf 자막</p></li>
+        <li class="reveal"><h4>온라인 한국어 자막</h4><p>Kairan · Csora · Anissia를 동시에 찾고, 설정에서 고른 곳을 먼저</p></li>
+        <li class="reveal"><h4>한국어로 번역</h4><p>일본어·영어 자막을 띄우고 보고 있는 장면부터 번역</p></li>
+      </ol>
+      <div class="providers">
+        <div class="reveal">
+          <h5>번역 API</h5>
+          <div class="chips"><span class="chip">Gemini</span><span class="chip">OpenAI</span><span class="chip">DeepL</span><span class="chip">Qwen</span><span class="chip">Claude</span></div>
+        </div>
+        <div class="reveal">
+          <h5>로컬 AI (llama.cpp)</h5>
+          <div class="chips"><span class="chip">Gemma 4</span><span class="chip">Aya Expanse</span><span class="chip">Hy-MT2</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="sources">
+    <div class="wrap">
+      <h2 class="sec-title">콘텐츠 소스</h2>
+      <p class="sec-lead">설정 &gt; 재생 &gt; 콘텐츠 / 영상 소스에서 고릅니다. 고른 사이트가 응답하지 않으면 홈에 안내가 나오고 다시 시도하거나 소스를 바꿀 수 있습니다.</p>
+      <div class="table-wrap reveal">
+        <table>
+          <thead><tr><th>소스</th><th>목록 · 검색</th><th>영상</th><th>자막</th></tr></thead>
+          <tbody>
+            <tr><td>RE:Anime</td><td>2만여 작품, 한국어 검색</td><td>자막 없는 영상</td><td>여러 언어 자막 트랙, 한국어 트랙 자동 적용</td></tr>
+            <tr><td>Miruro</td><td>한국어 검색, 회차 제목 · 방영일</td><td>SUB · RAW · SOFT · DUB</td><td>SOFT 서버의 여러 언어 자막 트랙</td></tr>
+            <tr><td>Animenosub</td><td>한국어 검색</td><td>SUB · RAW</td><td>한국어 자막 온라인 검색</td></tr>
+            <tr><td>애니24</td><td>한국어 목록 · 검색, 장르 · 방영일</td><td>1080p</td><td>대부분 영상에 한국어 자막 포함</td></tr>
+            <tr><td>링크애니</td><td>한국어 목록 · 검색, 인기순</td><td>1080p, OP/ED 건너뛰기</td><td>대부분 영상에 한국어 자막 포함</td></tr>
+            <tr><td>Linkkf</td><td>한국어 목록</td><td>사이트 기본 영상</td><td>사이트의 한국어 자막</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="cols">
+      <div>
+        <p><b style="color:var(--text)">LilacAnime Desktop</b> · MIT License</p>
+        <p>원작 <a href="https://github.com/dream150/LilacAnime">dream150/LilacAnime</a>(Android)을 원작자의 허락을 받아 데스크톱용으로 포팅했습니다.</p>
+      </div>
+      <div>
+        <p>자막: Kairan, Csora, <a href="https://anissia.net">Anissia</a> 자막 제작자분들, <a href="https://jimaku.cc">Jimaku</a></p>
+        <p>OP/ED: <a href="https://aniskip.com">AniSkip</a> · 로컬 번역: <a href="https://github.com/ggml-org/llama.cpp">llama.cpp</a></p>
+      </div>
+    </div>
+    <p class="tmdb">This product uses the TMDB API but is not endorsed or certified by TMDB. 외부 서비스의 가용성과 이용 조건은 앱이 통제하지 않습니다.</p>
+  </div>
+</footer>
+
+<script>
+  // 스크롤하면 헤더를 배경색으로 채운다
+  const header = document.querySelector('header');
+  const onScroll = () => header.classList.toggle('solid', scrollY > 24);
+  addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
+
+  // 탭 목록마다 따로 동작하는 탭
+  function setupTabs(list) {
+    const tabs = [...list.querySelectorAll('[role="tab"]')];
+    const select = (tab, focus) => {
+      tabs.forEach(t => {
+        const on = t === tab;
+        t.setAttribute('aria-selected', on);
+        t.tabIndex = on ? 0 : -1;
+        document.getElementById(t.getAttribute('aria-controls')).hidden = !on;
+      });
+      if (focus) tab.focus();
+    };
+    tabs.forEach((t, i) => {
+      t.addEventListener('click', () => select(t));
+      t.addEventListener('keydown', e => {
+        const d = ['ArrowRight', 'ArrowDown'].includes(e.key) ? 1 : ['ArrowLeft', 'ArrowUp'].includes(e.key) ? -1 : 0;
+        if (d) { e.preventDefault(); select(tabs[(i + d + tabs.length) % tabs.length], true); }
+      });
+    });
+    return { tabs, select };
+  }
+  const os = setupTabs(document.querySelector('.tabs'));
+  setupTabs(document.querySelector('.guide-tabs'));
+  const selectTab = os.select, tabs = os.tabs;
+
+  // 운영체제에 맞는 받기 버튼과 설치 탭
+
+  const base = 'https://github.com/whispelyn-byte/LilacAnime-desktop/releases/latest/download/';
+  const ua = navigator.userAgent;
+  const dl = document.getElementById('primary-dl');
+  if (/Mac/.test(ua) && !/iPhone|iPad/.test(ua)) {
+    dl.href = base + 'LilacAnime-mac-arm64.dmg';
+    dl.querySelector('span').textContent = 'Mac용 받기';
+    selectTab(tabs[1]);
+  } else if (/Linux/.test(ua) && !/Android/.test(ua)) {
+    dl.href = base + 'LilacAnime-linux-amd64.deb';
+    dl.querySelector('span').textContent = 'Linux용 받기';
+    selectTab(tabs[2]);
+  }
+
+  // 최신 버전 번호
+  fetch('https://api.github.com/repos/whispelyn-byte/LilacAnime-desktop/releases/latest')
+    .then(r => r.ok ? r.json() : null)
+    .then(r => { if (r && r.tag_name) document.getElementById('version').textContent = '최신 ' + r.tag_name; })
+    .catch(() => {});
+
+  // 처음 보일 때 짧게 올라오며 나타남
+  const reveals = document.querySelectorAll('.reveal');
+  if ('IntersectionObserver' in window) {
+    const io = new IntersectionObserver(entries => entries.forEach(e => {
+      if (!e.isIntersecting) return;
+      const sibs = [...e.target.parentElement.children].filter(c => c.classList.contains('reveal'));
+      e.target.style.transitionDelay = Math.min(sibs.indexOf(e.target) * 30, 180) + 'ms';
+      e.target.classList.add('in');
+      io.unobserve(e.target);
+    }), { threshold: 0.12 });
+    reveals.forEach(el => io.observe(el));
+  } else {
+    reveals.forEach(el => el.classList.add('in'));
+  }
+</script>
+</body>
+</html>
