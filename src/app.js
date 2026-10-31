@@ -301,9 +301,24 @@ function linkkfResumeTarget(anime,servers){
 const koreanOverview=a=>/[가-힣]/.test(a?.synopsis||'')||!a?(Promise.resolve('')):window.lilac.animeOverview({provider:a.provider||'',id:a.id??null,mal_id:a.mal_id??null,title:a.title||'',title_english:a.title_english||'',title_japanese:a.title_japanese||'',romaji:a.romaji||''}).catch(()=>'');
 // Home spotlight: up to five shows. The large poster is the one described; a smaller one switches to it, and the
 // bar under the large one moves on to the next when it fills (it waits while the pointer or focus is on the hero).
-let heroPicks=[],heroIndex=0;
-function renderHero(list,label){const hero=$('#hero'),withArt=list.filter(a=>imageOf(a));heroPicks=(withArt.length?withArt:list).slice(0,5);heroPicks.forEach(readyArtwork);hero.classList.remove('skeleton');hero.querySelector('.hero-label').textContent=label;hero.querySelector('.hero-picks').replaceChildren(...heroPicks.map((a,i)=>{const pick=document.createElement('button');pick.type='button';pick.className='hero-pick';pick.setAttribute('aria-label',titleOf(a));pick.innerHTML='<span class="hero-pick-art"></span><span class="hero-pick-progress"><i></i></span>';setBackgroundImage(pick.querySelector('.hero-pick-art'),imageOf(a));pick.onclick=()=>i===heroIndex?openDetail(a.mal_id):showHero(i);pick.querySelector('.hero-pick-progress i').addEventListener('animationend',()=>{if(heroPicks.length>1&&!matchMedia('(prefers-reduced-motion: reduce)').matches)showHero((heroIndex+1)%heroPicks.length)});return pick}));showHero(0)}
-function showHero(index){const a=heroPicks[index];if(!a)return;heroIndex=index;const hero=$('#hero'),libraryButton=hero.querySelector('.library-toggle');setBackgroundImage(hero.querySelector('.hero-backdrop'),imageOf(a));hero.querySelector('.hero-count').textContent=heroPicks.length>1?`${String(index+1).padStart(2,'0')} / ${String(heroPicks.length).padStart(2,'0')}`:'';$$('#hero .hero-pick').forEach((pick,i)=>{pick.classList.toggle('active',i===index);pick.setAttribute('aria-current',String(i===index))});const copy=hero.querySelector('.hero-copy');copy.classList.remove('swap');void copy.offsetWidth;copy.classList.add('swap');hero.querySelector('h1').textContent=titleOf(a);titleAnime.set(animeTitleKey(a),a);hero.querySelector('h1').dataset.titleFor=animeTitleKey(a);hero.querySelector('.hero-meta').innerHTML=[a.score?`<span class="hero-score">★ ${escapeHtml(String(a.score))}</span>`:'',a.year?`<span>${escapeHtml(String(a.year))}</span>`:'',a.type?`<span class="hero-badge">${escapeHtml(a.type)}</span>`:'',LilacAnimeMeta.episodeLabel(a)?`<span>${escapeHtml(LilacAnimeMeta.episodeLabel(a))}</span>`:''].join('');const heroCopy=hero.querySelector('p'),heroKey=animeTitleKey(a),showHeroCopy=text=>{text=cleanSynopsis(text);if(!text||hero.querySelector('h1').dataset.titleFor!==heroKey)return false;heroCopy.textContent=text;return true};let heroKorean=/[가-힣]/.test(a.synopsis||'');heroCopy.textContent='';showHeroCopy(a.synopsis);koreanOverview(a).then(text=>{if(showHeroCopy(text))heroKorean=true});if(!a.synopsis)heroDetail(a).then(detail=>{if(!heroKorean)showHeroCopy(detail?.synopsis)}).catch(()=>{});hero.querySelector('.primary').onclick=()=>openDetail(a.mal_id);updateLibraryButton(libraryButton,saved(a.mal_id));libraryButton.onclick=e=>toggleLibrary(a,e.currentTarget);showHeroArtwork(hero,a,heroKey);}
+let heroPicks=[],heroLabels=[],heroIndex=0;
+// 추천: five works a day, a new set each day (the same all day), taken in turn from this season, what is on air and the
+// popular list, each with its own label. Works in 시청기록 are left out (이어서 보기 has them). The first five of this
+// season alone were the same for the whole season.
+function heroSelection(){
+  const day=Math.floor((Date.now()-new Date().getTimezoneOffset()*60000)/86400000);
+  const watched=new Set(state.history.flatMap(item=>[item.anime?.mal_id!=null?`id:${item.anime.mal_id}`:'',item.subtitleTitle?`title:${item.subtitleTitle}`:'']).filter(Boolean));
+  const fresh=a=>!watched.has(`id:${a.mal_id}`)&&!watched.has(`title:${titleOf(a)}`);
+  // A shuffle of the list's first 40 (the better known ones), seeded by the day and the list.
+  const shuffled=(list,seed)=>{let s=seed>>>0;const rand=()=>{s=s+0x6D2B79F5>>>0;let t=Math.imul(s^s>>>15,1|s);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296};const out=list.slice(0,40);for(let i=out.length-1;i>0;i--){const j=Math.floor(rand()*(i+1));[out[i],out[j]]=[out[j],out[i]]}return out};
+  const pools=[[state.current?.length?state.current:state.season,'이번 시즌 신작'],[state.airing,'지금 방영 중'],[state.top,'인기 작품']]
+    .map(([list,label],index)=>{const art=(list||[]).filter(a=>imageOf(a));return {label,items:shuffled(art.filter(fresh).length>=3?art.filter(fresh):art,day*7+index)}}).filter(pool=>pool.items.length);
+  const picks=[],seen=new Set();
+  for(let round=0;picks.length<5&&pools.some(pool=>pool.items.length>round);round++)for(const pool of pools){const a=pool.items[round];if(a&&picks.length<5&&!seen.has(String(a.mal_id))){seen.add(String(a.mal_id));picks.push([a,pool.label])}}
+  return picks;
+}
+function renderHero(picks){const hero=$('#hero');heroPicks=picks.map(([a])=>a);heroLabels=picks.map(([,label])=>label);heroPicks.forEach(readyArtwork);hero.classList.remove('skeleton');hero.querySelector('.hero-picks').replaceChildren(...heroPicks.map((a,i)=>{const pick=document.createElement('button');pick.type='button';pick.className='hero-pick';pick.setAttribute('aria-label',titleOf(a));pick.innerHTML='<span class="hero-pick-art"></span><span class="hero-pick-progress"><i></i></span>';setBackgroundImage(pick.querySelector('.hero-pick-art'),imageOf(a));pick.onclick=()=>i===heroIndex?openDetail(a.mal_id):showHero(i);pick.querySelector('.hero-pick-progress i').addEventListener('animationend',()=>{if(heroPicks.length>1&&!matchMedia('(prefers-reduced-motion: reduce)').matches)showHero((heroIndex+1)%heroPicks.length)});return pick}));showHero(0)}
+function showHero(index){const a=heroPicks[index];if(!a)return;heroIndex=index;const hero=$('#hero'),libraryButton=hero.querySelector('.library-toggle');hero.querySelector('.hero-label').textContent=heroLabels[index]||'';setBackgroundImage(hero.querySelector('.hero-backdrop'),imageOf(a));hero.querySelector('.hero-count').textContent=heroPicks.length>1?`${String(index+1).padStart(2,'0')} / ${String(heroPicks.length).padStart(2,'0')}`:'';$$('#hero .hero-pick').forEach((pick,i)=>{pick.classList.toggle('active',i===index);pick.setAttribute('aria-current',String(i===index))});const copy=hero.querySelector('.hero-copy');copy.classList.remove('swap');void copy.offsetWidth;copy.classList.add('swap');hero.querySelector('h1').textContent=titleOf(a);titleAnime.set(animeTitleKey(a),a);hero.querySelector('h1').dataset.titleFor=animeTitleKey(a);hero.querySelector('.hero-meta').innerHTML=[a.score?`<span class="hero-score">★ ${escapeHtml(String(a.score))}</span>`:'',a.year?`<span>${escapeHtml(String(a.year))}</span>`:'',a.type?`<span class="hero-badge">${escapeHtml(a.type)}</span>`:'',LilacAnimeMeta.episodeLabel(a)?`<span>${escapeHtml(LilacAnimeMeta.episodeLabel(a))}</span>`:''].join('');const heroCopy=hero.querySelector('p'),heroKey=animeTitleKey(a),showHeroCopy=text=>{text=cleanSynopsis(text);if(!text||hero.querySelector('h1').dataset.titleFor!==heroKey)return false;heroCopy.textContent=text;return true};let heroKorean=/[가-힣]/.test(a.synopsis||'');heroCopy.textContent='';showHeroCopy(a.synopsis);koreanOverview(a).then(text=>{if(showHeroCopy(text))heroKorean=true});if(!a.synopsis)heroDetail(a).then(detail=>{if(!heroKorean)showHeroCopy(detail?.synopsis)}).catch(()=>{});hero.querySelector('.primary').onclick=()=>openDetail(a.mal_id);updateLibraryButton(libraryButton,saved(a.mal_id));libraryButton.onclick=e=>toggleLibrary(a,e.currentTarget);showHeroArtwork(hero,a,heroKey);}
 // The spotlight's artwork: its wide picture, sharp, in place of the blurred poster (.has-banner), and its Korean title
 // logo, with the text title kept small under it (it says the season). Asked ahead in renderHero, so a pick switched to
 // shows them at once; without a banner the blurred poster stays.
@@ -523,17 +538,20 @@ function play(src,name='직접 재생',context={}) {
     hlsPlayer.on(Hls.Events.FRAG_BUFFERED,()=>{if(!video.paused)$('#downloadStatus').textContent='재생 중 · 앞부분 계속 불러오는 중'});
     // Recover instead of stopping. FlixCloud segments do not always start on a keyframe and some
     // contain none, so playback cannot start inside them after a seek or resume ("Found no media").
-    // Step back one fragment at a time until one with a keyframe plays. Counters reset only once
-    // playback actually moves on to another fragment.
-    const recovery={network:0,media:0,stepBack:0,lastSn:null};
-    hlsPlayer.on(Hls.Events.FRAG_CHANGED,()=>{recovery.network=0;recovery.media=0;recovery.stepBack=0;recovery.lastSn=null});
+    // Step back one fragment at a time until one with a keyframe plays. A fragment that fails again after
+    // the step back (reached by playing on from the one before it) is jumped over: stepping back again
+    // played the same seconds over and over (seen at 1.25x with 자막 싱크 reading the stream alongside).
+    // The step-back count resets only once playback has moved past every fragment that failed.
+    const recovery={network:0,media:0,stepBack:0,lastSn:null,failed:new Map()};
+    hlsPlayer.on(Hls.Events.FRAG_CHANGED,(_,{frag})=>{recovery.network=0;recovery.media=0;recovery.lastSn=null;if(frag.sn>Math.max(-1,...recovery.failed.keys())){recovery.stepBack=0;recovery.failed.clear()}});
     hlsPlayer.on(Hls.Events.ERROR,(_,data)=>{
       if(!hlsPlayer)return;
       if(data.details===Hls.ErrorDetails.FRAG_PARSING_ERROR&&data.frag?.type==='main'&&recovery.stepBack<8){
         if(recovery.lastSn===data.frag.sn&&!data.fatal)return;
         recovery.lastSn=data.frag.sn;recovery.stepBack++;
-        const previous=(hlsPlayer.levels[data.frag.level]?.details?.fragments||[]).find(frag=>frag.sn===data.frag.sn-1);
-        if(previous){video.currentTime=previous.start+.05;$('#downloadStatus').textContent='재생 위치를 맞추는 중...'}
+        const tries=(recovery.failed.get(data.frag.sn)||0)+1;recovery.failed.set(data.frag.sn,tries);
+        const target=tries>1?{start:data.frag.start+data.frag.duration}:(hlsPlayer.levels[data.frag.level]?.details?.fragments||[]).find(frag=>frag.sn===data.frag.sn-1);
+        if(target){video.currentTime=target.start+.05;$('#downloadStatus').textContent=tries>1?'읽을 수 없는 구간을 건너뛰는 중...':'재생 위치를 맞추는 중...'}
         if(data.fatal)hlsPlayer.recoverMediaError();
         return;
       }
@@ -1150,7 +1168,7 @@ async function init(){
       catch(error){showSourceNotice(state.source);[season,top]=await Promise.all([window.lilac.season(),window.lilac.top()]);}
     }else [season,top]=await Promise.all([window.lilac.season(),window.lilac.top()]);
     state.season=season.data;state.top=top.data;if(state.source==='reanime'){state.catalogOffset=season.data.length;state.catalogTotal=season.total||null}else if(['animenosub','ohli24','linkani'].includes(state.source)){state.catalogOffset=season.nextOffset||2}else if(state.source==='miruro'){state.catalogOffset=season.nextOffset;state.catalogDone=Boolean(season.done)}$('#seasonRail').closest('.content-section').classList.toggle('hidden',Boolean(state.current&&!state.current.length));renderCards('#seasonRail',(state.current||state.season).slice(0,30));$('#airingSection').classList.toggle('hidden',!state.airing?.length);if(state.airing?.length)renderCards('#airingRail',state.airing.slice(0,30));renderCards('#topRail',state.top.slice(0,20));$('#seasonTitle').textContent='이번 시즌 신작';if(state.source==='linkkf'&&state.season[0]?.provider==='linkkf')loadLinkkfHome();
-    const heroPool=[[state.current,'이번 시즌 추천'],[state.season,'이번 시즌 추천'],[state.top,'인기 작품']].find(([list])=>list?.length);if(heroPool)renderHero(heroPool[0],heroPool[1]);
+    const heroPool=heroSelection();if(heroPool.length)renderHero(heroPool);
     if(typeof catalogUpdateUI!=='undefined')catalogUpdateUI.renderHome();
   } catch(e){$('#seasonRail').classList.remove('loading-cards');$('#topRail').classList.remove('loading-cards');showSourceNotice(null);}
 }

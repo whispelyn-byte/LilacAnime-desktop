@@ -561,6 +561,94 @@ $('#immersivePlayer').addEventListener('mousemove', event => {
   if (!playerLocked && event.target !== $('#video') && player.classList.contains('controls-visible')) showPlayerControls();
 }, { passive: true });
 
+// --- Seek bar preview -----------------------------------------------------------------------
+// The picture at the place under the pointer on the seek bar, above it with its time. A second, muted video reads the
+// episode: a stream through its own hls.js at the lowest quality, loading only the segment it is moved to (the proxy
+// serves those behind the player and fetches nothing ahead for them, see flix-proxy.cjs). Each picture is kept by its
+// 5-second slot, so going back over the bar shows it at once. A new source starts over.
+const SEEK_PREVIEW_SLOT = 5, SEEK_PREVIEW_W = 384, SEEK_PREVIEW_H = 216;
+const seekPreview = { video: null, hls: null, loading: false, source: '', frames: new Map(), wanted: null, timer: 0, box: null };
+function seekPreviewBox() {
+  if (seekPreview.box) return seekPreview.box;
+  const box = document.createElement('div'); box.className = 'seek-preview'; box.setAttribute('aria-hidden', 'true');
+  box.innerHTML = `<canvas width="${SEEK_PREVIEW_W}" height="${SEEK_PREVIEW_H}"></canvas><span></span>`;
+  $('#playerSeek').before(box);
+  return seekPreview.box = box;
+}
+// The address the player is reading: hls.js's playlist, or a plain file (not a blob, which only the player can read).
+function seekPreviewSource() {
+  if (hlsPlayer) return hlsPlayer.url || '';
+  const src = $('#video').currentSrc || '';
+  return src.startsWith('blob:') ? '' : src;
+}
+function resetSeekPreview() {
+  clearTimeout(seekPreview.timer); seekPreview.hls?.destroy(); seekPreview.hls = null; seekPreview.loading = false;
+  if (seekPreview.video) { seekPreview.video.removeAttribute('src'); seekPreview.video.load(); }
+  seekPreview.source = ''; seekPreview.frames.clear(); seekPreview.wanted = null;
+}
+function seekPreviewVideo(source) {
+  if (seekPreview.source === source && seekPreview.video) return seekPreview.video;
+  resetSeekPreview(); seekPreview.source = source;
+  const video = seekPreview.video ||= Object.assign(document.createElement('video'), { muted: true, preload: 'auto', playsInline: true });
+  video.onseeked = () => keepSeekPreviewFrame(video);
+  if (hlsPlayer && window.Hls?.isSupported()) {
+    const hls = seekPreview.hls = new Hls({
+      enableWorker: true, autoStartLoad: false, startLevel: 0, maxBufferLength: 2, maxMaxBufferLength: 4, backBufferLength: 0, maxBufferSize: 8 * 1024 * 1024,
+      xhrSetup: (xhr, url) => { if (/^http:\/\/127\.0\.0\.1:\d+\/__flix\//i.test(url)) xhr.open('GET', `${url}${url.includes('?') ? '&' : '?'}lilac-preview=1`, true); },
+    });
+    hls.on(Hls.Events.MANIFEST_PARSED, () => { hls.autoLevelCapping = 0; });
+    hls.loadSource(source); hls.attachMedia(video);
+  } else video.src = source;
+  return video;
+}
+// The picture just sought to, letterboxed into its slot's canvas (shown as is; a picture from another site can still be
+// drawn, only not read back).
+function keepSeekPreviewFrame(video) {
+  if (!video.videoWidth) return;
+  const slot = Math.round(video.currentTime / SEEK_PREVIEW_SLOT), canvas = document.createElement('canvas');
+  canvas.width = SEEK_PREVIEW_W; canvas.height = SEEK_PREVIEW_H;
+  const ctx = canvas.getContext('2d'), scale = Math.min(SEEK_PREVIEW_W / video.videoWidth, SEEK_PREVIEW_H / video.videoHeight);
+  const width = video.videoWidth * scale, height = video.videoHeight * scale;
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, SEEK_PREVIEW_W, SEEK_PREVIEW_H);
+  try { ctx.drawImage(video, (SEEK_PREVIEW_W - width) / 2, (SEEK_PREVIEW_H - height) / 2, width, height); } catch { return; }
+  seekPreview.frames.set(slot, canvas);
+  if (seekPreview.frames.size > 600) seekPreview.frames.delete(seekPreview.frames.keys().next().value);
+  if (slot === seekPreview.wanted) paintSeekPreview(canvas);
+}
+function paintSeekPreview(frame) {
+  const canvas = seekPreviewBox().querySelector('canvas'), ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  if (frame) ctx.drawImage(frame, 0, 0);
+}
+function showSeekPreview(event) {
+  const seek = $('#playerSeek'), rect = seek.getBoundingClientRect(), duration = playbackDuration(), box = seekPreviewBox();
+  if (!duration || !rect.width || playerLocked) { box.classList.remove('show'); return; }
+  const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)), time = ratio * duration;
+  const half = SEEK_PREVIEW_W / 4 + 4; // the box is drawn at half its canvas size
+  box.style.left = `${seek.offsetLeft + Math.min(rect.width - half, Math.max(half, ratio * rect.width))}px`;
+  box.querySelector('span').textContent = formatTime(time);
+  box.classList.add('show');
+  const source = seekPreviewSource();
+  box.classList.toggle('no-frame', !source);
+  if (!source) return;
+  if (source !== seekPreview.source) resetSeekPreview();
+  const slot = Math.round(time / SEEK_PREVIEW_SLOT);
+  if (slot === seekPreview.wanted) return;
+  seekPreview.wanted = slot;
+  const kept = seekPreview.frames.get(slot);
+  paintSeekPreview(kept || null);
+  clearTimeout(seekPreview.timer);
+  // Asked for only once the pointer rests a moment, so sweeping across the bar loads nothing on the way.
+  if (!kept) seekPreview.timer = setTimeout(() => {
+    const video = seekPreviewVideo(source), at = Math.min(slot * SEEK_PREVIEW_SLOT, Math.max(0, duration - 0.5));
+    if (seekPreview.hls && !seekPreview.loading) { seekPreview.loading = true; seekPreview.hls.startLoad(at); }
+    video.currentTime = at;
+  }, 120);
+}
+$('#playerSeek').addEventListener('pointermove', showSeekPreview);
+$('#playerSeek').addEventListener('pointerleave', () => { clearTimeout(seekPreview.timer); seekPreview.wanted = null; seekPreview.box?.classList.remove('show'); });
+$('#playerBack').addEventListener('click', resetSeekPreview);
+
 // --- Picture-in-picture ---------------------------------------------------------------------
 // Chromium's picture-in-picture window shows a bare <video>: caption tracks and the libass canvas stay behind.
 // So each frame is composed on a canvas (the picture, then the ASS canvas or the active VTT cues), streamed
