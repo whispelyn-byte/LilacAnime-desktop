@@ -73,8 +73,13 @@ function fetchAhead(data,target,headers){const place=data.order.get(target);if(!
   while(ahead.size>KEEP)ahead.delete(ahead.keys().next().value)}
 async function handle(req,res){try{const parts=new URL(req.url,'http://127.0.0.1').pathname.split('/').filter(Boolean);if(parts.length<3||parts[0]!=='__flix'){res.writeHead(404).end();return}const data=sessions.get(parts[1]);if(!data){res.writeHead(410).end();return}if(parts[2]==='master.m3u8'&&data.videoUrl&&data.audioUrl){const port=server.address().port,video=proxyUrl(port,parts[1],data.videoUrl),audio=proxyUrl(port,parts[1],data.audioUrl);const body=Buffer.from(`#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Default",DEFAULT=YES,AUTOSELECT=YES,URI="${audio}"\n#EXT-X-STREAM-INF:BANDWIDTH=5000000,AUDIO="audio"\n${video}\n`);res.writeHead(200,{'content-type':'application/vnd.apple.mpegurl','content-length':body.length,'access-control-allow-origin':'*','cache-control':'no-store'});res.end(body);return}const target=Buffer.from(parts.slice(2).join('/'),'base64url').toString();const headers=requestHeaders(data);const type=kind(target);let upstream,raw,body;
   // The player asks for one video and one audio segment at a time; more at once is a download, which asks for the
-  // following segments itself.
-  if(type==='segment'){data.active=(data.active||0)+1;res.on('close',()=>data.active--);if(data.active<=2)fetchAhead(data,target,headers)}
+  // following segments itself. FFmpeg (Lavf) reading the same stream for 자막 싱크 or Whisper is not counted as the
+  // player and fetches ahead only while the player asks for nothing: it read the whole episode at full speed beside
+  // it, and at 1.25x the player ran out of buffer. The seek bar preview (?lilac-preview, player.js) asks for one
+  // segment where the pointer rests: also not the player, and nothing is fetched ahead of it.
+  const preview=new URL(req.url,'http://127.0.0.1').searchParams.has('lilac-preview'),background=preview||/^Lavf\//.test(req.headers['user-agent']||'');
+  if(type==='segment'&&background){if(!preview&&!data.active)fetchAhead(data,target,headers)}
+  else if(type==='segment'){data.active=(data.active||0)+1;res.on('close',()=>data.active--);if(data.active<=2)fetchAhead(data,target,headers)}
   // Media segments are validated after decoding; a CDN occasionally answers with something else,
   // so refetch twice and otherwise fail the request (hls.js retries loads, but a parse error is fatal).
   for(let attempt=0;attempt<3;attempt++){
