@@ -1,6 +1,10 @@
 const catalogUpdateUI = (() => {
   const supported = ['reanime', 'miruro', 'animenosub', 'ohli24', 'linkani'];
-  const cache = new Map(); let homeOrder = 'season', libraryOrder = 'saved', homeRequest = 0, libraryRequest = 0;
+  // The picked orders are kept across launches; a source without update lists shows 이번 시즌 but keeps the choice.
+  const savedOrder = (key, values, fallback) => { try { const value = localStorage.getItem(key); return values.includes(value) ? value : fallback; } catch { return fallback; } };
+  const keepOrder = (key, value) => { try { localStorage.setItem(key, value); } catch {} };
+  const cache = new Map(); let homeOrder = savedOrder('homeOrder', ['season', 'updated'], 'season'), libraryOrder = savedOrder('libraryOrder', ['saved', 'updated'], 'saved'), homeRequest = 0, libraryRequest = 0;
+  if (!supported.includes(state.source)) homeOrder = 'season';
   function select(container, value) {
     $$(`${container} button`).forEach(button => { const selected = button.dataset.order === value; button.classList.toggle('selected', selected); button.setAttribute('aria-checked', String(selected)); });
   }
@@ -74,8 +78,8 @@ const catalogUpdateUI = (() => {
     const unsupported = providers.filter(provider => !supported.includes(provider)).map(provider => SOURCE_LABELS[provider] || '기타 소스');
     note('#libraryOrderNote', `소스별 최근 회차 목록에 있는 작품을 먼저 표시합니다. 목록 밖 작품은 저장순을 유지합니다.${unsupported.length ? ` ${unsupported.join('·')}: 업데이트순 미지원.` : ''}${failures.length ? ` ${failures.join('·')}: 목록을 불러오지 못했습니다.` : ''}`);
   }
-  $$('#homeOrder button').forEach(button => button.onclick = () => { homeOrder = button.dataset.order; return renderHome(); });
-  $$('#libraryOrder button').forEach(button => button.onclick = () => { libraryOrder = button.dataset.order; return renderLibrary(); });
+  $$('#homeOrder button').forEach(button => button.onclick = () => { homeOrder = button.dataset.order; keepOrder('homeOrder', homeOrder); return renderHome(); });
+  $$('#libraryOrder button').forEach(button => button.onclick = () => { libraryOrder = button.dataset.order; keepOrder('libraryOrder', libraryOrder); return renderLibrary(); });
   $('#homeOrder [data-order="updated"]').classList.toggle('hidden', !supported.includes(state.source));
   async function seeAllHome() {
     if (homeOrder === 'season') { showHomeList(state.current || state.season, '이번 시즌 신작'); return; }

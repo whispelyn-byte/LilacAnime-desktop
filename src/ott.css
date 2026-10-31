@@ -362,3 +362,8 @@ body.light .hero-pick.active{box-shadow:0 18px 40px #1c1b1f40,0 0 0 1px #1c1b1f1
 .seek-preview canvas{width:192px;height:108px;border-radius:6px;background:#000;box-shadow:0 6px 20px #000a;outline:1px solid #ffffff2e}
 .seek-preview.no-frame canvas{display:none}
 .seek-preview span{padding:2px 8px;border-radius:4px;background:#000c;color:#fff;font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}
+
+/* 포스터 아래 그림자 (설정 > 일반): dark by default, a white fade in light mode, none when turned off. The 인기 1위
+   card keeps its dark shade, since its title sits on the picture. */
+body.light .poster::after{background:linear-gradient(transparent,#ffffff80)}
+body.no-poster-shade .poster::after{display:none}
