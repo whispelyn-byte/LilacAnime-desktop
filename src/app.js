@@ -1110,7 +1110,7 @@ function renderCueStyle(){
   const outline=Math.max(0,Number(localStorage.getItem('vttOutline')??2))*vttVideoHeight()/720;
   const fontSize=vttVideoHeight()*0.05*size/100;
   const ring=outline?[...Array(16)].map((_,i)=>{const a=i*Math.PI/8;return `${(Math.cos(a)*outline).toFixed(2)}px ${(Math.sin(a)*outline).toFixed(2)}px 0 #000`}).join(','):'none';
-  style.textContent=`video::cue{font-family:${cueFamily};font-size:${fontSize}px;white-space:pre-line;font-weight:${bold?'700':'400'};color:#fff;background:transparent;text-shadow:${ring}}${lineHeight?`video::-webkit-media-text-track-display{line-height:${lineHeight/100}}`:''}${keepStyle?'':'video::cue(i),video::cue(b),video::cue(u),video::cue(c){font-style:normal;font-weight:inherit;text-decoration:none;color:inherit}'}`;
+  style.textContent=`video::cue{font-family:${cueFamily};font-size:${fontSize}px;white-space:pre-line;font-weight:${bold?'700':'400'};color:#fff;background:transparent;text-shadow:${ring}}${lineHeight?`video::-webkit-media-text-track-display{line-height:${lineHeight/100};overflow:visible}`:''}${keepStyle?'':'video::cue(i),video::cue(b),video::cue(u),video::cue(c){font-style:normal;font-weight:inherit;text-decoration:none;color:inherit}'}`;
 }
 async function applyCueStyle(){let family="'Malgun Gothic',sans-serif";const font=await subtitleFontData();if(font){try{const face=new FontFace('LilacSubtitle',font.data);await face.load();[...document.fonts].filter(font=>font.family==='LilacSubtitle').forEach(font=>document.fonts.delete(font));document.fonts.add(face);family="LilacSubtitle,'Malgun Gothic',sans-serif"}catch{}}cueFamily=family;renderCueStyle()}
 new ResizeObserver(()=>renderCueStyle()).observe($('#video'));$('#video').addEventListener('loadedmetadata',()=>renderCueStyle());

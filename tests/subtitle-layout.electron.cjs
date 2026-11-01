@@ -54,13 +54,18 @@ app.whenReady().then(async () => {
     { name: '4K top caption', width: 3840, height: 2160, zoom: 1, top: true },
     { name: 'windowed large wrapped subtitle', width: 800, height: 600, zoom: 1, size: 150,
       text: '긴 대사도 화면 양옆에서 잘리지 않고 중앙에 표시됩니다. '.repeat(3), wrapped: true },
-    { name: 'stretched 4:3 video', width: 1920, height: 1080, zoom: 1, aspect: '4:3' }
+    { name: 'stretched 4:3 video', width: 1920, height: 1080, zoom: 1, aspect: '4:3' },
+    // GitHub issue #25: a tight 자막 줄 간격 must not cut the glyphs' tops and bottoms off.
+    { name: 'default line height', width: 1920, height: 1080, zoom: 1, text: '안 썼어 gypq', inkOf: 'default' },
+    { name: 'tight line height', width: 1920, height: 1080, zoom: 1, text: '안 썼어 gypq', lineHeight: 60, inkLike: 'default' }
   ];
+  const ink = {};
   for (const item of cases) {
     win.setContentSize(item.width, item.height); win.webContents.setZoomFactor(item.zoom);
     await win.webContents.executeJavaScript(`(() => {
       localStorage.setItem('playerAspect', ${JSON.stringify(item.aspect || 'original')});
       localStorage.setItem('subtitleSize', ${JSON.stringify(String(item.size || 100))});
+      localStorage.setItem('subtitleLineHeight', ${JSON.stringify(String(item.lineHeight || 0))});
       applyPlayerAspect(); renderCueStyle();
       for (const cue of [...track.cues]) track.removeCue(cue); track.lilacFlat = false;
       track.addCue(new VTTCue(0, 3600, ${JSON.stringify((item.top ? String.raw`{\an8}` : '') + (item.text || 'CENTERED SUBTITLE'))}));
@@ -86,6 +91,8 @@ app.whenReady().then(async () => {
       assert.ok(min >= size.width * .04 && max < size.width * .96, 'wrapped dialogue stays inside the safe margins');
       assert.ok(maxY - minY > layout.fontSize * scale * 1.5, 'long dialogue wraps onto multiple lines');
     }
+    if (item.inkOf) ink[item.inkOf] = maxY - minY;
+    if (item.inkLike) assert.ok(Math.abs(maxY - minY - ink[item.inkLike]) <= 2, `${item.name}: glyphs ${maxY - minY}px tall, ${ink[item.inkLike]}px by default`);
     if (item.top) assert.ok(maxY < size.height * .3, `top captions stay at the top: ${minY}-${maxY}, ${JSON.stringify(layout.cue)}`);
     console.log(`${item.name}: centered at ${center.toFixed(1)} / ${expected.toFixed(1)} px`);
   }
