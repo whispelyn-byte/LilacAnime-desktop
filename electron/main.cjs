@@ -2612,12 +2612,14 @@ app.whenReady().then(async () => {
       }else data.push(...candidates.map(miruroItem));
     } else if (provider === 'animenosub') {
       const filter=current?`season%5B0%5D=${season.toLowerCase()}-${year}`:'status=ongoing';
-      for(let page=1;page<=3;page++){
+      // The three pages are asked for together (one after another took 2.5-3.5 s); a page past the last one is empty.
+      const pages=await Promise.all([1,2,3].map(page=>providerFetch(`${ANIMENOSUB_WEB}/anime/?${page>1?`page=${page}&`:''}${filter}&order=popular`,{referer:`${ANIMENOSUB_WEB}/`}).catch(error=>{if(page===1)throw error;return ''})));
+      for(const html of pages){
         // Only the result cards (the page also links its own views such as "Text Mode" under /anime/), without the
         // ones ribboned "Upcoming".
-        const $=cheerio.load(await providerFetch(`${ANIMENOSUB_WEB}/anime/?${page>1?`page=${page}&`:''}${filter}&order=popular`,{referer:`${ANIMENOSUB_WEB}/`})),cards=$('article.bs');
+        const $=cheerio.load(html),cards=$('article.bs');if(!cards.length)break;
         const items=animenosubList(cards.filter((_,node)=>!/upcoming/i.test($(node).find('.ans-status-ribbon').text())).map((_,node)=>$.html(node)).get().join(''));
-        const fresh=items.filter(item=>!data.some(known=>known.mal_id===item.mal_id));data.push(...fresh);if(!cards.length)break;
+        data.push(...items.filter(item=>!data.some(known=>known.mal_id===item.mal_id)));
       }
     } else if (provider === 'ohli24') {
       // 이번 시즌 신작: the airing list (updated first); it has no separate "airing" rail.
@@ -2629,8 +2631,17 @@ app.whenReady().then(async () => {
     } else throw new Error('지원하지 않는 콘텐츠 소스입니다.');
     return {data,label:current?`${year} ${['겨울','봄','여름','가을'][index]}`:''};
   }
-  ipcMain.handle('provider:season', (_, provider) => homeShows(provider,'season'));
-  ipcMain.handle('provider:airing', (_, provider) => homeShows(provider,'airing'));
+  // Kept for ten minutes and shared while asked: switching sources back and forth, or the home and the schedule asking
+  // at once, do not load a source's lists again. A failure is not kept.
+  const homeShowsCache=new Map();
+  const cachedHomeShows=(provider,kind)=>{
+    const key=`${provider}|${kind}`,kept=homeShowsCache.get(key);if(kept&&Date.now()-kept.at<10*60000)return kept.promise;
+    const promise=homeShows(provider,kind);homeShowsCache.set(key,{at:Date.now(),promise});
+    promise.catch(()=>{if(homeShowsCache.get(key)?.promise===promise)homeShowsCache.delete(key)});
+    return promise;
+  };
+  ipcMain.handle('provider:season', (_, provider) => cachedHomeShows(provider,'season'));
+  ipcMain.handle('provider:airing', (_, provider) => cachedHomeShows(provider,'airing'));
   catalogUpdates = createCatalogUpdates({
     reanimeBase: REANIME_WEB, reanimeFetch: url => providerFetch(url, { json: true, referer: `${REANIME_WEB}/` }), reanimeItems, miruroApi, miruroItem,
     animenosubBase: ANIMENOSUB_WEB, animenosubFetch: url => providerFetch(url, { referer: `${ANIMENOSUB_WEB}/` }), animenosubItems: animenosubList,

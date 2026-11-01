@@ -1157,6 +1157,21 @@ function historyKeyOf(item){return item.key||item.src}
 function setHistorySelection(active){historySelection.active=active;if(!active)historySelection.keys.clear();$('#historySelectionBar').classList.toggle('hidden',!active);$('#selectHistory').classList.toggle('hidden',active);renderHistory()}
 function updateHistorySelectionBar(){$('#historySelectedCount').textContent=`${historySelection.keys.size}개 선택`;$('#historyDeleteSelected').disabled=!historySelection.keys.size}
 
+// 홈 lists: drawn from the lists given (a source's fresh ones, or the snapshot of its last ones).
+function renderHomeRails({season=[],top=[],current=null,currentLabel,airing=null}){
+  state.season=season;state.top=top;state.current=current;state.currentLabel=currentLabel;state.airing=airing;
+  $('#seasonRail').closest('.content-section').classList.toggle('hidden',Boolean(state.current&&!state.current.length));renderCards('#seasonRail',(state.current||state.season).slice(0,30));
+  $('#airingSection').classList.toggle('hidden',!state.airing?.length);if(state.airing?.length)renderCards('#airingRail',state.airing.slice(0,30));
+  renderCards('#topRail',state.top.slice(0,20));$('#seasonTitle').textContent='이번 시즌 신작';
+  const heroPool=heroSelection();if(heroPool.length)renderHero(heroPool);
+}
+// A source's last home lists, kept a day: the cards as listed, stories cut short (the detail page loads its own).
+const HOME_SNAPSHOT_TTL=24*60*60*1000;
+function readHomeSnapshot(source){try{const kept=JSON.parse(localStorage.getItem(`homeSnapshot:${source}`)||'null');return kept&&Date.now()-kept.time<HOME_SNAPSHOT_TTL&&kept.season?.length?kept:null}catch{return null}}
+function saveHomeSnapshot(source,lists){
+  const slim=list=>Array.isArray(list)?list.slice(0,40).map(item=>item?.synopsis?.length>400?{...item,synopsis:item.synopsis.slice(0,400)}:item):list;
+  try{localStorage.setItem(`homeSnapshot:${source}`,JSON.stringify({time:Date.now(),season:slim(lists.season),top:slim(lists.top),current:slim(lists.current),currentLabel:lists.currentLabel,airing:slim(lists.airing)}))}catch{/* full storage: the lists load as before */}
+}
 async function init(){
   // Never restore a stale playback request on a fresh app launch.
   playbackRequestId++;playerWindowFullscreen=false;
@@ -1168,6 +1183,9 @@ async function init(){
   $('#contentSource').value=state.source;$('#themeSelect').value=localStorage.getItem('theme')||'dark';$('#titleLanguage').value=titleLanguage();$('#startView').value=startView();const savedSpeed=Number(localStorage.getItem('defaultSpeed')||1),speedIndex=Math.max(0,SPEED_OPTIONS.indexOf(savedSpeed));$('#defaultSpeed').value=String(speedIndex);$('#speed').value=String(savedSpeed);$('#speedLabel').textContent=`${savedSpeed.toFixed(2)}x`;$('#defaultQuality').value=localStorage.getItem('defaultQuality')||'1080p';$('#playerStart').value=localStorage.getItem('playerStart')==='window'?'window':'fullscreen';$('#subtitleSource').value=settingsSubtitleSource();$('#subtitleSize').value=localStorage.getItem('subtitleSize')||'100';$('#subtitleLineHeight').value=String(subtitleLineHeight()||160);$('#subtitleLineHeightLabel').textContent=lineHeightLabel(subtitleLineHeight());$('#subtitleSync').value=localStorage.getItem('subtitleSync')||'0';$('#vttBold').checked=localStorage.getItem('vttBold')!=='false';$('#vttOutline').value=localStorage.getItem('vttOutline')||'2';$('#subtitlePosition').value=localStorage.getItem('subtitlePosition')||'12';$('#seekSeconds').value=localStorage.getItem('seekSeconds')||'10';$('#opedAudioAnalysis').checked=localStorage.getItem('opedAudioAnalysis')!=='false';$('#subtitleSizeLabel').textContent=`${$('#subtitleSize').value}%`;$('#subtitleSyncLabel').textContent=`${$('#subtitleSync').value} ms`;$('#outlineLabel').textContent=Number($('#vttOutline').value).toFixed(1);$('#positionLabel').textContent=`${$('#subtitlePosition').value}%`;syncSettingChoices();
   // 설정 > 시작 화면: shown at once; the home lists still load behind it.
   if(startView()!=='home')switchView(startView());
+  // The last lists of this source show at once (startup, a source switch) while the fresh ones load.
+  const snapshot=PROVIDER_SOURCES.includes(state.source)?readHomeSnapshot(state.source):null;
+  if(snapshot)renderHomeRails(snapshot);
   try {
     let season,top;
     if(state.source==='linkkf'){
@@ -1177,12 +1195,14 @@ async function init(){
       // The catalog's first page (most popular first) fills 인기 애니메이션 and 전체; this season's shows come separately.
       // 링크애니 and 애니24 list by update, so 인기 순위 is asked for separately (애니24: its most rated shows, see ohliPopular).
       // Asked twice: Miruro's list (several pages checked for playable episodes) did not always come the first time.
+      // All four are asked for at once.
       const current=window.lilac.providerSeason(state.source).catch(()=>window.lilac.providerSeason(state.source)).catch(()=>null),airing=window.lilac.providerAiring(state.source).catch(()=>null);
-      try{season=await window.lilac.providerCatalog(state.source);top={data:season.data};if(['linkani','ohli24'].includes(state.source)){const popular=await window.lilac.providerCatalog(state.source,'',state.source==='ohli24'?0:1,'popular').catch(()=>null);if(popular?.data?.length)top={data:popular.data}}const [result,onAir]=await Promise.all([current,airing]);if(result){state.current=result.data||[];state.currentLabel=result.label}if(onAir?.data?.length)state.airing=onAir.data}
-      catch(error){showSourceNotice(state.source);[season,top]=await Promise.all([window.lilac.season(),window.lilac.top()]);}
+      const popular=['linkani','ohli24'].includes(state.source)?window.lilac.providerCatalog(state.source,'',state.source==='ohli24'?0:1,'popular').catch(()=>null):null;
+      try{season=await window.lilac.providerCatalog(state.source);top={data:season.data};const [result,onAir,ranked]=await Promise.all([current,airing,popular]);if(ranked?.data?.length)top={data:ranked.data};if(result){state.current=result.data||[];state.currentLabel=result.label}if(onAir?.data?.length)state.airing=onAir.data;saveHomeSnapshot(state.source,{season:season.data,top:top.data,current:state.current,currentLabel:state.currentLabel,airing:state.airing})}
+      catch(error){showSourceNotice(state.source);if(snapshot){season={data:snapshot.season};top={data:snapshot.top}}else [season,top]=await Promise.all([window.lilac.season(),window.lilac.top()]);}
     }else [season,top]=await Promise.all([window.lilac.season(),window.lilac.top()]);
-    state.season=season.data;state.top=top.data;if(state.source==='reanime'){state.catalogOffset=season.data.length;state.catalogTotal=season.total||null}else if(['animenosub','ohli24','linkani'].includes(state.source)){state.catalogOffset=season.nextOffset||2}else if(state.source==='miruro'){state.catalogOffset=season.nextOffset;state.catalogDone=Boolean(season.done)}$('#seasonRail').closest('.content-section').classList.toggle('hidden',Boolean(state.current&&!state.current.length));renderCards('#seasonRail',(state.current||state.season).slice(0,30));$('#airingSection').classList.toggle('hidden',!state.airing?.length);if(state.airing?.length)renderCards('#airingRail',state.airing.slice(0,30));renderCards('#topRail',state.top.slice(0,20));$('#seasonTitle').textContent='이번 시즌 신작';if(state.source==='linkkf'&&state.season[0]?.provider==='linkkf')loadLinkkfHome();
-    const heroPool=heroSelection();if(heroPool.length)renderHero(heroPool);
+    if(state.source==='reanime'){state.catalogOffset=season.data.length;state.catalogTotal=season.total||null}else if(['animenosub','ohli24','linkani'].includes(state.source)){state.catalogOffset=season.nextOffset||2}else if(state.source==='miruro'){state.catalogOffset=season.nextOffset;state.catalogDone=Boolean(season.done)}
+    renderHomeRails({season:season.data,top:top.data,current:state.current,currentLabel:state.currentLabel,airing:state.airing});if(state.source==='linkkf'&&state.season[0]?.provider==='linkkf')loadLinkkfHome();
     if(typeof catalogUpdateUI!=='undefined')catalogUpdateUI.renderHome();
     if($('.view.active')?.id==='allView')loadFullCatalog();
   } catch(e){$('#seasonRail').classList.remove('loading-cards');$('#topRail').classList.remove('loading-cards');showSourceNotice(null);}
