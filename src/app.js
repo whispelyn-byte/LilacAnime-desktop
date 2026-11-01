@@ -133,6 +133,12 @@ function card(a) {
   el.addEventListener('keydown', e => { if((e.key==='Enter'||e.key===' ')&&e.target===el){e.preventDefault();openDetail(a.mal_id)} });
   // Pointing at (or focusing) a card starts its detail page's artwork, so the page usually opens with it.
   for(const type of ['pointerenter','focus'])el.addEventListener(type,()=>readyArtwork(a),{once:true});
+  // Resting on it a moment also asks for its details (kept 5 minutes in main, see provider:detail), so a click opens
+  // the page at once; sweeping across the cards asks for none.
+  if(/^(animenosub|reanime|miruro|ohli24|linkani):/.test(String(a.mal_id))){
+    let rest=0;const ask=()=>{clearTimeout(rest);rest=setTimeout(()=>{rest=-1;window.lilac.providerDetail(a).catch(()=>{})},120)};
+    el.addEventListener('pointerenter',()=>{if(rest!==-1)ask()});el.addEventListener('focus',()=>{if(rest!==-1)ask()});el.addEventListener('pointerleave',()=>{if(rest!==-1)clearTimeout(rest)});
+  }
   el.querySelector('.heart').addEventListener('click', e => { e.stopPropagation(); toggleLibrary(a, e.currentTarget); });
   return el;
 }
@@ -371,9 +377,10 @@ async function openDetail(id) {
     const earlyArt=known?readyArtwork(known):null;
     const providerResult=isExternal?await window.lilac.providerDetail(known):null;if(providerResult?.data?.provider==='ohli24')linkLegacyDownloads(providerResult.data,providerResult.episodes);
     const {data:a}=isLinkkf?await window.lilac.linkkfDetail(String(id).slice(7)):isExternal?providerResult:await window.lilac.detail(id);if(openDetail.token!==token)return;
-    // The page appears whole: header picture, logo and Korean story are waited for (at most 1.5 s, cached ones are
-    // at hand); what is not ready by then is filled in when it comes.
-    const artReady=earlyArt?earlyArt.then(found=>found.banner&&found.logo?found:readyArtwork(a)):readyArtwork(a),overviewReady=koreanOverview(a),[art,overview]=await within(Promise.all([artReady,overviewReady]),1500,[null,null]);if(openDetail.token!==token)return;const isSaved=saved(a.mal_id),isReAnime=a.provider==='reanime';
+    // The page appears as soon as the work is loaded: header picture, logo and Korean story already at hand (cached)
+    // are drawn with it, the others filled in when they come (each on its own, so one slow lookup holds back nothing).
+    const artReady=earlyArt?earlyArt.then(found=>found.banner&&found.logo?found:readyArtwork(a)):readyArtwork(a),overviewReady=koreanOverview(a);
+    const [art,overview]=await Promise.all([within(artReady,0,null),within(overviewReady,0,null)]);if(openDetail.token!==token)return;const isSaved=saved(a.mal_id),isReAnime=a.provider==='reanime';
     const native=a.title_japanese&&a.title_japanese!==titleOf(a)?a.title_japanese:'';
     const meta=[a.type,a.year,a.status,a.aired,(a.studios||[]).slice(0,2).map(x=>x.name).join(', ')].filter(Boolean).map(x=>escapeHtml(String(x))).join(' · ');
     $('#detailContent').innerHTML=`<div class="detail-hero"></div><div class="detail-body"><img alt=""><div class="detail-info"><span class="eyebrow">${escapeHtml(a.type||'ANIME')} · ${a.score?`★ ${a.score}`:isLinkkf?'LINKKF':'평점 없음'}</span>${art?.logo?logoMarkup(art.logo):''}<h1 ${art?.logo?'class="under-logo" ':''}${titleAttr(a)}>${escapeHtml(titleOf(a))}</h1>${native?`<p class="detail-native">${escapeHtml(native)}</p>`:''}${meta?`<p class="detail-meta">${meta}</p>`:''}<p class="detail-stats hidden"></p><div class="tags">${(a.genres||[]).slice(0,5).map(g=>`<span>${escapeHtml(g.name)}</span>`).join('')}</div><p class="detail-synopsis"${overview?' title="줄거리: TMDB"':''}>${escapeHtml(overview||a.synopsis||'등록된 줄거리가 없습니다.')}</p><div class="detail-actions"><button class="primary detail-play" ${providerResult?.unavailable?'disabled':''}>${providerResult?.unavailable?'현재 재생 불가':isLinkkf?'회차 불러오기':playLabel('플레이어 열기')}</button><button class="ghost detail-save library-toggle ${isSaved?'saved':''}">${heartIcon()}<span>내 목록</span></button>${a.url?'<button class="ghost detail-web"><svg class="external-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg><span>작품 정보</span></button>':''}</div><div class="detail-tabs hidden" role="tablist"><button type="button" role="tab" data-detail-tab="episodes" class="selected" aria-selected="true">회차</button><button type="button" role="tab" data-detail-tab="related" aria-selected="false">관련 작품</button></div><div id="episodeBlock" class="episode-block">${providerResult?.unavailable?'<p class="episode-loading">현재 제공처에 영상이 없는 작품입니다. 설정에서 다른 콘텐츠 소스를 선택해 주세요.</p>':''}</div><div id="relatedBlock" class="related-block hidden"></div></div></div>`;
