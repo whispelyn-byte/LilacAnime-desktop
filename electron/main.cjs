@@ -1171,7 +1171,7 @@ function assToVtt(file){const lines=fs.readFileSync(file,'utf8').replace(/^\uFEF
 async function analyzeOfflineOpEd({title,episode,currentUrl,duration,candidates,status=()=>{}}){
   const cacheFile=path.join(app.getPath('userData'),'oped-fingerprint-cache.json'),key=`v6-offline:${simpleTitle(title)}:${Number(episode)||1}`;let cache={};try{cache=JSON.parse(fs.readFileSync(cacheFile,'utf8'))}catch{}if(Array.isArray(cache[key])&&cache[key].length)return cache[key];
   const segments=await detectOpEd({currentUrl,duration:Number(duration),currentHeaders:{},candidates,resolveEpisode:candidate=>Promise.resolve({url:candidate.localUrl,headers:{}}),status});
-  if(segments.length){cache[key]=segments;try{fs.writeFileSync(cacheFile,JSON.stringify(cache),'utf8')}catch{}}
+  if(segments.length){cache[key]=segments;writeCacheFile(cacheFile,JSON.stringify(cache))}
   return segments;
 }
 // Korean titles for Re:ANIME entries (Kairan/Csora posts are Korean): TMDB's ko-KR names with the user's
@@ -1283,7 +1283,7 @@ async function tmdbOverview(anime={}){
     }
   }
   if(!hasHangul(text))text='';
-  tmdbOverviewDisk[key]={text,time:Date.now()};try{fs.writeFileSync(tmdbOverviewFile(),JSON.stringify(tmdbOverviewDisk),'utf8')}catch{}
+  tmdbOverviewDisk[key]={text,time:Date.now()};writeCacheFile(tmdbOverviewFile(),JSON.stringify(tmdbOverviewDisk))
   return text;
 }
 // Artwork for the detail page: a wide picture for its header and the work's Korean title logo. TMDB (with the key from
@@ -1321,7 +1321,7 @@ async function animeArtwork(anime={}){
     }
   }
   if(!banner)banner=await anilistBanner(anime).catch(()=>'');
-  artworkDisk[key]={banner,logos,time:Date.now()};try{fs.writeFileSync(artworkFile(),JSON.stringify(artworkDisk),'utf8')}catch{}
+  artworkDisk[key]={banner,logos,time:Date.now()};writeCacheFile(artworkFile(),JSON.stringify(artworkDisk))
   return {banner,logos};
 }
 // A Korean title as TMDB is searched for it: without the site's marks ("(자막)", "ORIGINAL"), the season or part
@@ -1421,7 +1421,7 @@ async function anissiaCatalog(){
     await Promise.all(Array.from({length:6},async()=>{while(next<pages){const page=next++;all.push(...((await anissiaFetch(`/anime/list/${page}`))?.content||[]))}}));
     const items=[...new Map(all.map(item=>[item.animeNo,{no:item.animeNo,subject:String(item.subject||''),original:String(item.originalSubject||''),start:String(item.startDate||'')}])).values()];
     if(!items.length)throw new Error('Anissia 작품 목록이 비어 있습니다.');
-    anissiaCatalogData={time:Date.now(),items};try{fs.writeFileSync(file,JSON.stringify(anissiaCatalogData))}catch{/* kept in memory */}
+    anissiaCatalogData={time:Date.now(),items};writeCacheFile(file,JSON.stringify(anissiaCatalogData))
     return items;
   })().catch(error=>{if(anissiaCatalogData?.items?.length)return anissiaCatalogData.items;throw error}).finally(()=>{anissiaCatalogLoad=null});
   return anissiaCatalogLoad;
@@ -1454,10 +1454,20 @@ function japaneseSeason(text=''){
   const roman=value.match(/(?:^|\s)(II|III|IV|V)\s*$/);return roman?{II:2,III:3,IV:4,V:5}[roman[1]]:null;
 }
 const japaneseKey=(text='')=>String(text).normalize('NFKC').toLowerCase().replace(new RegExp(JAPANESE_SEASON.source,'gi'),'').replace(/(?:^|\s)(?:ii|iii|iv|v)\s*$/,'').replace(/[\s\p{P}\p{S}]/gu,'');
+// Anissia's search also reads the Japanese title (its originalTitle field): asked with the title less its season, it
+// gives the series' seasons and movies in one request, entries added today included. The daily catalog is read when
+// the search fails or finds none.
+async function anissiaByNative(native){
+  const query=String(native).normalize('NFKC').replace(new RegExp(JAPANESE_SEASON.source,'gi'),' ').replace(/(?:^|\s)(?:II|III|IV|V)\s*$/,' ').replace(/[「」『』【】〈〉《》]/g,' ').replace(/\s+/g,' ').trim();
+  if(query.length<2)return [];
+  const page=await anissiaFetch(`/anime/list/0?q=${encodeURIComponent(query)}`);
+  return (page?.content||[]).map(item=>({no:item.animeNo,subject:String(item.subject||''),original:String(item.originalSubject||''),start:String(item.startDate||'')}));
+}
 async function anissiaKoreanTitle(anime={},title=''){
   const info=await nativeInfo(anime),key=japaneseKey(info.native);if(key.length<2)return '';
-  const items=await anissiaCatalog();
-  const hits=items.filter(item=>{const other=japaneseKey(item.original);return other&&(other===key||Math.min(other.length,key.length)>=5&&(other.startsWith(key)||key.startsWith(other)))});
+  const matching=items=>items.filter(item=>{const other=japaneseKey(item.original);return other&&(other===key||Math.min(other.length,key.length)>=5&&(other.startsWith(key)||key.startsWith(other)))});
+  let hits=matching(await anissiaByNative(info.native).catch(()=>[]));
+  if(!hits.length)hits=matching(await anissiaCatalog());
   if(!hits.length)return '';
   const movie=/MOVIE/i.test(info.format)||/劇場版/.test(info.native),season=japaneseSeason(info.native)??titleSeason(title)??1;
   const seasonOf=item=>communitySeason(item.subject)??japaneseSeason(item.original)??(Number(String(item.subject).match(/[가-힣]\s+([2-9])$/)?.[1])||1);
@@ -1487,7 +1497,7 @@ async function koreanTitleCandidates(title,anime={}){
   if(!found.length){media=await anilistMedia(original,anime).catch(()=>null);(media?.synonyms||[]).forEach(add)}
   if(!found.length){const malId=Number(anime.malId)||media?.idMal||null,anilistId=Number(anime.anilistId)||media?.id||null;(await wikidataKoreanTitles(malId,anilistId).catch(()=>[])).forEach(add)}
   const result=found.length?found:[original];koreanTitleCache.set(key,result);
-  if(found.length){disk[key]=found;try{fs.writeFileSync(koreanTitleCacheFile(),JSON.stringify(disk),'utf8')}catch{}}
+  if(found.length){disk[key]=found;writeCacheFile(koreanTitleCacheFile(),JSON.stringify(disk))}
   return result;
 }
 // Display titles (설정 > 작품 제목 표시). Korean names come from the same TMDB → AniList → Wikidata lookup as the
@@ -1498,7 +1508,7 @@ let displayTitleDisk=null;
 function displayTitleFile(){return path.join(app.getPath('userData'),'display-title-cache.json')}
 function displayTitleStore(){if(!displayTitleDisk){try{displayTitleDisk=JSON.parse(fs.readFileSync(displayTitleFile(),'utf8'))||{}}catch{displayTitleDisk={}}}return displayTitleDisk}
 let displayTitleSaveTimer=null;
-function saveDisplayTitles(){clearTimeout(displayTitleSaveTimer);displayTitleSaveTimer=setTimeout(()=>{try{fs.writeFileSync(displayTitleFile(),JSON.stringify(displayTitleStore()),'utf8')}catch{}},1000)}
+function saveDisplayTitles(){clearTimeout(displayTitleSaveTimer);displayTitleSaveTimer=setTimeout(()=>writeCacheFile(displayTitleFile(),JSON.stringify(displayTitleStore())),1000)}
 const hasHangul=value=>/[가-힣]/.test(String(value||''));
 async function englishTitleFor(anime){
   if(anime.title_english&&!hasHangul(anime.title_english))return anime.title_english;
@@ -1574,9 +1584,19 @@ function catalogIndex(provider){
   try{index.tried={...index.tried,...JSON.parse(fs.readFileSync(file('tried'),'utf8'))}}catch{/* none yet */}
   return catalogIndexes[provider]=index;
 }
+// A cache file written in the background and whole: to a temporary file renamed over it, so quitting mid-write leaves
+// the previous file (a cut-off Re:Anime index, 14 MB, was read as none and downloaded again), and without holding up the
+// main process, which also serves the player's stream. Writes of one file go one after another, the latest last.
+const cacheWrites=new Map();
+function writeCacheFile(file,text){
+  const write=()=>{const temp=`${file}.${process.pid}.tmp`;return fs.promises.writeFile(temp,text,'utf8').then(()=>fs.promises.rename(temp,file)).catch(()=>fs.promises.rm(temp,{force:true}).catch(()=>{}))};
+  const next=(cacheWrites.get(file)||Promise.resolve()).then(write);cacheWrites.set(file,next);
+  next.finally(()=>{if(cacheWrites.get(file)===next)cacheWrites.delete(file)});
+  return next;
+}
 // The list (several MB) is written when it changes; the small "looked up" marks separately while TMDB runs.
 const indexSaveTimers={};
-function saveCatalogFile(provider,name,value){const key=`${provider}-${name}`;clearTimeout(indexSaveTimers[key]);indexSaveTimers[key]=setTimeout(()=>{try{fs.writeFileSync(path.join(app.getPath('userData'),`${key}.json`),JSON.stringify(value()))}catch{}},2000)}
+function saveCatalogFile(provider,name,value){const key=`${provider}-${name}`;clearTimeout(indexSaveTimers[key]);indexSaveTimers[key]=setTimeout(()=>writeCacheFile(path.join(app.getPath('userData'),`${key}.json`),JSON.stringify(value())),2000)}
 function saveCatalogIndex(provider){const index=catalogIndex(provider);saveCatalogFile(provider,'index',()=>({items:index.items,updated:index.updated,wikidata:index.wikidata,metadataVersion:index.metadataVersion||0}))}
 function saveCatalogTried(provider){const index=catalogIndex(provider);saveCatalogFile(provider,'tried',()=>index.tried)}
 
@@ -1808,15 +1828,16 @@ async function communityPosts(blog,{force=false}={}){
     if(failure)throw failure;
     const seen=new Map();for(const entry of roots.flatMap(root=>root?.feed?.entry||[])){const url=(entry.link||[]).find(x=>x.rel==='alternate')?.href||'';if(url&&!seen.has(url))seen.set(url,{title:entry.title?.$t||'',url,html:entry.content?.$t||entry.summary?.$t||''})}
     const posts=[...seen.values()];if(!posts.length||total&&posts.length<total)throw new Error('자막 게시물 목록을 다 받지 못했습니다.');
-    const fresh={time:Date.now(),posts};communityPostCache.set(blog,fresh);try{fs.writeFileSync(file,JSON.stringify(fresh))}catch{}
+    const fresh={time:Date.now(),posts};communityPostCache.set(blog,fresh);writeCacheFile(file,JSON.stringify(fresh))
     communityPostRetryAt.delete(blog);
     return posts;
   }catch(error){communityPostRetryAt.set(blog,Date.now()+60000);if(cached?.posts?.length){communityPostCache.set(blog,cached);return cached.posts}throw error}})();
   communityPostRequests.set(blog,work);try{return await work}finally{communityPostRequests.delete(blog)}
 }
 function communitySeason(text=''){
-  // A bare ordinal counts only at the end or before a subtitle: "the 7th Prince" (제7왕자) is not a 7th season.
-  const value=String(text).normalize('NFKC'),m=value.match(/(?:season|시즌)\s*(\d+)|(\d+)\s*기(?![가-힣])|(\d+)(?:st|nd|rd|th)(?:\s*season\b|(?=\s*(?:$|[~\-(:!])))|[가-힣](\d)(?=\s|$)/i);
+  // A bare ordinal counts only at the end or before a subtitle: "the 7th Prince" (제7왕자) is not a 7th season, nor one
+  // glued to a word ("JMAF23th", the 23rd Japan Media Arts Festival).
+  const value=String(text).normalize('NFKC'),m=value.match(/(?:season|시즌)\s*(\d+)|(\d+)\s*기(?![가-힣])|(?<![a-z\d])(\d+)(?:st|nd|rd|th)(?:\s*season\b|(?=\s*(?:$|[~\-(:!])))|[가-힣](\d)(?=\s|$)/i);
   if(m)return Number(m[1]||m[2]||m[3]||m[4]);
   // A roman numeral at the end, or before a subtitle ("클레바테스Ⅱ ~마수왕과 가짜 용사 전승~", "시광대리인 Ⅱ -Link Click Ⅱ-").
   const roman=value.trim().match(/(?:^|\s)(II|III|IV|V|VI)\s*$/i)||value.match(/(?:^|[\s가-힣])(II|III|IV|VI|V)(?=\s*[~\-(:])/);return roman?{II:2,III:3,IV:4,V:5,VI:6}[roman[1].toUpperCase()]:null;
@@ -1831,7 +1852,8 @@ function communitySeasons(text=''){
 // ("The Angel Next Door Spoils Me Rotten 2", Re:Anime's "…Rotten2", "Overlord IV"), but "Kaiju No. 8",
 // "Part 2" and "Mob Psycho 100" are not seasons.
 function titleSeason(text=''){
-  const value=String(text).normalize('NFKC').trim(),season=communitySeason(value);if(season!=null)return season;
+  // A superscript is part of the name, not a season ("DNA²" would read "DNA2").
+  const value=String(text).replace(/[¹²³⁴⁵⁶⁷⁸⁹]/g,'').normalize('NFKC').trim(),season=communitySeason(value);if(season!=null)return season;
   const digit=value.match(/([a-z]+)[!?'’)]*\s*([2-9])$/i);if(digit&&!/^(?:no|vol|part|cour|lv|level|ep|episode|chapter|chapters|act|phase|movie|film|special|specials|ova|oad|recap|arc)$/i.test(digit[1]))return Number(digit[2]);
   if(/◎/.test(value))return 2;
   const roman=value.match(/\s(II|III|IV)$/);return roman?{II:2,III:3,IV:4}[roman[1]]:null;
@@ -2277,13 +2299,33 @@ async function tistoryPosts(origin,subject,extraQueries=[]){
   }catch{/* search below */}
   // Posts of a later season often omit "2기", so the series name is searched as well.
   const series=subject.replace(/\s*(?:\d+\s*기(?![가-힣])|season\s*\d+|시즌\s*\d+)\s*$/i,'').trim();
+  // Posts are linked by number ("/123", "/entry/123") or, on newer blogs, by title ("/entry/환생했는데-…-2기-4화-자막").
+  const categories=new Map(),wanted=[subject,series].map(communityTitle);
   for(const query of [...new Set([subject,series,...extraQueries])].filter(Boolean))try{
     const html=await providerFetch(`${origin}/search/${encodeURIComponent(query)}`,{referer:`${origin}/`}),$=cheerio.load(html);
-    $('a[href]').each((_,a)=>{const href=$(a).attr('href')||'';if(/^(?:https?:\/\/[^/]+)?\/(?:entry\/)?\d+$/.test(href)){
+    $('a[href]').each((_,a)=>{const href=$(a).attr('href')||'';if(/^(?:https?:\/\/[^/]+)?\/(?:entry\/(?!post\b)[^/?#]+|\d+)$/.test(href)){
       // Result cards repeat the title in their excerpt; keep the text up to the first episode number.
       const text=$(a).text().replace(/\s+/g,' ').trim(),cut=text.match(/^.*?\d+\s*(?:화|회|편)(?:\s*\((?:끝|완|完)\)|\s*-끝-)?/)?.[0]||text.slice(0,80);add(href,cut)}});
+    // Some skins draw search results in the page's script, so the HTML has none; their sidebar still links the
+    // show's category ("2025년 3분기 자막/환생했는데 … 2기"), whose page lists every post.
+    $('a[href*="/category/"]').each((_,a)=>{
+      let name='';try{name=decodeURIComponent(($(a).attr('href')||'').split('/category/')[1]||'').split('/').pop().split('?')[0]}catch{return}
+      const score=Math.max(...wanted.map(title=>communityScore(title,communityTitle(name))));
+      if(score>=.52){const href=absoluteUrl($(a).attr('href').split('?')[0],origin);if((categories.get(href)??0)<score)categories.set(href,score)}
+    });
   }catch{/* RSS only */}
+  for(const [href] of [...categories].sort((a,b)=>b[1]-a[1]).slice(0,2))for(let page=1;page<=3;page++)try{
+    const before=posts.size;tistoryListedPosts(await providerFetch(page>1?`${href}?page=${page}`:href,{referer:`${origin}/`})).forEach(([url,title])=>add(url,title));
+    if(posts.size===before)break;
+  }catch{break}
   return [...posts.values()];
+}
+// The posts a Tistory list page names in its structured data (schema.org ItemList), which every skin writes.
+function tistoryListedPosts(html){
+  const $=cheerio.load(html),found=[];
+  const walk=value=>{if(Array.isArray(value))value.forEach(walk);else if(value&&typeof value==='object'){if(value['@type']==='ListItem'&&value.item){const url=value.item['@id']||value.item.url;if(url&&value.item.name)found.push([String(url),String(value.item.name)])}Object.values(value).forEach(walk)}};
+  $('script[type="application/ld+json"]').each((_,script)=>{try{walk(JSON.parse($(script).html()||''))}catch{/* not JSON */}});
+  return found;
 }
 // A maker's own name for the anime: the linked post's title without episode numbers or marks, when it is not
 // simply the official title.

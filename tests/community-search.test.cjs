@@ -15,6 +15,8 @@ function setup(extra = {}) {
   const context = vm.createContext({ URL, AbortSignal, Buffer, TextDecoder, Date: Clock, path, cheerio, AdmZip, fs,
     ...matching, hasHangul: value => /[가-힣]/.test(value), absoluteUrl: (url, base) => new URL(url, base).href,
     app: { getPath: () => '/stub-cache' }, ANISSIA_API: 'https://api.anissia.net', ...extra });
+  // Cache files (writeCacheFile in main) go to the test's fs.
+  context.writeCacheFile ??= (file, text) => { context.fs.writeFileSync(file, text); return Promise.resolve(); };
   for (const [start, end] of [
     ['function simpleTitle(', '// Same as Android KairanSubtitleService'],
     ['function communitySeason(', 'const COMMUNITY_FILE='],
@@ -62,6 +64,30 @@ test('an ordinal inside the title is not a season', () => {
   assert.equal(c.titleSeason(`${prince} Season 2`), 2);
   assert.equal(c.titleSeason('Mushoku Tensei 2nd Season'), 2);
   assert.equal(c.communitySeason('환생했는데 제7왕자라 내맘대로 마술을 연마합니다'), null);
+  assert.equal(c.titleSeason('JMAF23th'), null, 'an ordinal glued to a word');
+  assert.equal(c.titleSeason('DNA²'), null, 'a superscript is part of the name');
+  assert.equal(c.titleSeason('Hell Mode 3rd Season'), 3);
+  assert.equal(c.titleSeason('Wagnaria!!3'), 3);
+});
+
+// kannasub.tistory.com: posts are linked by title ("/entry/…-2기-4화-자막"), its search page draws results in script
+// (the HTML has none), and its sidebar links the show's category, whose page lists the posts in its structured data.
+test('a Tistory blog whose search shows nothing is read through the show\'s category', async () => {
+  const origin = 'https://kannasub.tistory.com', show = '환생했는데 제7왕자라 내맘대로 마술을 연마합니다 2기';
+  const category = `/category/${encodeURIComponent('2025년 3분기 자막')}/${encodeURIComponent(show)}`;
+  const listed = [4, 5].map(n => ({ '@type': 'ListItem', position: n, item: { '@id': `${origin}/entry/${encodeURIComponent(`${show.replace(/ /g, '-')}-${n}화-자막`)}`, name: `${show} ${n}화 자막` } }));
+  const pages = {
+    search: `<a href="${category}">${show}</a><a href="/category/${encodeURIComponent('2026년 4분기 자막')}/${encodeURIComponent('빌려준 마력은 리볼빙으로 강제징수')}">other</a><a href="/entry/post">글쓰기</a>`,
+    category: `<script type="application/ld+json">${JSON.stringify({ '@type': 'ItemList', itemListElement: listed })}</script>`,
+  };
+  const asked = [];
+  const { context: c, load } = setup({ fetch: async () => { throw new Error('no rss'); }, LINKKF_UA: 'test',
+    providerFetch: async url => { asked.push(url); return url.includes('/search/') ? pages.search : url.includes('?page=') ? pages.category : pages.category; } });
+  load('async function tistoryPosts(', '// A maker\'s own name');
+  const posts = await c.tistoryPosts(origin, show);
+  assert.deepEqual(Array.from(posts, post => post.title), [`${show} 4화 자막`, `${show} 5화 자막`]);
+  assert.ok(asked.some(url => url === `${origin}${category}`), 'the matching category is read');
+  assert.ok(!asked.some(url => url.includes(encodeURIComponent('빌려준'))), 'another show\'s category is not');
 });
 
 test('extensionless Tistory attachments are taken by their link text', () => {
@@ -323,6 +349,24 @@ test('a show is named by the Anissia entry of its Japanese title, season and sta
   assert.equal(await name('らんま1/2 第3期', '2026-10-04'), '란마 1/2 (2024) 3기');
   assert.equal(await name('進撃の巨人', '2013-04-07'), '', 'not in the catalog');
   assert.equal(await name('薬屋のひとりごと 第4期', '2028-01-01'), '', 'a season Anissia does not have yet');
+});
+
+// Anissia's search reads Japanese titles: one request (the title less its season) instead of the daily catalog, which
+// is read only when the search fails or finds none.
+test('Anissia is searched by the Japanese title before its catalog is read', async () => {
+  const asked = [];let catalogReads = 0, info = null;
+  const found = [{ animeNo: 2588, subject: '환생했는데 제7왕자라 내맘대로 마술을 연마합니다', originalSubject: '転生したら第七王子だったので、気ままに魔術を極めます', startDate: '2024-04-02' },
+    { animeNo: 2986, subject: '환생했는데 제7왕자라 내맘대로 마술을 연마합니다 2기', originalSubject: '転生したら第七王子だったので、気ままに魔術を極めます', startDate: '2025-07-10' }];
+  const { context: c, load } = setup({ nativeInfo: async () => info,
+    anissiaFetch: async pathname => { asked.push(decodeURIComponent(pathname)); if (/失敗/.test(decodeURIComponent(pathname))) throw new Error('Anissia error'); return { content: /第七王子/.test(decodeURIComponent(pathname)) ? found : [] }; },
+    anissiaCatalog: async () => { catalogReads++; return [{ no: 9, subject: '실패작', original: '失敗作', start: '2020-01-01' }]; } });
+  load("const JAPANESE_SEASON=", 'async function koreanTitleCandidates(');
+  const name = async (native, start) => { info = { native, start: Date.parse(start), format: 'TV' }; return c.anissiaKoreanTitle({}, ''); };
+  assert.equal(await name('転生したら第七王子だったので、気ままに魔術を極めます 第2期', '2025-07-10'), '환생했는데 제7왕자라 내맘대로 마술을 연마합니다 2기');
+  assert.equal(asked.at(-1), '/anime/list/0?q=転生したら第七王子だったので、気ままに魔術を極めます', 'asked without its season');
+  assert.equal(catalogReads, 0);
+  assert.equal(await name('失敗作', '2020-01-01'), '실패작', 'a failed search reads the catalog');
+  assert.equal(catalogReads, 1);
 });
 
 // A maker whose Anissia page is a Google Drive folder (수퍼소닉EX): the folder is downloaded as the episode's post (its
