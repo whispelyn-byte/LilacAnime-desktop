@@ -598,10 +598,17 @@ function seekPreviewVideo(source) {
       enableWorker: true, autoStartLoad: false, startLevel: 0, maxBufferLength: 2, maxMaxBufferLength: 4, backBufferLength: 0, maxBufferSize: 8 * 1024 * 1024,
       xhrSetup: (xhr, url) => { if (/^http:\/\/127\.0\.0\.1:\d+\/__flix\//i.test(url)) xhr.open('GET', `${url}${url.includes('?') ? '&' : '?'}lilac-preview=1`, true); },
     });
-    hls.on(Hls.Events.MANIFEST_PARSED, () => { hls.autoLevelCapping = 0; });
+    hls.on(Hls.Events.MANIFEST_PARSED, () => { hls.autoLevelCapping = 0; startSeekPreviewLoad(); });
     hls.loadSource(source); hls.attachMedia(video);
   } else video.src = source;
   return video;
+}
+// Loading starts at the slot asked for once the playlist is read: asked before, hls.js loads the episode's first segment
+// ahead of it (on Re:Anime a second segment fetch, about 2.5 s).
+function startSeekPreviewLoad() {
+  const hls = seekPreview.hls;
+  if (!hls || seekPreview.loading || seekPreview.wanted == null || !hls.levels?.length) return;
+  seekPreview.loading = true; hls.startLoad(Math.min(seekPreview.wanted * SEEK_PREVIEW_SLOT, Math.max(0, playbackDuration() - 0.5)));
 }
 // The picture just sought to, letterboxed into its slot's canvas (shown as is; a picture from another site can still be
 // drawn, only not read back).
@@ -642,11 +649,18 @@ function showSeekPreview(event) {
   clearTimeout(seekPreview.timer);
   // Asked for only once the pointer rests a moment, so sweeping across the bar loads nothing on the way.
   if (!kept) seekPreview.timer = setTimeout(() => {
-    const video = seekPreviewVideo(source), at = Math.min(slot * SEEK_PREVIEW_SLOT, Math.max(0, duration - 0.5));
-    if (seekPreview.hls && !seekPreview.loading) { seekPreview.loading = true; seekPreview.hls.startLoad(at); }
-    video.currentTime = at;
+    const video = seekPreviewVideo(source);
+    startSeekPreviewLoad();
+    video.currentTime = Math.min(slot * SEEK_PREVIEW_SLOT, Math.max(0, duration - 0.5));
   }, 120);
 }
+// The playlist is read as soon as the pointer reaches the bar, before it rests anywhere.
+$('#playerSeek').addEventListener('pointerenter', () => {
+  const source = seekPreviewSource();
+  if (!source || playerLocked || !playbackDuration()) return;
+  if (source !== seekPreview.source) resetSeekPreview();
+  seekPreviewVideo(source);
+});
 $('#playerSeek').addEventListener('pointermove', showSeekPreview);
 $('#playerSeek').addEventListener('pointerleave', () => { clearTimeout(seekPreview.timer); seekPreview.wanted = null; seekPreview.box?.classList.remove('show'); });
 $('#playerBack').addEventListener('click', resetSeekPreview);
