@@ -774,7 +774,9 @@ async function ohliDetail(anime){
   const episodes=listed.sort((a,b)=>Number(Boolean(a.special))-Number(Boolean(b.special))||(a.number||0)-(b.number||0)||a.order-b.order).map(({order,...episode})=>episode);
   // A movie is its one episode, whatever the site calls it ("14기", the movie's own title): 1화, as before.
   if(comic.category==='극장판'&&episodes.length===1){const [only]=episodes;delete only.special;Object.assign(only,{name:'1',number:1})}
-  const ids=await idsLookup;
+  // Waited for briefly: AniList allows 30 requests a minute and past that answers 429, waited out for up to 15 s (the
+  // page took 16 s). OP/ED times and downloads look the ids up again by the original title (see oped:get).
+  const ids=await Promise.race([idsLookup,new Promise(resolve=>setTimeout(resolve,1500,null))]);
   if(ids)for(const episode of episodes)if(!episode.special)Object.assign(episode,ids);
   const card=ohliAnime({...comic,episodes_count:episodes.length});
   const data={...anime,...(ids||{}),title:card.title,title_japanese:native,images:card.images.webp.large_image_url?card.images:anime.images,synopsis:card.synopsis||anime.synopsis||'',genres:card.genres.length?card.genres:(String(info['장르']||'').split(',').map(name=>name.trim()).filter(Boolean).map(name=>({name}))),
