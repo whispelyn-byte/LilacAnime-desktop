@@ -539,20 +539,28 @@ function play(src,name='직접 재생',context={}) {
     hlsPlayer.on(Hls.Events.FRAG_BUFFERED,()=>{if(!video.paused)$('#downloadStatus').textContent='재생 중 · 앞부분 계속 불러오는 중'});
     // Recover instead of stopping. FlixCloud segments do not always start on a keyframe and some
     // contain none, so playback cannot start inside them after a seek or resume ("Found no media").
-    // Step back one fragment at a time until one with a keyframe plays. A fragment that fails again after
-    // the step back (reached by playing on from the one before it) is jumped over: stepping back again
-    // played the same seconds over and over (seen at 1.25x with 자막 싱크 reading the stream alongside).
-    // The step-back count resets only once playback has moved past every fragment that failed.
-    const recovery={network:0,media:0,stepBack:0,lastSn:null,failed:new Map()};
-    hlsPlayer.on(Hls.Events.FRAG_CHANGED,(_,{frag})=>{recovery.network=0;recovery.media=0;recovery.lastSn=null;if(frag.sn>Math.max(-1,...recovery.failed.keys())){recovery.stepBack=0;recovery.failed.clear()}});
+    // Such a fragment only plays when it is loaded right after the one before it, so the video buffer is
+    // dropped from a fragment before it and that stretch is loaded again in order; if the fragment it restarts
+    // from has no keyframe either, the restart goes one further back. Only seeking back (without dropping) left
+    // the earlier fragments buffered, so the failing one alone was asked for again and failed for good: the
+    // same seconds over and over, then nothing at all (그랑블루 9화, fragments 39 and 40 have no keyframe).
+    // After 8 fragments back the failing one is jumped over.
+    const recovery={network:0,media:0,anchor:null,back:0,lastSn:null};
+    hlsPlayer.on(Hls.Events.FRAG_CHANGED,(_,{frag})=>{recovery.network=0;recovery.media=0;if(recovery.anchor!==null&&frag.sn>recovery.anchor){recovery.anchor=null;recovery.back=0}});
+    hlsPlayer.on(Hls.Events.FRAG_BUFFERED,(_,{frag})=>{if(frag.type==='main'&&frag.sn!==recovery.lastSn)recovery.lastSn=null});
     hlsPlayer.on(Hls.Events.ERROR,(_,data)=>{
       if(!hlsPlayer)return;
-      if(data.details===Hls.ErrorDetails.FRAG_PARSING_ERROR&&data.frag?.type==='main'&&recovery.stepBack<8){
+      if(data.details===Hls.ErrorDetails.FRAG_PARSING_ERROR&&data.frag?.type==='main'){
+        // hls.js asks for a failed fragment again by itself before the restart takes effect; those are not counted.
         if(recovery.lastSn===data.frag.sn&&!data.fatal)return;
-        recovery.lastSn=data.frag.sn;recovery.stepBack++;
-        const tries=(recovery.failed.get(data.frag.sn)||0)+1;recovery.failed.set(data.frag.sn,tries);
-        const target=tries>1?{start:data.frag.start+data.frag.duration}:(hlsPlayer.levels[data.frag.level]?.details?.fragments||[]).find(frag=>frag.sn===data.frag.sn-1);
-        if(target){video.currentTime=target.start+.05;$('#downloadStatus').textContent=tries>1?'읽을 수 없는 구간을 건너뛰는 중...':'재생 위치를 맞추는 중...'}
+        recovery.lastSn=data.frag.sn;
+        const sn=data.frag.sn,fragments=hlsPlayer.levels[data.frag.level]?.details?.fragments||[];
+        if(recovery.anchor===null||sn>recovery.anchor||sn<recovery.anchor-recovery.back){recovery.anchor=sn;recovery.back=0}
+        recovery.back++;
+        const restart=recovery.back<=8&&fragments.find(frag=>frag.sn===recovery.anchor-recovery.back),failing=fragments.find(frag=>frag.sn===recovery.anchor);
+        const from=restart?restart.start:failing?failing.start+failing.duration:null;
+        if(!restart){recovery.anchor=null;recovery.back=0}
+        if(from!==null){hlsPlayer.trigger(Hls.Events.BUFFER_FLUSHING,{startOffset:from,endOffset:Number.POSITIVE_INFINITY,type:'video'});video.currentTime=from+(restart?.05:.5);$('#downloadStatus').textContent=restart?'재생 위치를 맞추는 중...':'읽을 수 없는 구간을 건너뛰는 중...'}
         if(data.fatal)hlsPlayer.recoverMediaError();
         return;
       }
