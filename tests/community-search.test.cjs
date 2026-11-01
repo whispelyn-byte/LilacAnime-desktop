@@ -55,6 +55,23 @@ test('decimal episodes and roman season numbers survive title filtering', () => 
   assert.equal(c.rankCommunityPosts([post('어떤 작품 12.5화 자막', 'decimal')], '어떤 작품', 12.5).length, 1);
 });
 
+test('an ordinal inside the title is not a season', () => {
+  const { context: c } = setup();
+  const prince = 'I Was Reincarnated as the 7th Prince so I Can Take My Time Perfecting My Magical Ability';
+  assert.equal(c.titleSeason(prince), null);
+  assert.equal(c.titleSeason(`${prince} Season 2`), 2);
+  assert.equal(c.titleSeason('Mushoku Tensei 2nd Season'), 2);
+  assert.equal(c.communitySeason('환생했는데 제7왕자라 내맘대로 마술을 연마합니다'), null);
+});
+
+test('extensionless Tistory attachments are taken by their link text', () => {
+  const { context: c } = setup();
+  const html = ['24309F3C5383FF2226">[leopard-raws]No Game No Life 07.smi', '223F803C5383FF2817">No Game No Life 07.rar']
+    .map(link => `<a href="https://t1.daumcdn.net/cfile/tistory/${link}</a>`).join('') + '<a href="https://example.com/about">소개</a>';
+  const found = c.communityLinks({ title: '노 게임 노 라이프 7화 자막', url: 'https://therapi.tistory.com/323', html }, 7);
+  assert.deepEqual(Array.from(found.links), ['https://t1.daumcdn.net/cfile/tistory/24309F3C5383FF2226', 'https://t1.daumcdn.net/cfile/tistory/223F803C5383FF2817']);
+});
+
 test('range posts require bundle matching and duplicate episode links remain available as alternatives', () => {
   const { context: c } = setup();
   assert.equal(c.communityLinks(post('어떤 작품 1~12화', 'range'), 1).bundle, true);

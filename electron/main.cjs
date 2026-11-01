@@ -1795,7 +1795,8 @@ async function communityPosts(blog,{force=false}={}){
   communityPostRequests.set(blog,work);try{return await work}finally{communityPostRequests.delete(blog)}
 }
 function communitySeason(text=''){
-  const value=String(text).normalize('NFKC'),m=value.match(/(?:season|시즌)\s*(\d+)|(\d+)\s*기(?![가-힣])|(\d+)(?:st|nd|rd|th)(?:\s*season)?\b|[가-힣](\d)(?=\s|$)/i);
+  // A bare ordinal counts only at the end or before a subtitle: "the 7th Prince" (제7왕자) is not a 7th season.
+  const value=String(text).normalize('NFKC'),m=value.match(/(?:season|시즌)\s*(\d+)|(\d+)\s*기(?![가-힣])|(\d+)(?:st|nd|rd|th)(?:\s*season\b|(?=\s*(?:$|[~\-(:!])))|[가-힣](\d)(?=\s|$)/i);
   if(m)return Number(m[1]||m[2]||m[3]||m[4]);
   // A roman numeral at the end, or before a subtitle ("클레바테스Ⅱ ~마수왕과 가짜 용사 전승~", "시광대리인 Ⅱ -Link Click Ⅱ-").
   const roman=value.trim().match(/(?:^|\s)(II|III|IV|V|VI)\s*$/i)||value.match(/(?:^|[\s가-힣])(II|III|IV|VI|V)(?=\s*[~\-(:])/);return roman?{II:2,III:3,IV:4,V:5,VI:6}[roman[1].toUpperCase()]:null;
@@ -1877,7 +1878,9 @@ function communityTitle(text=''){return String(text).normalize('NFKC').replace(/
 // Each link keeps its text (linkInfo): downloadCommunityMatch tries them tier by tier (planCommunityLinks).
 function communityLinks(post,episode,{offsets=[],allowOffset=false,season=null}={}){
   const $=cheerio.load(post.html),anchors=[];
-  $('a[href]').each((_,a)=>{const href=absoluteUrl($(a).attr('href'),post.url);if(/drive\.google\.com|docs\.google\.com|\.zip(?:$|\?)|\.(?:ass|ssa|srt|vtt|smi)(?:$|\?)/i.test(href)&&!anchors.some(x=>x.href===href))anchors.push({href,label:$(a).text().trim()})});
+  // Old Tistory attachments ("t1.daumcdn.net/cfile/tistory/24309F…") have no extension in the URL; their link text is
+  // the file name ("[ohys-raws]No Game No Life 07.smi").
+  $('a[href]').each((_,a)=>{const href=absoluteUrl($(a).attr('href'),post.url),label=$(a).text().trim();if((/drive\.google\.com|docs\.google\.com|\.zip(?:$|\?)|\.(?:ass|ssa|srt|vtt|smi)(?:$|\?)/i.test(href)||/\.(?:ass|ssa|srt|vtt|smi|zip|7z|rar)(?:\s*\(?\d+(?:\.\d+)?\s*[KMG]B\)?)?$/i.test(label))&&!anchors.some(x=>x.href===href))anchors.push({href,label})});
   const titleEpisodes=communityPostEpisodes(post.title),plan=number=>planCommunityLinks(post.title,titleEpisodes,anchors,number,{season}),named=found=>found.tiers.some(tier=>tier.some(link=>communityLinkEpisodes(link.label).any));
   let number=episode,found=plan(episode);
   // Later seasons often continue the numbering (2기 = 13~24화) while the player counts from 1: a link named for the
