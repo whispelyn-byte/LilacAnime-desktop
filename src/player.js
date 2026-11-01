@@ -567,7 +567,7 @@ $('#immersivePlayer').addEventListener('mousemove', event => {
 // serves those behind the player and fetches nothing ahead for them, see flix-proxy.cjs). Each picture is kept by its
 // 5-second slot, so going back over the bar shows it at once. A new source starts over.
 const SEEK_PREVIEW_SLOT = 5, SEEK_PREVIEW_W = 384, SEEK_PREVIEW_H = 216;
-const seekPreview = { video: null, hls: null, loading: false, source: '', frames: new Map(), wanted: null, timer: 0, box: null };
+const seekPreview = { video: null, hls: null, loading: false, source: '', frames: new Map(), kept: 0, wanted: null, timer: 0, box: null, filling: false };
 function seekPreviewBox() {
   if (seekPreview.box) return seekPreview.box;
   const box = document.createElement('div'); box.className = 'seek-preview'; box.setAttribute('aria-hidden', 'true');
@@ -592,7 +592,8 @@ function seekPreviewVideo(source) {
   const wanted = seekPreview.wanted;
   resetSeekPreview(); seekPreview.source = source; seekPreview.wanted = wanted;
   const video = seekPreview.video ||= Object.assign(document.createElement('video'), { muted: true, preload: 'auto', playsInline: true });
-  video.onseeked = () => keepSeekPreviewFrame(video);
+  // Its first picture comes without a seek when asked at 0 s.
+  video.onseeked = video.onloadeddata = () => keepSeekPreviewFrame(video);
   if (hlsPlayer && window.Hls?.isSupported()) {
     const hls = seekPreview.hls = new Hls({
       enableWorker: true, autoStartLoad: false, startLevel: 0, maxBufferLength: 2, maxMaxBufferLength: 4, backBufferLength: 0, maxBufferSize: 8 * 1024 * 1024,
@@ -620,7 +621,7 @@ function keepSeekPreviewFrame(video) {
   const width = video.videoWidth * scale, height = video.videoHeight * scale;
   ctx.fillStyle = '#000'; ctx.fillRect(0, 0, SEEK_PREVIEW_W, SEEK_PREVIEW_H);
   try { ctx.drawImage(video, (SEEK_PREVIEW_W - width) / 2, (SEEK_PREVIEW_H - height) / 2, width, height); } catch { return; }
-  seekPreview.frames.set(slot, canvas);
+  seekPreview.frames.set(slot, canvas); seekPreview.kept++;
   if (seekPreview.frames.size > 600) seekPreview.frames.delete(seekPreview.frames.keys().next().value);
   if (slot === seekPreview.wanted) paintSeekPreview(canvas);
 }
@@ -645,7 +646,7 @@ function showSeekPreview(event) {
   if (slot === seekPreview.wanted) return;
   seekPreview.wanted = slot;
   const kept = seekPreview.frames.get(slot);
-  paintSeekPreview(kept || null);
+  paintSeekPreview(kept || nearSeekPreviewFrame(slot));
   clearTimeout(seekPreview.timer);
   // Asked for only once the pointer rests a moment, so sweeping across the bar loads nothing on the way.
   if (!kept) seekPreview.timer = setTimeout(() => {
@@ -662,6 +663,59 @@ $('#playerSeek').addEventListener('pointerenter', () => {
   seekPreviewVideo(source);
 });
 $('#playerSeek').addEventListener('pointermove', showSeekPreview);
+// Pictures filled in ahead, so a hover shows one at once: every 30 s of the episode, the wide steps first (every 4 min,
+// then 2, 1, ½), one at a time and only while the player has 15 s of its own stream ahead (or is paused) and the pointer
+// is not on the bar. A hover shows the nearest one until its own picture comes. About 50 lowest-quality segments an
+// episode (Re:Anime: 15 MB).
+const SEEK_PREVIEW_FILL = 30;
+function nearSeekPreviewFrame(slot) {
+  for (let step = 1; step <= SEEK_PREVIEW_FILL / SEEK_PREVIEW_SLOT / 2; step++) {
+    const near = seekPreview.frames.get(slot - step) || seekPreview.frames.get(slot + step);
+    if (near) return near;
+  }
+  return null;
+}
+function seekPreviewFillOrder(duration) {
+  const slots = new Set();
+  for (const step of [240, 120, 60, SEEK_PREVIEW_FILL]) for (let at = 0; at < duration - 1; at += step) slots.add(Math.round(at / SEEK_PREVIEW_SLOT));
+  return [...slots];
+}
+function playerAhead() {
+  const video = $('#video'), now = video.currentTime;
+  for (let i = 0; i < video.buffered.length; i++) if (video.buffered.start(i) <= now + 0.5 && video.buffered.end(i) > now) return video.buffered.end(i) - now;
+  return 0;
+}
+async function fillSeekPreview() {
+  const source = seekPreviewSource(), duration = playbackDuration();
+  if (seekPreview.filling || !source || !Number.isFinite(duration) || !duration) return;
+  seekPreview.filling = true;
+  // Only this episode, while its player is open (leaving it stops the filling; playing again starts it over).
+  const current = () => document.body.classList.contains('player-mode') && seekPreviewSource() === source && (!seekPreview.source || seekPreview.source === source);
+  const until = async (done, ms) => { for (const end = Date.now() + ms; !done() && Date.now() < end;) await new Promise(resolve => setTimeout(resolve, 250)); };
+  try {
+    const queue = seekPreviewFillOrder(duration);
+    while (queue.length) {
+      await until(() => !current() || seekPreview.wanted == null && ($('#video').paused || playerAhead() >= 15), Infinity);
+      if (!current()) return;
+      const slot = queue.shift();
+      if (seekPreview.frames.has(slot)) continue;
+      const video = seekPreviewVideo(source), hls = seekPreview.hls, kept = seekPreview.kept, at = Math.min(slot * SEEK_PREVIEW_SLOT, Math.max(0, duration - 0.5));
+      if (hls) {
+        await until(() => hls.levels?.length || seekPreview.hls !== hls, 15000);
+        if (seekPreview.hls !== hls || !hls.levels?.length) return;
+        if (seekPreview.wanted != null) { queue.push(slot); continue; }
+        hls.stopLoad(); hls.startLoad(at); seekPreview.loading = true;
+      }
+      video.currentTime = at;
+      await until(() => seekPreview.kept !== kept || seekPreview.wanted != null || !current(), 20000);
+      // A hover took the preview over: this one comes again at the end. Otherwise nothing more is loaded around it, and a
+      // hover starts loading where it rests.
+      if (seekPreview.wanted != null) { if (seekPreview.kept === kept) queue.push(slot); continue; }
+      if (hls && seekPreview.hls === hls) { hls.stopLoad(); seekPreview.loading = false; }
+    }
+  } finally { seekPreview.filling = false; }
+}
+$('#video').addEventListener('playing', () => setTimeout(fillSeekPreview, 5000));
 $('#playerSeek').addEventListener('pointerleave', () => { clearTimeout(seekPreview.timer); seekPreview.wanted = null; seekPreview.box?.classList.remove('show'); });
 $('#playerBack').addEventListener('click', resetSeekPreview);
 

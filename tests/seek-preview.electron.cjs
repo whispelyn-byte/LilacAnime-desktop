@@ -60,5 +60,14 @@ app.whenReady().then(async () => {
     assert.ok(shown >= 20, `hover at ${ratio * 100}%: the preview stays black (${shown.toFixed(1)})`);
     console.log(`hover at ${ratio * 100}%: picture shown (brightness ${shown.toFixed(1)})`);
   }
+  // With the pointer away and the episode playing, its pictures are filled in ahead (every 30 s: here 0 s and 30 s), and a
+  // hover where none was taken (35 s) shows the nearest at once.
+  await win.webContents.executeJavaScript(`$('#playerSeek').dispatchEvent(new PointerEvent('pointerleave')); resetSeekPreview(); $('#video').muted = true; $('#video').play(); void 0`);
+  let filled = [];
+  for (let i = 0; i < 80 && filled.length < 2; i++) { await wait(250); filled = await win.webContents.executeJavaScript('[...seekPreview.frames.keys()]'); }
+  assert.deepEqual(filled.sort((a, b) => a - b), [0, 6], 'the 0 s and 30 s pictures are filled in');
+  const near = await win.webContents.executeJavaScript(`$('#video').pause(); hover(35 / ${40}); brightness()`);
+  assert.ok(near >= 20, `a hover at 35 s shows the 30 s picture at once (${near.toFixed(1)})`);
+  console.log(`filled in ahead: slots ${filled.join(', ')}; hover at 35 s shows the nearest (brightness ${near.toFixed(1)})`);
   server.close(); win.destroy(); app.quit();
 }).catch(fail);
