@@ -680,6 +680,17 @@ async function ohliBrowse(page=1,format=''){
   if(format==='Movie')return ohliBoard('극장판',page);
   return page<=1?{data:await ohliAiring(),done:false}:ohliBoard('완결',page-1);
 }
+// 인기 순위: the site keeps no views (a sort it does not know falls back to update-desc), so its "별점 높은순" (a
+// weighted rating) front pages are ranked by how many people rated each show. Kept for an hour.
+let ohliPopularCache=null;
+async function ohliPopular(){
+  if(ohliPopularCache&&Date.now()-ohliPopularCache.time<60*60*1000)return ohliPopularCache.data;
+  const pages=await Promise.all([1,2,3,4,5].map(page=>ohliPage(`${OHLI24_WEB}/?sort=rating-desc&page=${page}`).then(root=>root.comics?.data||[],()=>[])));
+  const seen=new Set(),items=pages.flat().filter(item=>!seen.has(item.slug)&&seen.add(item.slug));
+  if(!items.length)throw new Error('애니24 별점 순위를 불러오지 못했습니다.');
+  const data=items.sort((a,b)=>(Number(b.rating_count)||0)-(Number(a.rating_count)||0)||(Number(b.rating)||0)-(Number(a.rating)||0)).map(ohliAnime);
+  ohliPopularCache={time:Date.now(),data};return data;
+}
 // A search: the finished and movie boards search themselves (spaced as typed: searched again by pieces when nothing
 // is found); the airing board lists every airing show, matched here.
 async function ohliSearch(query){
@@ -1596,6 +1607,10 @@ async function sortedCatalog(provider,sort,offset){
       cursor=root.next_cursor||undefined;more=Boolean(root.has_more&&cursor);
     }
     return {data,offset,nextOffset:cursor||null,done:!more};
+  }
+  if(provider==='ohli24'&&sort==='popular'){
+    const list=await ohliPopular(),at=Math.max(0,Number(offset)||0);
+    return {data:list.slice(at,at+SORTED_PAGE),offset:at,nextOffset:at+SORTED_PAGE,total:list.length,done:at+SORTED_PAGE>=list.length};
   }
   if(provider==='linkani'&&sort==='popular'){
     const page=Math.max(1,Number(offset)||1),data=linkaniItems(await linkaniFetch(`${LINKANI_WEB}/label/topday/${page>1?`page/${page}/`:''}`));
