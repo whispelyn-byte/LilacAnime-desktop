@@ -269,7 +269,7 @@ async function switchSubtitleSource(source) {
   currentPlaybackContext.sheetSource = ['reanime', 'anissia'].includes(source) ? source : null; pressSubtitleSource(source); renderSubtitleSheet();
   if (KOREAN_SOURCES.includes(source)) preferAiSubtitle(false); // back to a Korean subtitle (see prefersAiSubtitle)
   localStorage.setItem('subtitleSource', source);
-  if ($('#subtitleSource')) { $('#subtitleSource').value = source; syncSettingChoices(); }
+  if ($('#subtitleSource')) { $('#subtitleSource').value = settingsSubtitleSource(); syncSettingChoices(); }
   syncPlayerSettingsUI();
   const key = subtitleStoreKey(), saved = key ? await window.lilac.savedSubtitles(key).catch(() => []) : [], requestId = playbackRequestId;
   // Re:Anime / Miruro: the site's own subtitle, never a machine translation (that is the AI 번역 chip): its Korean track,

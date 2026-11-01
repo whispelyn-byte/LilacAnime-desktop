@@ -251,7 +251,7 @@ test('a slower earlier subtitle search does not replace the source or maker pick
   const context = vm.createContext({ $, localStorage: { setItem() {} }, playbackRequestId: 1, currentPlaybackContext: {}, currentSubtitle: null,
     KOREAN_SOURCES: ['kairan', 'csora', 'anissia'], SUBTITLE_SOURCE_LABELS: { kairan: 'Kairan', csora: 'Csora', anissia: 'Anissia' },
     window: { lilac: { savedSubtitles: async () => [], findSubtitle: (source, _title, _episode, _anime, options = {}) => new Promise((resolve, reject) => pending.push({ source, maker: options.maker, resolve, reject })) } },
-    subtitleStoreKey: () => 'key', subtitleSearchAnime: () => ({}), pressSubtitleSource() {}, renderSubtitleSheet() {}, preferAiSubtitle() {}, syncSettingChoices() {}, syncPlayerSettingsUI() {}, renderAnissiaMakers() {},
+    subtitleStoreKey: () => 'key', subtitleSearchAnime: () => ({}), pressSubtitleSource() {}, renderSubtitleSheet() {}, preferAiSubtitle() {}, syncSettingChoices() {}, settingsSubtitleSource: () => 'reanime', syncPlayerSettingsUI() {}, renderAnissiaMakers() {},
     communityLabel: (source, result) => `${source}${result.maker ? ` · ${result.maker}` : ''}`, attachSubtitle: (url, label) => attached.push(label) });
   vm.runInContext(section('// Each chip press', '// Quality:'), context);
   vm.runInContext(section('async function selectAnissiaMaker', '// Writes one subtitle setting'), context);
@@ -273,7 +273,7 @@ test('the Re:Anime chip puts on the site track without a Korean one instead of a
   const context = vm.createContext({ $, localStorage: { setItem() {} }, playbackRequestId: 1, currentPlaybackContext: { subtitleTracks: [signs, english] }, currentSubtitle: null,
     KOREAN_SOURCES: ['kairan', 'csora', 'anissia'], SUBTITLE_SOURCE_LABELS: {},
     window: { lilac: { savedSubtitles: async () => [{ source: 'gemini', path: 'ai.vtt' }] } },
-    subtitleStoreKey: () => 'key', pressSubtitleSource() {}, renderSubtitleSheet() {}, preferAiSubtitle: on => aiPrefs.push(on), syncSettingChoices() {}, syncPlayerSettingsUI() {},
+    subtitleStoreKey: () => 'key', pressSubtitleSource() {}, renderSubtitleSheet() {}, preferAiSubtitle: on => aiPrefs.push(on), syncSettingChoices() {}, settingsSubtitleSource: () => 'reanime', syncPlayerSettingsUI() {},
     isKoreanTrack: track => /korean/i.test(track.label), translationSourceTrack: () => english, selectSubtitleTrack: track => picked.push(track.url),
     applySavedSubtitle: () => savedApplied++, autoTranslate: async () => { translations++; return true; }, trackSourceLabel: () => 'Re:Anime' });
   vm.runInContext(section('// Each chip press', '// Quality:'), context);
