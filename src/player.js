@@ -588,7 +588,9 @@ function resetSeekPreview() {
 }
 function seekPreviewVideo(source) {
   if (seekPreview.source === source && seekPreview.video) return seekPreview.video;
-  resetSeekPreview(); seekPreview.source = source;
+  // The slot the pointer rests on stays wanted: the first picture of a new source was kept but never shown (black box).
+  const wanted = seekPreview.wanted;
+  resetSeekPreview(); seekPreview.source = source; seekPreview.wanted = wanted;
   const video = seekPreview.video ||= Object.assign(document.createElement('video'), { muted: true, preload: 'auto', playsInline: true });
   video.onseeked = () => keepSeekPreviewFrame(video);
   if (hlsPlayer && window.Hls?.isSupported()) {
