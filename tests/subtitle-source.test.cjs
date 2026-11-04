@@ -25,6 +25,25 @@ test('dialogue tracks precede AI transcripts, signs-only tracks and English Jima
   const state = lookup([en], [{name:'show.01.en.srt',url:'wrong-language'}]);
   assert.equal((await state.run()).file.path, 'en'); assert.equal(state.calls.includes('wrong-language'), false);
 });
+test('another site\'s tracks come after the site\'s own and Jimaku, and are waited for only after Jimaku', async () => {
+  const crossJa = { ...ja, url: 'cross-ja', crossSite: true }, crossEn = { ...en, url: 'cross-en', crossSite: true };
+  const order = async ({ tracks = [], later = null, files = [jimaku], failures = [] }) => {
+    const calls = [];
+    const result = await resolve({ tracks, laterTracks: later, getJimaku: async () => { calls.push('list'); return files; },
+      readTrack: async item => { calls.push(item.url); if (failures.includes(item.url)) throw Error('offline'); return { path: item.url }; },
+      readJimaku: async item => { calls.push(item.url); if (failures.includes(item.url)) throw Error('offline'); return { path: item.url }; } });
+    return { path: result?.file.path || null, calls };
+  };
+  assert.equal((await order({ tracks: [crossJa, en] })).path, 'jimaku');
+  assert.deepEqual((await order({ later: Promise.resolve([crossJa, crossEn]), files: [] })).calls, ['list', 'cross-ja']);
+  assert.deepEqual((await order({ tracks: [en], later: Promise.resolve([en, crossJa]), files: [] })).calls, ['list', 'cross-ja']);
+  assert.deepEqual((await order({ tracks: [], later: Promise.resolve([crossEn, en]), files: [] })).calls, ['list', 'en']);
+  assert.deepEqual((await order({ later: Promise.resolve([crossJa, crossEn]), files: [], failures: ['cross-ja'] })).calls, ['list', 'cross-ja', 'cross-en']);
+  // A failed own Japanese track is not tried a second time once the later list (which holds it too) is in.
+  assert.deepEqual((await order({ tracks: [ja], later: Promise.resolve([ja]), files: [], failures: ['ja'] })).calls, ['ja', 'list']);
+  // The own tracks a downloaded episode loads later still go before another site's.
+  assert.equal(track([crossJa, ja], 'ja'), ja);
+});
 test('switching episodes while Jimaku loads cannot read or apply the old source', async () => {
   let current = true, reads = 0;
   const result = await resolve({ tracks:[en], current:()=>current, getJimaku:async()=>{current=false;return [jimaku]}, readTrack:async()=>{reads++},readJimaku:async()=>{reads++} });

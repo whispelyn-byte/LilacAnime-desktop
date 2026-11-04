@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld('lilac', {
   whisperJump: seconds => ipcRenderer.invoke('whisper:jump', seconds),
   onWhisperProgress: callback => ipcRenderer.on('whisper:progress', (_, value) => callback(value)),
   providerSubtitleTracks: episode => ipcRenderer.invoke('provider:subtitle-tracks', episode),
+  crossSiteSubtitleTracks: (episode, anime = null) => ipcRenderer.invoke('provider:cross-site-tracks', episode, anime),
   coverData: url => ipcRenderer.invoke('cover:data', url),
   opEdSkip: request => ipcRenderer.invoke('oped:get', request),
   clearOpEd: () => ipcRenderer.invoke('oped:clear'),

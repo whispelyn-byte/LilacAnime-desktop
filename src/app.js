@@ -217,7 +217,7 @@ function downloadedSeries(reference){const identity=reference?.anime?.mal_id||re
 function episodeDownloadMarkup(job){if(job?.status==='completed')return downloadIcon('delete');if(job&&['downloading','resolving','queued'].includes(job.status))return `<span class="download-ring" style="--progress:${job.progress||0}">${downloadIcon('close')}</span>`;if(job&&['paused','failed'].includes(job.status))return downloadIcon('retry');return downloadIcon('download')}
 function refreshEpisodeDownloadButtons(){$$('.episode-download').forEach(button=>{const job=jobByRef(button.dataset.downloadRef);button.classList.toggle('active',Boolean(job));button.classList.toggle('completed',job?.status==='completed');button.classList.toggle('downloading',Boolean(job&&['downloading','resolving','queued'].includes(job.status)));button.innerHTML=episodeDownloadMarkup(job);button.title=job?.status==='completed'?'다운로드 삭제':job&&['downloading','resolving','queued'].includes(job.status)?'다운로드 취소':job&&['paused','failed'].includes(job.status)?'다운로드 다시 시작':'다운로드'})}
 async function handleEpisodeDownload(anime,episode,resolveKind='provider'){const job=jobByRef(episodeRef(episode));if(job?.status==='completed'){await removeDownload(job);toast(`${jobEpisodeText(job)} 다운로드를 삭제했습니다.`);return}if(job&&['downloading','resolving','queued'].includes(job.status)){await window.lilac.cancelDownload(job.id);toast(`${jobEpisodeText(job)} 다운로드를 중지했습니다.`);return}if(job&&['paused','failed'].includes(job.status)){await window.lilac.resumeDownload(job.id);toast(`${jobEpisodeText(job)} 다운로드를 다시 시작합니다.`);return}await queueEpisodeDownload(anime,episode,resolveKind)}
-async function queueEpisodeDownload(anime,episode,resolveKind='provider'){const number=Number(episode.number||String(episode.name).match(/\d+/)?.[0]||1),label=episode.special?episodeTitle(episode):'';const job=await window.lilac.addDownload({anime:normalize(anime),title:titleOf(anime),image:imageOf(anime),episode,episodeNumber:number,episodeLabel:label,resolveKind,subtitleSource:localStorage.getItem('subtitleSource')||'reanime',opedAnalysis:localStorage.getItem('opedAudioAnalysis')!=='false'});toast(job.status==='completed'?`${label||`${number}화`}는 이미 저장되어 있습니다.`:`${label||`${number}화`}를 다운로드 대기열에 추가했습니다.`)}
+async function queueEpisodeDownload(anime,episode,resolveKind='provider'){const number=Number(episode.number||String(episode.name).match(/\d+/)?.[0]||1),label=episode.special?episodeTitle(episode):'';const job=await window.lilac.addDownload({anime:normalize(anime),title:titleOf(anime),image:imageOf(anime),episode,episodeNumber:number,episodeLabel:label,resolveKind,subtitleSource:localStorage.getItem('subtitleSource')||'reanime',otherSiteTracks:otherSiteTracksOn(),opedAnalysis:localStorage.getItem('opedAudioAnalysis')!=='false'});toast(job.status==='completed'?`${label||`${number}화`}는 이미 저장되어 있습니다.`:`${label||`${number}화`}를 다운로드 대기열에 추가했습니다.`)}
 // Loading more only appends cards, so cards already on screen do not replay their entrance animation.
 // Sources whose list, detail and episodes come from the site's own pages or API (not Linkkf's).
 const PROVIDER_SOURCES=['reanime','animenosub','miruro','ohli24','linkani'],SOURCE_LABELS={linkkf:'Linkkf',animenosub:'Animenosub',reanime:'RE:Anime',miruro:'Miruro',ohli24:'애니24',linkani:'링크애니'};
@@ -486,10 +486,16 @@ async function resolveWithVideoServer(episode,koreanSearch,anime,failedServers=[
   }
   return resolve({...episode,server:picked,prefer,failedServers});
 }
+// The first answer that found something of several searches, or null when none did.
+function firstFound(...searches){return new Promise(resolve=>{let left=searches.length;if(!left)resolve(null);for(const search of searches)Promise.resolve(search).then(value=>{if(value)resolve(value);else if(!--left)resolve(null)},()=>{if(!--left)resolve(null)})})}
+// Whether the other sites have a Korean track of an episode (see crossSiteTracksFor).
+function otherSiteKorean(episode,anime){return crossSiteTracksFor(episode,anime).then(result=>(result?.tracks||[]).some(isKoreanTrack)?{source:'track'}:null,()=>null)}
 async function resolveIntoPlayer(resolver,name,context={},subtitleTitle='',episode=1){
   const requestId=showPendingPlayer(name,context);
   const searchTitle=subtitleTitle||context.subtitleTitle||name.split(' · ')[0];
-  const koreanSearch=['ohli24','linkani'].includes(context.episode?.provider)?Promise.resolve(null):onlineSubtitleFor(searchTitle,episode,context.anime?{provider:context.anime.provider,id:context.anime.id,title:context.anime.title||context.anime.title_english||'',anilistId:context.anime.anilistId||null,malId:context.anime.malId||null}:null).catch(()=>null);
+  const blogSearch=['ohli24','linkani'].includes(context.episode?.provider)?Promise.resolve(null):onlineSubtitleFor(searchTitle,episode,context.anime?{provider:context.anime.provider,id:context.anime.id,title:context.anime.title||context.anime.title_english||'',anilistId:context.anime.anilistId||null,malId:context.anime.malId||null}:null).catch(()=>null);
+  // The other sites' tracks are asked at once too: a Korean one is a Korean subtitle for the video server's choice.
+  const koreanSearch=firstFound(blogSearch,otherSiteKorean(context.episode,context.anime));
   try{
     // A download whose video is not there (moved, the drive unplugged) plays online instead.
     const job=context.episode?jobByRef(episodeRef(context.episode)):null,downloaded=job&&!job.missing?job:null;
@@ -634,7 +640,7 @@ const engineSide=result=>result.engine==='로컬 AI'?'local':'cloud';
 function subtitleStoreKey(){const episode=currentPlaybackContext.episode;return episode?episodeRef(episode):''}
 async function rememberSubtitle(subtitle){const key=subtitleStoreKey();if(!key)return;try{await window.lilac.saveSubtitle(key,{source:subtitle.source,label:subtitle.label,path:subtitle.path,assPath:subtitle.assPath||null,fonts:subtitle.fonts||[],from:subtitle.from||null,fromName:subtitle.fromName||''})}catch{}renderSubtitleSheet()}
 // A saved Re:Anime / Miruro track is matched to its track by name ("Re:Anime English (Dialogue) 자막"), so the list marks it and 번역 knows it.
-function applySavedSubtitle(entry){if(entry.source==='jimaku')return applySavedJimaku(entry);if(entry.source==='reanime'){const track=(currentPlaybackContext.subtitleTracks||[]).find(item=>entry.label===`${trackSourceLabel()} ${item.label} 자막`);if(track)currentPlaybackContext.selectedSubtitleTrack=track.url}currentSubtitlePath=entry.path;attachSubtitle(entry.url,entry.label,{path:entry.path,assUrl:entry.assUrl,assPath:entry.assPath,fonts:entry.fonts,source:entry.source,from:entry.from||null,fromName:entry.fromName||'',saved:true})}
+function applySavedSubtitle(entry){if(entry.source==='jimaku')return applySavedJimaku(entry);if(entry.source==='reanime'){const track=(currentPlaybackContext.subtitleTracks||[]).find(item=>entry.label===`${trackLabel(item)} ${item.label} 자막`);if(track)currentPlaybackContext.selectedSubtitleTrack=track.url}currentSubtitlePath=entry.path;attachSubtitle(entry.url,entry.label,{path:entry.path,assUrl:entry.assUrl,assPath:entry.assPath,fonts:entry.fonts,source:entry.source,from:entry.from||null,fromName:entry.fromName||'',saved:true})}
 // The subtitle sheet: the chip of the source on screen is lit (a machine translation lights AI 번역), the list of the
 // source picked last opens under the chips (Re:Anime / Miruro tracks, Jimaku files, Anissia makers; else the one of the
 // subtitle on screen), and one 번역 row is shown while a Japanese or English subtitle is on (or a translation runs).
@@ -715,7 +721,8 @@ function showSyncDone(text,undo){
 async function syncReferences(subtitle){
   if(subtitle.source==='reanime')return [];
   const name=track=>`${track.label||''} ${track.language||''}`;
-  const tracks=(currentPlaybackContext.subtitleTracks||[]).filter(track=>!/signs|songs|s&s|forced|dubtitle|\(ai\)|\bai\b|commentary/i.test(name(track)))
+  // Another site's tracks (crossSite) are timed for that site's video: they are no reference for this one.
+  const tracks=(currentPlaybackContext.subtitleTracks||[]).filter(track=>!track.crossSite&&!/signs|songs|s&s|forced|dubtitle|\(ai\)|\bai\b|commentary/i.test(name(track)))
     .sort((a,b)=>Number(/full|dialog/i.test(name(b)))-Number(/full|dialog/i.test(name(a)))).slice(0,4);
   const files=[];
   // With its ASS (when the track is one), whose styles tell its opening, ending and sign lines from the spoken ones.
@@ -802,6 +809,10 @@ $('#autoSyncSubtitle').onclick=()=>runSubtitleSync();
 if(localStorage.getItem('subtitleSyncCheck')!=='false')window.lilac.prepareSubtitleSync?.().catch(()=>{});
 $('#subtitleSyncCheck').checked=localStorage.getItem('subtitleSyncCheck')!=='false';
 $('#subtitleSyncCheck').onchange=event=>localStorage.setItem('subtitleSyncCheck',String(event.target.checked));
+// 다른 사이트 자막 트랙도 찾기 (on unless turned off): the other sites' tracks in the player, downloads and the next episode.
+function otherSiteTracksOn(){try{return localStorage.getItem('otherSiteTracks')!=='false'}catch{return true}}
+$('#otherSiteTracks').checked=otherSiteTracksOn();
+$('#otherSiteTracks').onchange=event=>{try{localStorage.setItem('otherSiteTracks',String(event.target.checked))}catch{}crossSiteRequests.clear()};
 // 설정 > 재생 > 다음 화 미리 준비 (each on until turned off).
 for(const id of ['prepareNextVideo','prepareNextSubtitle','prepareNextTranslation','prepareNextWhisper','arrowVolume']){$(`#${id}`).checked=localStorage.getItem(id)!=='false';$(`#${id}`).onchange=event=>localStorage.setItem(id,String(event.target.checked))}
 async function ensureSubtitle(stream,title,episode,{skipSaved=false}={}){
@@ -838,12 +849,19 @@ async function ensureSubtitle(stream,title,episode,{skipSaved=false}={}){
     return true}
   if(saved[0]){await applySavedSubtitle(saved[0]);offerAfter(saved[0].source,!['provider','jimaku'].includes(saved[0].source));return true}
   // The search gives way to whatever the user picks meanwhile (a track, a Jimaku file, a saved or own subtitle).
-  const before=currentSubtitle,superseded=()=>requestId!==playbackRequestId||Boolean(currentPlaybackContext.selectedSubtitleTrack)||currentSubtitle!==before;$('#subtitleState').textContent='온라인 자막을 찾는 중...';
+  const before=currentSubtitle,superseded=()=>requestId!==playbackRequestId||Boolean(currentPlaybackContext.selectedSubtitleTrack)||currentSubtitle!==before;
+  // Another site's Korean track of this very episode (RE:Anime's, Miruro's, found by its AniList entry) comes before the
+  // blogs, whose posts are matched by title. It is timed for that site's video: put on, it is synced to this one's audio
+  // like any subtitle (checkSubtitleSync). Waited for 12 s at most; the blogs are searched meanwhile all the same.
+  if(currentPlaybackContext.tracksPromise||currentPlaybackContext.tracksLoading){$('#subtitleState').textContent='다른 사이트의 한국어 자막 트랙을 찾는 중...';await Promise.race([Promise.resolve(currentPlaybackContext.tracksPromise).catch(()=>{}),new Promise(resolve=>setTimeout(resolve,12000))]);if(superseded())return false}
+  const otherKorean=(currentPlaybackContext.subtitleTracks||[]).find(track=>track.crossSite&&isKoreanTrack(track));
+  if(otherKorean&&await selectSubtitleTrack(otherKorean,{auto:true,notice:`${trackLabel(otherKorean)}의 같은 회차 한국어 자막이에요. 이 영상에 싱크를 맞춰요.`})){currentPlaybackContext.siteKorean=true;return true}
+  if(superseded())return false;$('#subtitleState').textContent='온라인 자막을 찾는 중...';
   const found=await onlineSubtitleFor(title,episode,subtitleSearchAnime());if(superseded())return false;if(found){attachOnlineSubtitle(found);return true}
   if(await autoTranslate(superseded))return true;
   // Nothing to show or translate: Whisper makes one from the speech (설정 > Whisper AI 자막 > 자동으로 만들기).
   if(!superseded()&&typeof whisperWhenNoSubtitle==='function'&&await whisperWhenNoSubtitle())return true;
-  if(superseded())return false;const needsTmdb=currentPlaybackContext.episode?.provider==='reanime'&&!(await window.lilac.tmdbKey().catch(()=>({})))?.key;if(superseded())return false;$('#subtitleState').textContent=needsTmdb?'Kairan/Csora 자막을 찾지 못했습니다. 설정 > 한국어 제목 검색에서 TMDB API 키를 넣으면 더 많은 작품을 찾을 수 있어요.':trackProvider()&&currentPlaybackContext.subtitleTracks?.length?`한국어 자막이 없습니다. 아래 ${trackSourceLabel()} 트랙에서 다른 언어를 고르거나 내 자막 파일을 열 수 있어요.`:'자동으로 찾은 자막이 없습니다. 내 자막 파일을 열 수 있어요.';return false;
+  if(superseded())return false;const needsTmdb=currentPlaybackContext.episode?.provider==='reanime'&&!(await window.lilac.tmdbKey().catch(()=>({})))?.key;if(superseded())return false;$('#subtitleState').textContent=needsTmdb?'Kairan/Csora 자막을 찾지 못했습니다. 설정 > 한국어 제목 검색에서 TMDB API 키를 넣으면 더 많은 작품을 찾을 수 있어요.':trackProvider()&&currentPlaybackContext.subtitleTracks?.some(isKoreanTrack)?`${trackSourceLabel()} 트랙에 한국어 자막이 있어요. 플레이어 설정 > 자막에서 고를 수 있어요.`:trackProvider()&&currentPlaybackContext.subtitleTracks?.length?`한국어 자막이 없습니다. 아래 ${trackSourceLabel()} 트랙에서 다른 언어를 고르거나 내 자막 파일을 열 수 있어요.`:'자동으로 찾은 자막이 없습니다. 내 자막 파일을 열 수 있어요.';return false;
 }
 // No Korean subtitle anywhere (no Korean track, nothing from Kairan / Csora / Anissia): the best source is put on and
 // translated (it plays until the translation is in).
@@ -855,7 +873,9 @@ async function autoTranslate(superseded,manual=false,provider=null){
   if(superseded()||!provider)return false;
   $('#subtitleState').textContent=prefersAiSubtitle()?'번역할 자막을 찾는 중...':'한국어 자막이 없어 번역할 자막을 찾는 중...';
   const requestId=playbackRequestId;
-  const picked=await LilacSubtitleSource.resolve({tracks:currentPlaybackContext.subtitleTracks||[],current:()=>requestId===playbackRequestId,
+  // The tracks still loading (another site's, a downloaded episode's) are waited for after Jimaku, so they can be the source.
+  const context=currentPlaybackContext,laterTracks=context.tracksPromise?Promise.resolve(context.tracksPromise).catch(()=>{}).then(()=>context.subtitleTracks||[]):null;
+  const picked=await LilacSubtitleSource.resolve({tracks:context.subtitleTracks||[],laterTracks,current:()=>requestId===playbackRequestId,
     getJimaku:()=>superseded()?[]:anime?loadJimakuList():[],
     readTrack:async track=>{if(superseded())return null;return await selectSubtitleTrack(track,{auto:true,notice:`${track.label} 자막을 먼저 띄웠어요. 번역되는 대로 한국어로 바뀌어요.`})?{track}:null},
     readJimaku:async file=>{if(superseded())return null;return await applyJimaku(file,manual,provider)?{jimaku:file}:null}
@@ -872,29 +892,64 @@ async function subtitleFontChanged(){subtitleFontPromise=null;syncSubtitleFontUI
 function isKoreanTrack(track){return /kor|korean|한국/i.test(`${track.language} ${track.label}`)||/^ko(?:[-_]|$)/i.test(track.language||"")||/_kor_/i.test(track.url)}
 // Re:ANIME/FlixCloud and Miruro expose every subtitle language; Android v0.3.9 lets the user pick one. The "reanime"
 // subtitle source stands for the playing source's tracks.
-const TRACK_PROVIDERS=['reanime','miruro'];
-function trackProvider(){const provider=currentPlaybackContext.episode?.provider;return TRACK_PROVIDERS.includes(provider)?provider:null}
-function trackSourceLabel(){return trackProvider()==='miruro'?'Miruro':'Re:Anime'}
+// Every site's episode also gets the other sites' tracks of the same episode (RE:Anime's, Miruro's), found by its
+// AniList entry (crossSite, with their origin; see loadMissingSubtitleTracks): all of them where the site has none,
+// only a Korean one beside a site's own. The chip and list show while they load or when found.
+const TRACK_PROVIDERS=['reanime','miruro'],ORIGIN_LABEL={reanime:'Re:Anime',miruro:'Miruro'};
+function trackProvider(){const context=currentPlaybackContext,provider=context.episode?.provider;if(TRACK_PROVIDERS.includes(provider))return provider;return context.subtitleTracks?.length||context.tracksLoading?'reanime':null}
+// The sites the listed tracks come from ("Re:Anime", "Re:Anime·Miruro"): the playing site's first.
+function trackSourceLabel(){
+  const context=currentPlaybackContext,provider=context.episode?.provider,tracks=context.subtitleTracks||[],own=TRACK_PROVIDERS.includes(provider)?provider:null;
+  const origins=[...new Set([...(own&&(!tracks.length||tracks.some(track=>!track.crossSite))?[own]:[]),...tracks.filter(track=>track.crossSite).map(track=>track.origin)])].filter(origin=>ORIGIN_LABEL[origin]);
+  return origins.map(origin=>ORIGIN_LABEL[origin]).join('·')||'Re:Anime';
+}
+// The site a track is named after ("Miruro Korean 자막"): its own origin, else the playing site's.
+function trackLabel(track){return ORIGIN_LABEL[track?.origin]||ORIGIN_LABEL[currentPlaybackContext.episode?.provider]||'Re:Anime'}
+// The best track to translate from: Japanese, else the English dialogue (see LilacSubtitleSource.track).
+function translationSourceTrack(){const tracks=currentPlaybackContext.subtitleTracks||[];return LilacSubtitleSource.track(tracks,'ja')||LilacSubtitleSource.track(tracks,'en')}
 function renderSubtitleTracks(){
   const box=$('#subtitleTracks'),list=$('#subtitleTrackList'),tracks=currentPlaybackContext.subtitleTracks||[],hasTracks=Boolean(trackProvider());
-  $('#subtitleTracks .sheet-tracks-head b').textContent=`${trackSourceLabel()} 자막 트랙`;$$('[data-source="reanime"]').forEach(button=>(button.querySelector('b')||button).textContent=trackProvider()==='miruro'?'Miruro':'Re:Anime');
+  $('#subtitleTracks .sheet-tracks-head b').textContent=`${trackSourceLabel()} 자막 트랙`;$$('[data-source="reanime"]').forEach(button=>(button.querySelector('b')||button).textContent=trackSourceLabel());
   // Only the sources this episode can use: the site's own subtitle (Linkkf) or tracks (Re:Anime / Miruro) when it has them.
   $('#psSubtitleSources [data-source="linkkf"]').classList.toggle('hidden',currentPlaybackContext.resolveKind!=='linkkf');$('#psSubtitleSources [data-source="reanime"]').classList.toggle('hidden',!trackProvider());
   box.classList.toggle('hidden',!hasTracks||openSheet()!=='reanime');if(!hasTracks){list.replaceChildren();return}
-  $('#subtitleTrackState').textContent=tracks.length?`${tracks.length}개 트랙`:currentPlaybackContext.resolving||currentPlaybackContext.tracksLoading?'현재 회차의 자막 트랙을 불러오는 중…':'자막 트랙을 불러오지 못했습니다.';$('#reloadSubtitleTracks').classList.toggle('hidden',Boolean(tracks.length||currentPlaybackContext.resolving||currentPlaybackContext.tracksLoading));
+  $('#subtitleTrackState').textContent=tracks.length?`${tracks.length}개 트랙${tracks.some(track=>track.crossSite)?' · 다른 사이트 트랙은 이 영상에 싱크를 맞춰 씁니다':''}`:currentPlaybackContext.resolving||currentPlaybackContext.tracksLoading?'현재 회차의 자막 트랙을 불러오는 중…':'자막 트랙을 불러오지 못했습니다.';$('#reloadSubtitleTracks').classList.toggle('hidden',Boolean(tracks.length||currentPlaybackContext.resolving||currentPlaybackContext.tracksLoading));
   // Korean, English and Japanese first; a label like "Chinese (Chinese (Han, Simplified) - Full Subtitles)" shows the
   // language on top and the rest small underneath.
   const rank=track=>isKoreanTrack(track)?0:/english|^en(?:[-_]|$)/i.test(`${track.label} ${track.language||''}`)?1:/japanese|^ja(?:[-_]|$)/i.test(`${track.label} ${track.language||''}`)?2:3;
   list.replaceChildren(...tracks.map((track,index)=>({track,index})).sort((a,b)=>rank(a.track)-rank(b.track)||a.index-b.index).map(({track})=>{const button=document.createElement('button'),selected=currentPlaybackContext.selectedSubtitleTrack===track.url;button.type='button';button.className=`track-option${selected?' selected':''}`;button.setAttribute('aria-pressed',String(selected));button.title=track.label;
     const parts=String(track.label||'').match(/^(.*?)\s*\((.*)\)$/),name=parts?.[1]||track.label,detail=parts?parts[2].replace(name,'').replace(/^[\s-]+/,'').trim():'';
-    button.innerHTML=`<span><b>${escapeHtml(name)}</b>${detail?`<em>${escapeHtml(detail)}</em>`:''}</span><small>${escapeHtml(String(track.format||'vtt').toUpperCase())}${track.translatedUrl?' · 번역됨':''}</small>`;button.onclick=()=>selectSubtitleTrack(track);return button}));
+    button.innerHTML=`<span><b>${escapeHtml(name)}</b>${detail?`<em>${escapeHtml(detail)}</em>`:''}</span><small>${track.crossSite?`${escapeHtml(trackLabel(track))} · `:''}${escapeHtml(String(track.format||'vtt').toUpperCase())}${track.translatedUrl?' · 번역됨':''}</small>`;button.onclick=()=>selectSubtitleTrack(track);return button}));
 }
-// Downloaded episodes play from disk, so fetch the Re:ANIME track list separately.
+// The other sites' tracks of an episode (see cross-site-tracks.cjs), asked once per episode: started as the episode is
+// opened (resolveIntoPlayer), so its Korean track can choose Animenosub's and Miruro's clean video, and taken up by
+// loadMissingSubtitleTracks once it plays.
+const crossSiteRequests=new Map();
+const TRACK_ANIME_FIELDS=['provider','id','title','title_english','title_japanese','year','aired','anilistId','malId','type'];
+function plainAnime(anime={}){return Object.fromEntries(TRACK_ANIME_FIELDS.filter(key=>anime?.[key]!=null&&typeof anime[key]!=='object').map(key=>[key,anime[key]]))}
+function crossSiteTracksFor(episode,anime){
+  if(!episode||episode.special||episode.dub||!otherSiteTracksOn())return Promise.resolve({tracks:[]});
+  const key=episodeRef(episode),known=crossSiteRequests.get(key);if(known&&Date.now()-known.at<10*60*1000)return known.promise;
+  const promise=window.lilac.crossSiteSubtitleTracks(JSON.parse(JSON.stringify(episode)),plainAnime(anime||{})).catch(()=>({tracks:[]}));
+  crossSiteRequests.set(key,{at:Date.now(),promise});if(crossSiteRequests.size>20)crossSiteRequests.delete(crossSiteRequests.keys().next().value);
+  return promise;
+}
+// The tracks the stream did not bring: a downloaded Re:ANIME episode's own (it plays from disk), then the other sites'
+// (all of them when there are no others, else only a Korean one, and none when a Korean track is there already).
+// context.tracksPromise is what a translation and the Korean track step wait for (see autoTranslate, ensureSubtitle).
 async function loadMissingSubtitleTracks(){
-  const context=currentPlaybackContext,episode=context.episode;if(episode?.provider!=='reanime'||context.subtitleTracks?.length)return;
-  const requestId=playbackRequestId;context.tracksLoading=true;renderSubtitleTracks();
-  try{const result=await window.lilac.providerSubtitleTracks(episode);if(requestId!==playbackRequestId)return;context.subtitleTracks=result.tracks||[];context.subtitleReferer=result.referer||context.subtitleReferer}catch{}
-  finally{if(requestId===playbackRequestId){context.tracksLoading=false;renderSubtitleTracks()}}
+  const context=currentPlaybackContext,episode=context.episode;if(!episode||context.tracksLoading||(context.subtitleTracks||[]).some(isKoreanTrack))return;
+  const requestId=playbackRequestId,current=()=>requestId===playbackRequestId;context.tracksLoading=true;renderSubtitleTracks();
+  context.tracksPromise=(async()=>{
+    try{
+      if(episode.provider==='reanime'&&!context.subtitleTracks?.length){const result=await window.lilac.providerSubtitleTracks(JSON.parse(JSON.stringify(episode))).catch(()=>null);if(!current())return;if(result?.tracks?.length){context.subtitleTracks=result.tracks;context.subtitleReferer=result.referer||context.subtitleReferer}}
+      if((context.subtitleTracks||[]).some(isKoreanTrack))return;
+      const found=(await crossSiteTracksFor(episode,context.anime))?.tracks||[];if(!current()||!found.length)return;
+      const own=context.subtitleTracks||[];context.subtitleTracks=own.length?[...own,...found.filter(isKoreanTrack)]:found;
+    }catch{}
+    finally{if(current()){context.tracksLoading=false;renderSubtitleTracks()}}
+  })();
+  return context.tracksPromise;
 }
 // Korean translation (the translation API or the local AI, 설정 > 자막 자동 번역) of the selected Re:Anime / Miruro track or the picked
 // Jimaku file. Tracks saved with a download carry their translation, which is applied as is (also offline).
@@ -912,7 +967,7 @@ const autoTranslateProvider=()=>{const wanted=translationSettings?.jimakuTransla
 const cloudName=()=>translationSettings?.cloudName||'Gemini';
 const translatedLabel=(result,name)=>`${result.engine||(String(result.model||'').startsWith('local:')?'로컬 AI':'AI')} 번역 (${name})`;
 // A track's file: the copy saved with the download, else fetched.
-const trackFile=track=>track.localUrl?Promise.resolve({path:track.path,url:track.localUrl,assPath:track.assUrl?track.assPath:null,assUrl:track.assUrl||null,fonts:[]}):window.lilac.remoteSubtitle(track.url,currentPlaybackContext.subtitleReferer);
+const trackFile=track=>track.localUrl?Promise.resolve({path:track.path,url:track.localUrl,assPath:track.assUrl?track.assPath:null,assUrl:track.assUrl||null,fonts:[]}):window.lilac.remoteSubtitle(track.url,track.referer||currentPlaybackContext.subtitleReferer);
 const ipcMessage=error=>String(error?.message||error).replace(/^Error invoking remote method '[^']+': (?:Error: )?/,'');
 async function translateSubtitleTrack(provider='cloud',manual=false){
   const context=currentPlaybackContext,tracks=context.subtitleTracks||[],button=provider==='local'?$('#translateNowLocal'):$('#translateNow');
@@ -1048,7 +1103,8 @@ async function applySavedJimaku(entry){
 function prepareNextEpisode(provider){
   if(!playerFlag('prepareNextTranslation'))return;
   const next=typeof siblingEpisode==='function'?siblingEpisode(1):null,anime=subtitleSearchAnime();if(!next||!anime)return;
-  window.lilac.prepareEpisodeSubtitle({anime,episode:episodeNumberOf(next)||1,item:JSON.parse(JSON.stringify(next)),title:currentPlaybackContext.subtitleTitle||$('#skipTitle').value.trim(),provider,jimaku:seriesPick().jimaku||'',sync:playerFlag('prepareNextSubtitle')}).catch(()=>{});
+  // The work's Japanese title and year go along, for the other sites' tracks of the next episode (see crossSiteTracksFor).
+  window.lilac.prepareEpisodeSubtitle({anime:{...plainAnime(currentPlaybackContext.anime||{}),...anime},episode:episodeNumberOf(next)||1,item:JSON.parse(JSON.stringify(next)),title:currentPlaybackContext.subtitleTitle||$('#skipTitle').value.trim(),provider,jimaku:seriesPick().jimaku||'',sync:playerFlag('prepareNextSubtitle'),otherSites:otherSiteTracksOn()}).catch(()=>{});
 }
 // 다음 화 미리 준비 (설정 > 재생): while an episode plays, the next one is made ready in the background, each part as
 // 설정 says: its stream (영상: found now, used when the episode opens if it still answers), its Korean subtitle synced
@@ -1064,7 +1120,7 @@ async function prepareNext(){
   let stream=null;
   if(playerFlag('prepareNextVideo')&&!downloaded){
     try{
-      const koreanSearch=['ohli24','linkani'].includes(next.provider)?Promise.resolve(null):onlineSubtitleFor(title,number,anime).catch(()=>null);
+      const koreanSearch=['ohli24','linkani'].includes(next.provider)?Promise.resolve(null):firstFound(onlineSubtitleFor(title,number,anime).catch(()=>null),otherSiteKorean(next,context.anime));
       stream=['animenosub','miruro'].includes(next.provider)?await resolveWithVideoServer(next,koreanSearch,context.anime,[],episode=>window.lilac.prepareEpisodeStream(episode))
         :await window.lilac.prepareEpisodeStream(context.resolveKind==='linkkf'?{...next,resolveKind:'linkkf'}:next);
       // Its first segments are fetched ahead from where it will start: its saved progress, as the player resumes it.
@@ -1092,7 +1148,7 @@ window.lilac.onTranslateProgress(({id,done,total,status,lines})=>{
 // auto: put on by 자막 자동 번역 (to be translated), so the source the user prefers stays as it was.
 async function selectSubtitleTrack(track,{auto=false,notice=''}={}){
   const requestId=playbackRequestId;$('#subtitleState').textContent=`${track.label} 자막을 불러오는 중...`;
-  try{const file=await trackFile(track);if(requestId!==playbackRequestId)return false;if(!auto&&isKoreanTrack(track))preferAiSubtitle(false);currentPlaybackContext.selectedSubtitleTrack=track.url;currentSubtitlePath=file.path;if(!auto){localStorage.setItem('subtitleSource','reanime');$('#subtitleSource').value='reanime';syncSettingChoices()}renderSubtitleTracks();attachSubtitle(file.url,`${trackSourceLabel()} ${track.label} 자막`,{path:file.path,assUrl:file.assUrl,assPath:file.assPath,fonts:file.fonts,source:'reanime',notice});return true}
+  try{const file=await trackFile(track);if(requestId!==playbackRequestId)return false;if(!auto&&isKoreanTrack(track))preferAiSubtitle(false);currentPlaybackContext.selectedSubtitleTrack=track.url;currentSubtitlePath=file.path;if(!auto){localStorage.setItem('subtitleSource','reanime');$('#subtitleSource').value='reanime';syncSettingChoices()}renderSubtitleTracks();attachSubtitle(file.url,`${trackLabel(track)} ${track.label} 자막`,{path:file.path,assUrl:file.assUrl,assPath:file.assPath,fonts:file.fonts,source:'reanime',notice});return true}
   catch(e){$('#subtitleState').textContent='자막을 불러오지 못했습니다.';toast(`자막을 불러오지 못했습니다: ${e.message}`);return false}
 }
 function formatTime(value){if(!Number.isFinite(value))return '00:00';const seconds=Math.max(0,Math.floor(value)),h=Math.floor(seconds/3600),m=Math.floor(seconds%3600/60),s=seconds%60;return h?`${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`}

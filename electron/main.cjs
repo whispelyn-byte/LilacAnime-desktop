@@ -10,6 +10,7 @@ const { spawn } = require('child_process');
 const { pathToFileURL } = require('url');
 const { createFlixProxyUrl, createFlixAvProxyUrl, closeFlixProxy, primeFlix, flixReadable } = require('./flix-proxy.cjs');
 const { createCatalogBrowser } = require('./catalog-browser.cjs');
+const { createCrossSiteTracks } = require('./cross-site-tracks.cjs');
 const { createWeeklySchedule } = require('./weekly-schedule.cjs');
 const { createProviderSchedule } = require('./provider-schedule.cjs');
 const subtitleSource = require('../src/subtitle-source.js');
@@ -262,7 +263,17 @@ function animenosubDetail(html, original) {
   const synopsis=($('.description,.desc,.synopsis,.film-description,.summary').first().text()||$('meta[name=description]').attr('content')||'').trim();
   const poster=absoluteUrl($('div.thumb img').attr('src')||$('div.bigcover img').attr('src')||imageOfMain(original),original.url);
   const genres=[];$('a[href*="/genre/"]').each((_,x)=>{const name=$(x).text().trim();if(name&&!genres.some(g=>g.name===name))genres.push({name})});
-  return {...original,title,synopsis,genres,images:{webp:{large_image_url:poster}}};
+  // The other names line ("Siedmiu Rycerzy…, The Seven Knights…, Marronnier Oukoku…, マロニエ王国の七人の騎士") holds the
+  // Japanese title, and the info box the season ("Fall 2026") or release date: the AniList entry is found by both, as
+  // 애니24's is (see crossSiteTracks).
+  const native=animenosubNative($('.alter').first().text());
+  const info=name=>$('.spe span').filter((_,span)=>$(span).find('b').first().text().replace(/[:\s]/g,'').toLowerCase()===name).first().text();
+  const year=(info('season').match(/(?:19|20)\d{2}/)||info('released').match(/(?:19|20)\d{2}/)||[])[0]||original.year||'';
+  return {...original,title,synopsis,genres,images:{webp:{large_image_url:poster}},...(native?{title_japanese:native}:{}),year};
+}
+// The Japanese name among an "other names" line's (the last one written in kana or kanji, never one in Hangul).
+function animenosubNative(text=''){
+  return String(text).split(/\s*,\s*/).map(name=>name.trim()).filter(name=>/[぀-ヿ㐀-鿿]/.test(name)&&!/[가-힣]/.test(name)).pop()||'';
 }
 function imageOfMain(a){return a?.images?.webp?.large_image_url||''}
 
@@ -381,15 +392,16 @@ async function reanimeEpisodes(anime, page, listed = null) {
   return [...byNumber.values()].sort((a,b)=>a.number-b.number);
 }
 
+// episode without a url (another site's episode, see crossSiteTracks): only the AniList route is asked.
 async function reanimeServers(episode) {
-  const parsed=new URL(episode.url),slug=parsed.pathname.split('/').filter(Boolean).pop(),number=Number(parsed.searchParams.get('ep')||episode.number||1);
+  const parsed=episode.url?new URL(episode.url):null,slug=parsed?.pathname.split('/').filter(Boolean).pop()||'',number=Number(parsed?.searchParams.get('ep')||episode.number||1);
   // Keep the requested audio before ranking HD servers or deduplicating URLs. Flix can list DUB first,
   // and some episodes use the same URL for both labels. A failed SUB must never fall through to DUB.
   const candidatesFrom=links=>links.map(item=>({name:String(item.serverName||''),url:String(item.dataLink||item.link||''),dub:/^dub(?:bed)?$/i.test(String(item.dataType||''))||/\bdub(?:bed)?\b/i.test(String(item.serverName||''))}))
     .filter(item=>item.dub===Boolean(episode.dub)&&/^https:\/\/flixcloud\.cc\/e\//i.test(item.url));
   // The current API often serves streams only from /api/flix: both are asked at once (one after the other, an empty
   // /api/watch cost a whole request first), /api/watch's links used when it has any.
-  const watch=providerFetch(`${REANIME_WEB}/api/watch/${encodeURIComponent(slug)}/${number}`,{json:true,referer:`${REANIME_WEB}/`}).then(root=>Array.isArray(root?.episode_links)?root.episode_links:[],()=>[]);
+  const watch=slug?providerFetch(`${REANIME_WEB}/api/watch/${encodeURIComponent(slug)}/${number}`,{json:true,referer:`${REANIME_WEB}/`}).then(root=>Array.isArray(root?.episode_links)?root.episode_links:[],()=>[]):Promise.resolve([]);
   const flix=episode.anilistId?providerFetch(`${REANIME_WEB}/api/flix/${Number(episode.anilistId)}/${number}`,{json:true,referer:`${REANIME_WEB}/`}).then(root=>Array.isArray(root?.servers)?root.servers:[]):null;
   flix?.catch(()=>{});
   let candidates=candidatesFrom(await watch);
@@ -562,6 +574,31 @@ function remoteTrackOptions(url,referer=''){
   return headers?{referer:headers.Referer||'',userAgent:LINKKF_UA,headers}:{referer:/^https:\/\//i.test(referer||'')?referer:'https://flixcloud.cc/',userAgent:ANDROID_WEBVIEW_UA};
 }
 const isEnglishTrack=track=>/^en/i.test(track.language||'')&&!/forced|sign/i.test(track.label||'');
+// Another site's episode (see crossSiteTracks): Miruro's show of an AniList entry, found by searching its titles (Miruro
+// ids are its own) and taking the hit whose AniList id is the one asked for, and the subtitle files of its SOFT servers
+// (the steadiest provider first; one file per language and name).
+async function miruroIdByAnilist(anilistId,titles=[]){
+  for(const title of [...new Set(titles.filter(Boolean))]){
+    const root=await miruroApi('anime',{q:title,limit:15});
+    const hit=(root?.data||[]).find(raw=>Number(raw.external_ids?.anilist?.[0])===Number(anilistId));
+    if(hit)return hit.id;
+  }
+  return null;
+}
+async function miruroSubtitleTracks(animeId,number){
+  const root=await miruroApi(`anime/${animeId}/episodes/${number}/play`),tracks=[];
+  const known=provider=>{const index=MIRURO_PROVIDERS.indexOf(provider.provider);return index<0?MIRURO_PROVIDERS.length:index};
+  for(const track of (root.tracks||[]).filter(item=>MIRURO_KINDS[item.track]==='soft'))for(const provider of (track.providers||[]).slice().sort((a,b)=>known(a)-known(b))){
+    const headers={...(provider.servers||[])[0]?.headers};if(headers.Referer&&!headers.Origin)try{headers.Origin=new URL(headers.Referer).origin}catch{/* no origin */}
+    for(const item of provider.subtitles||[]){
+      if(!/^https:\/\//i.test(item.file||''))continue;
+      const entry={url:item.file,language:String(item.language||'und'),label:String(item.label||item.language||'').replace(/\.(?:vtt|srt|ass)$/i,'').trim()||'자막',format:String(item.format||'vtt').toLowerCase()};
+      if(tracks.some(other=>other.url===entry.url||`${other.language}|${other.label}`===`${entry.language}|${entry.label}`))continue;
+      miruroTrackHeaders.set(entry.url,headers);tracks.push(entry);
+    }
+  }
+  return {tracks,referer:''};
+}
 async function resolveMiruroEpisode(episode){
   const root=await miruroApi(`anime/${episode.animeId}/episodes/${episode.number}/play`),servers=[];
   for(const track of root.tracks||[]){
@@ -722,6 +759,27 @@ async function ohliAnilist(native,year){
   ohliAnilistCache.set(key,lookup);lookup.catch(()=>ohliAnilistCache.delete(key));
   return lookup.catch(()=>null);
 }
+// AniList's entries for a title (native, English or romaji), with what tells them apart: a 429 (its per-minute limit)
+// is waited out once, as in ohliAnilist.
+async function searchAnilist(search){
+  const query='query($search:String){Page(perPage:10){media(search:$search,type:ANIME){id idMal format episodes seasonYear startDate{year} synonyms title{native english romaji}}}}';
+  const ask=()=>fetch('https://graphql.anilist.co',{signal:AbortSignal.timeout(20000),method:'POST',headers:{Accept:'application/json','Content-Type':'application/json','User-Agent':'LilacAnime Android'},body:JSON.stringify({query,variables:{search:String(search).replace(/…/g,'...')}})});
+  let response=await ask();
+  if(response.status===429){await new Promise(resolve=>setTimeout(resolve,Math.min(15,Number(response.headers.get('retry-after'))||5)*1000));response=await ask()}
+  if(!response.ok)throw new Error(`AniList HTTP ${response.status}`);
+  return (await response.json())?.data?.Page?.media||[];
+}
+// The other sites' tracks (RE:Anime's, Miruro's) of any site's episode, by its AniList entry (see cross-site-tracks.cjs).
+const otherSiteTracksFor=(anime={},episode={})=>crossSiteTracks.tracks({...anime,provider:anime?.provider||episode?.provider||''},episode).then(result=>result.tracks||[]);
+const crossSiteAnilistFile=()=>path.join(app.getPath('userData'),'cross-site-anilist.json');
+const crossSiteTracks=createCrossSiteTracks({
+  searchAnilist,
+  reanimeTracks:(anilistId,number)=>reanimeSubtitleTracks({anilistId,number,dub:false}),
+  miruroId:(anilistId,titles)=>miruroIdByAnilist(anilistId,titles),
+  miruroTracks:(miruroId,number)=>miruroSubtitleTracks(miruroId,number),
+  readCache:()=>{try{return JSON.parse(fs.readFileSync(crossSiteAnilistFile(),'utf8'))||{}}catch{return {}}},
+  writeCache:value=>writeCacheFile(crossSiteAnilistFile(),JSON.stringify(value))
+});
 // An episode's label on the Korean sites (애니24, 링크애니): "12화", "9.5화", or a special ("OVA 1화", "SP 노벨 히로인즈",
 // "특별편"). A special has no episode number of its own: read as one, "OVA 1화" was 1화 a second time (listed twice,
 // saved over 1화, given 1화's OP/ED times). It keeps its label as its name instead, and special: true.
@@ -2497,6 +2555,12 @@ app.whenReady().then(async () => {
     const savedPreferred=(preferred==='reanime'&&saved[0]?.source==='gemini'&&saved[0])||saved.find(entry=>entry.source===preferred);if(korean(savedPreferred))return fromSaved(savedPreferred);
     if(stream?.subtitleUrl)return {stream:true};
     const savedKorean=saved.find(korean);if(savedKorean)return fromSaved(savedKorean);
+    // Another site's Korean track of the episode (RE:Anime, Miruro) before the blogs, as in the player. It is timed for
+    // that site's video: the player syncs it to the saved one when it is played (자막 싱크 자동 맞추기).
+    if(job.otherSiteTracks!==false){
+      const track=(await otherSiteTracksFor(job.anime||{},job.episode||{}).catch(()=>[])).find(isKoreanTrack);
+      if(track)try{const file=subtitleResult(await saveRemoteSubtitle(track.url,remoteTrackOptions(track.url,track.referer)));return {source:'reanime',korean:true,path:file.path,assPath:file.assPath,fonts:[],label:`${track.origin==='miruro'?'Miruro':'Re:Anime'} ${track.label} 자막`}}catch{/* the blogs then */}
+    }
     const search=communitySearch(job);
     for(const source of COMMUNITY_SOURCES.includes(preferred)?[preferred,...COMMUNITY_SOURCES.filter(x=>x!==preferred)]:COMMUNITY_SOURCES){
       try{return await search(source)}catch{/* next source */}
@@ -2538,7 +2602,7 @@ app.whenReady().then(async () => {
     return segments;
   };
   const analyzeDownload=async(job,siblings)=>analyzeOfflineOpEd({title:job.title,episode:job.episodeNumber,currentUrl:pathToFileURL(job.filePath).href,duration:job.duration,candidates:siblings.map(item=>({...item.episode,number:item.episodeNumber,localUrl:pathToFileURL(item.filePath).href}))});
-  downloadManager=new DownloadManager({app,resolveTitles:anime=>resolveDisplayTitle(anime),
+  downloadManager=new DownloadManager({app,resolveTitles:anime=>resolveDisplayTitle(anime),otherSiteTracks:job=>otherSiteTracksFor(job.anime||{},job.episode||{}),
     saveTrack:(url,referer)=>saveRemoteSubtitle(String(url),remoteTrackOptions(url,referer)).then(file=>subtitleResult(file)),
     translateTrack:async(file,title,anime)=>{const settings=translator().settings();return translator().ready()&&settings.translateDownloads?translator().translate({file,title,context:await translationContext(anime||{},title)}):null},findSubtitle:findDownloadSubtitle,findJimaku:findDownloadJimaku,translateJimaku:translateDownloadJimaku,jimakuTranslates:()=>Boolean(jimakuTranslation()),findSkips:findDownloadSkips,analyzeOpEd:analyzeDownload,// Animenosub and Miruro downloads follow the player: the RAW video when the episode has a Korean subtitle (saved or found
     // by the same search the download attaches afterwards) or a Jimaku file it will translate, else SUB with its
@@ -2806,7 +2870,9 @@ app.whenReady().then(async () => {
     try { const response = await fetch(url, { headers: { ...(headers || {}), ...(/^http:\/\/127\.0\.0\.1:\d+\/__flix\//i.test(url) ? { 'x-lilac-hold': '1' } : {}), Range: 'bytes=0-1023' }, signal: AbortSignal.timeout(8000) }); response.body?.cancel?.(); return response.ok || response.status === 206; } catch { return false; }
   });
   ipcMain.handle('provider:subtitle-tracks', (_, episode) => reanimeSubtitleTracks(episode));
-  ipcMain.handle('cover:data', (_, url) => coverDataUrl(url));
+  // The same episode's tracks on the other sites (RE:Anime, Miruro; never the one playing), each marked crossSite.
+  ipcMain.handle('provider:cross-site-tracks', (_, episode, anime = null) => crossSiteTracks.tracks({ ...(anime || {}), provider: anime?.provider || episode?.provider || '' }, episode || {}));
+  ipcMain.handle('cover:data', (_, url) => coverDataUrl(url));  ipcMain.handle('cover:data', (_, url) => coverDataUrl(url));
   updater=new Updater({app,broadcast});
   const deviceSync=new DeviceSync({app});
   ipcMain.handle('device-sync:status',()=>deviceSync.status());
@@ -2931,18 +2997,27 @@ app.whenReady().then(async () => {
   // Prepare only episodes without Korean subtitles. Use the same source order as playback:
   // site Japanese, Jimaku Japanese, then site English. One episode at a time.
   const preparedEpisodes = new Set(); let preparing = Promise.resolve();
-  async function episodeTracks(item) {
+  async function siteTracks(item) {
     // Re:Anime's tracks are on its player page; Miruro's come with the stream.
     if (item?.provider === 'reanime') return reanimeSubtitleTracks(item);
     if (item?.provider === 'miruro') { const stream = await resolveProviderEpisode(item); return { tracks: stream.subtitleTracks || [], referer: stream.referer || '' }; }
     return { tracks: [], referer: '' };
+  }
+  // The site's own tracks and, as in the player, the other sites' (all of them when the site has none, else a Korean
+  // one beside them; otherSites: 플레이어 설정 > 자막 > 다른 사이트 자막 트랙도 찾기).
+  async function episodeTracks(item, anime = null, otherSites = true) {
+    const own = await siteTracks(item).catch(() => ({ tracks: [], referer: '' }));
+    if (!otherSites || (own.tracks || []).some(isKoreanTrack)) return own;
+    const other = await otherSiteTracksFor(anime || {}, item || {}).catch(() => []);
+    return { tracks: own.tracks?.length ? [...own.tracks, ...other.filter(isKoreanTrack)] : other, referer: own.referer || '' };
   }
   // A subtitle made ready for another episode, synced with that episode's site tracks and kept for it ("<label> (<name>)
   // · 자동 싱크"): what the episode puts on when it opens. Only by a site track (seconds, nothing downloaded) and after
   // the player's own syncs (background), so the episode playing never waits behind it; without a track the episode
   // is synced when it opens. Left as it is (and not kept) when the sync finds nothing better.
   const syncPrepared=async({item,file,assPath=null,fonts=[],from=null,name='',label,source,tracks=[],referer=''})=>{
-    const usable=(tracks||[]).filter(track=>!/signs|songs|s&s|forced|dubtitle|\(ai\)|\bai\b|commentary/i.test(`${track.label||''} ${track.language||''}`))
+    // Another site's track (crossSite) is timed for that site's video: no reference for this one.
+    const usable=(tracks||[]).filter(track=>!track.crossSite&&!/signs|songs|s&s|forced|dubtitle|\(ai\)|\bai\b|commentary/i.test(`${track.label||''} ${track.language||''}`))
       .sort((a,b)=>Number(/full|dialog/i.test(`${b.label}`))-Number(/full|dialog/i.test(`${a.label}`))).slice(0,4);
     const references=[];for(const track of usable){try{const saved=subtitleResult(await saveRemoteSubtitle(track.url,remoteTrackOptions(track.url,referer)));if(saved?.path)references.push({path:saved.path,assPath:saved.assPath||null})}catch{}}
     if(!references.length||!file||!fs.existsSync(file))return null;
@@ -2957,7 +3032,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('subtitle:prepare-sync',(_,request={})=>syncPrepared(request||{}));
   // sync: also sync the translation with the next episode's site track and keep it for that episode as "… · 자동 싱크",
   // so the episode opens with it (다음 화 미리 준비 > 자막과 싱크).
-  ipcMain.handle('subtitle:prepare', (_, { anime = null, episode = 1, item = null, title = '', provider: asked = '', jimaku = '', sync = false } = {}) => {
+  ipcMain.handle('subtitle:prepare', (_, { anime = null, episode = 1, item = null, title = '', provider: asked = '', jimaku = '', sync = false, otherSites = true } = {}) => {
     // Only while 설정 > 자막 자동 번역 is on, and by the side the next episode's own translation will use, or it would not
     // pick this one up: the side that translated this episode (asked: the player takes it for the series' next ones too),
     // the local AI when it is set up, the API when 번역 API로도 다음 화 미리 번역 is on. Without one asked, 설정's: the
@@ -2971,14 +3046,15 @@ app.whenReady().then(async () => {
     preparedEpisodes.add(key);
     preparing = preparing.then(async () => {
       if (!translator().ready(provider)) return;
-      const { tracks, referer } = await episodeTracks(item).catch(() => ({tracks:[],referer:''}));
+      const { tracks, referer } = await episodeTracks(item, anime, otherSites !== false).catch(() => ({tracks:[],referer:''}));
+      // A Korean track (the site's or another site's) is what the episode will open with: nothing to translate ahead.
       if((tracks||[]).some(isKoreanTrack))return;
-      const korean=await findDownloadSubtitle({anime,title,episodeNumber:episode,episode:item||{}},null).catch(()=>null);
-      if(korean&&['kairan','csora','anissia','user','gemini','linkkf'].includes(korean.source))return;
+      const korean=await findDownloadSubtitle({anime,title,episodeNumber:episode,episode:item||{},otherSiteTracks:otherSites!==false},null).catch(()=>null);
+      if(korean&&(korean.korean||['kairan','csora','anissia','user','gemini','linkkf'].includes(korean.source)))return;
       const picked=await subtitleSource.resolve({tracks,
         getJimaku:()=>jimakuEpisodeFiles(anime,Number(episode)||1,String(jimaku||'')),
         readJimaku:file=>jimakuDownload(file,anime,Number(episode)||1),
-        readTrack:async track=>subtitleResult(await saveRemoteSubtitle(track.url,remoteTrackOptions(track.url,referer)))
+        readTrack:async track=>subtitleResult(await saveRemoteSubtitle(track.url,remoteTrackOptions(track.url,track.referer||referer)))
       });
       if(!picked)return;
       const result=await translator().translate({ file: picked.file.path, title: String(title || ''), provider, anySide: true, context: await translationContext(anime, String(title || '')) });

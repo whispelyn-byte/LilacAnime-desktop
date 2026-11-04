@@ -17,11 +17,12 @@ function seconds(value = '') {
 const MAX_CONCURRENT_DOWNLOADS = 2;
 // Saved and found subtitle sources whose file is Korean (a fansub, a machine translation, Linkkf's, the user's own).
 const KOREAN_SOURCES = ['kairan', 'csora', 'anissia', 'gemini', 'linkkf', 'user'];
+const isKoreanTrack = track => /kor|korean|한국/i.test(`${track?.language || ''} ${track?.label || ''}`) || /^ko(?:[-_]|$)/i.test(track?.language || '');
 const HLS_PARALLEL = 6;
 const HLS_USER_AGENT = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome || '131.0.0.0'} Safari/537.36`;
 
 class DownloadManager {
-  constructor({ app, resolveEpisode, resolveLinkkf, findSubtitle, findJimaku, translateJimaku, jimakuTranslates, findSkips, analyzeOpEd, resolveTitles, saveTrack, translateTrack, broadcast }) {
+  constructor({ app, resolveEpisode, resolveLinkkf, findSubtitle, findJimaku, translateJimaku, jimakuTranslates, findSkips, analyzeOpEd, resolveTitles, saveTrack, translateTrack, otherSiteTracks, broadcast }) {
     // The folder new episodes go to: Videos\LilacAnime, or the one picked in 내 목록 > 다운로드 (an external drive).
     let videos;
     try { videos = app.getPath('videos'); } catch { /* Windows Known Folder may be unavailable. */ }
@@ -46,6 +47,7 @@ class DownloadManager {
     this.findSubtitle = findSubtitle; this.findJimaku = findJimaku; this.translateJimaku = translateJimaku;
     this.saveTrack = saveTrack;
     this.translateTrack = translateTrack;
+    this.otherSiteTracks = otherSiteTracks;
     this.jimakuTranslates = jimakuTranslates;
     this.trackQueue = Promise.resolve();
     this.resolveTitles = resolveTitles;
@@ -313,7 +315,8 @@ class DownloadManager {
   // Subtitles are fetched right after the video so the episode also plays offline with them.
   async attachSubtitle(job, stream) {
     // 애니24: the Korean subtitle is in the video itself, unless the player put it over a raw video from a file.
-    if (stream?.burnedKorean || (job.episode?.provider === 'ohli24' && !stream?.subtitleUrl)) { job.subtitleChecked = true; return; }
+    // burnedKorean: the other sites' tracks are still kept with it (see attachTracks), but none is translated.
+    if (stream?.burnedKorean || (job.episode?.provider === 'ohli24' && !stream?.subtitleUrl)) { job.subtitleChecked = true; job.burnedKorean = true; return; }
     let found = null;
     try { found = await this.findSubtitle?.(job, stream); } catch { /* fall back to the stream's own subtitle */ }
     if(!this.jobs.includes(job)||this.stopping)return;
@@ -322,7 +325,8 @@ class DownloadManager {
     job.siteKorean = Boolean(stream?.subtitleUrl) && (job.resolveKind === 'linkkf' || ['reanime', 'miruro', 'linkani', 'ohli24'].includes(job.episode?.provider));
     // Whether the episode's own subtitle is Korean (the site's, a fansub, a translation or the user's file): a track
     // translated later stays beside it then, instead of becoming the episode's subtitle (see attachTracks).
-    job.koreanSubtitle = job.siteKorean || Boolean(found && !found.stream && KOREAN_SOURCES.includes(found.source));
+    // (found.korean: another site's Korean track, see findDownloadSubtitle.)
+    job.koreanSubtitle = job.siteKorean || Boolean(found && !found.stream && (found.korean || KOREAN_SOURCES.includes(found.source)));
     if (!found || found.stream) {
       await this.saveSubtitle(job, stream?.subtitleUrl); this.saveAssSubtitle(job, stream?.subtitleAss?.path);
       if (!job.koreanSubtitle && !subtitleSource.track(stream?.subtitleTracks, 'ja')) await this.attachJimaku(job, stream, !found && !job.subtitlePath);
@@ -394,9 +398,20 @@ class DownloadManager {
   // Re:Anime and Miruro subtitle tracks are all kept with the episode, so the track list works offline, and one of them
   // is translated into Korean (설정 > 다운로드할 때 자막 트랙 번역). This runs one episode at a time after the download
   // has finished, so it never holds a download slot.
+  // Every site's episode also keeps the other sites' tracks of it (RE:Anime's, Miruro's; marked crossSite with their
+  // origin): all of them when the site has none, else only a Korean one beside them. Not when 플레이어 설정 > 자막 >
+  // 다른 사이트 자막 트랙도 찾기 was off as the episode was queued (job.otherSiteTracks false).
   queueTracks(job, stream) {
-    if (!stream?.subtitleTracks?.length || !this.saveTrack) return;
-    this.trackQueue = this.trackQueue.then(() => this.attachTracks(job, stream)).catch(() => {});
+    if (!this.saveTrack) return;
+    this.trackQueue = this.trackQueue.then(async () => {
+      const tracks = await this.withOtherSiteTracks(job, stream?.subtitleTracks || []);
+      if (tracks.length) await this.attachTracks(job, { ...stream, subtitleTracks: tracks });
+    }).catch(() => {});
+  }
+  async withOtherSiteTracks(job, own) {
+    if (!this.otherSiteTracks || job.otherSiteTracks === false || own.some(isKoreanTrack)) return own;
+    const found = await Promise.resolve().then(() => this.otherSiteTracks(job)).catch(() => []) || [];
+    return own.length ? [...own, ...found.filter(isKoreanTrack)] : found;
   }
   async attachTracks(job, stream) {
     if (!this.jobs.includes(job) || !fs.existsSync(job.filePath || '')) return;
@@ -404,9 +419,9 @@ class DownloadManager {
     fs.mkdirSync(dir, { recursive: true });
     for (const [index, track] of stream.subtitleTracks.entries()) {
       try {
-        const file = await this.saveTrack(track.url, stream.referer), name = `${String(index + 1).padStart(2, '0')}_${safeName(track.label || 'track')}`;
+        const file = await this.saveTrack(track.url, track.referer || stream.referer), name = `${String(index + 1).padStart(2, '0')}_${safeName(track.label || 'track')}`;
         if(!this.jobs.includes(job)||this.stopping)return;
-        const entry = { label: track.label || `트랙 ${index + 1}`, format: track.format || 'vtt', language: track.language || '', url: track.url, path: path.join(dir, `${name}${path.extname(file.path)}`) };
+        const entry = { label: track.label || `트랙 ${index + 1}`, format: track.format || 'vtt', language: track.language || '', url: track.url, path: path.join(dir, `${name}${path.extname(file.path)}`), ...(track.crossSite ? { crossSite: true, origin: track.origin || '' } : {}) };
         fs.copyFileSync(file.path, entry.path);
         if (file.assPath && fs.existsSync(file.assPath)) { entry.assPath = path.join(dir, `${name}${path.extname(file.assPath)}`); fs.copyFileSync(file.assPath, entry.assPath); }
         saved.push(entry);
@@ -414,15 +429,17 @@ class DownloadManager {
     }
     if (!saved.length || !this.jobs.includes(job)) return;
     job.subtitleTracks = saved; job.updated = Date.now(); this.save();
-    // No translation beside Korean subtitles. Otherwise: site Japanese, Jimaku, site English.
-    if (job.koreanSubtitle) return;
-    const japanese = subtitleSource.track(saved, 'ja');
+    // No translation beside Korean subtitles (Korean in the video included). Otherwise as in the player: the site's
+    // Japanese, Jimaku, another site's Japanese, the site's English, another site's English.
+    if (job.koreanSubtitle || job.burnedKorean) return;
+    const own = saved.filter(track => !track.crossSite), other = saved.filter(track => track.crossSite);
+    const japanese = subtitleSource.track(own, 'ja');
     if (!japanese && job.jimakuFound && this.jimakuTranslates?.()) return;
-    if (!japanese && !job.jimakuFound && subtitleSource.track(stream.subtitleTracks,'ja')) {
+    if (!japanese && !job.jimakuFound && subtitleSource.track(stream.subtitleTracks.filter(track => !track.crossSite),'ja')) {
       await this.attachJimaku(job,stream,!job.subtitlePath);
       if(job.jimakuFound&&this.jimakuTranslates?.())return;
     }
-    const track = japanese || subtitleSource.track(saved, 'en');
+    const track = japanese || subtitleSource.track(other, 'ja') || subtitleSource.track(own, 'en') || subtitleSource.track(other, 'en');
     if (!track) return;
     const title = job.displayTitles?.ko || job.title;
     try {
