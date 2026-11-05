@@ -39,7 +39,7 @@ const translator = () => subtitleTranslator ||= createTranslator(app.getPath('us
 // While it is on, every Chromium session (the window, the hidden player pages, each partition as it is made), Node's
 // fetch and the child processes (ffmpeg, uv) go to wireproxy's local HTTP proxy; this computer's and the local network's
 // addresses go direct. It is set before anything is asked, so nothing goes out directly while the tunnel comes up.
-const { createWireGuardProxy } = require('./wireguard-proxy.cjs');
+const { createWireGuardProxy, decodeConfFile } = require('./wireguard-proxy.cjs');
 const { createAppRouting } = require('./app-routing.cjs');
 // directFetch: Node's fetch outside the tunnel (wireproxy's own download, device sync: a server of the user's).
 const appRouting = createAppRouting({ app }), { directFetch } = appRouting, routeSession = appRouting.routeSession;
@@ -415,7 +415,11 @@ async function reanimeServers(episode) {
   // The current API often serves streams only from /api/flix: both are asked at once (one after the other, an empty
   // /api/watch cost a whole request first), /api/watch's links used when it has any.
   const watch=slug?providerFetch(`${REANIME_WEB}/api/watch/${encodeURIComponent(slug)}/${number}`,{json:true,referer:`${REANIME_WEB}/`}).then(root=>Array.isArray(root?.episode_links)?root.episode_links:[],()=>[]):Promise.resolve([]);
-  const flix=episode.anilistId?providerFetch(`${REANIME_WEB}/api/flix/${Number(episode.anilistId)}/${number}`,{json:true,referer:`${REANIME_WEB}/`}).then(root=>Array.isArray(root?.servers)?root.servers:[]):null;
+  // /api/flix is asked by the work's AniList id. An episode from the phone (기기 동기화) comes without it when this
+  // computer never opened the work: it is read from the series route by the episode's slug (/api/watch answers with
+  // the site's page at present, so without it nothing played).
+  const anilistId=Number(episode.anilistId)||(slug?await providerFetch(`${REANIME_WEB}/api/v1/anime/${encodeURIComponent(slug)}`,{json:true,referer:`${REANIME_WEB}/`}).then(root=>Number(root?.anilist_id)||null,()=>null):null);
+  const flix=anilistId?providerFetch(`${REANIME_WEB}/api/flix/${anilistId}/${number}`,{json:true,referer:`${REANIME_WEB}/`}).then(root=>Array.isArray(root?.servers)?root.servers:[]):null;
   flix?.catch(()=>{});
   let candidates=candidatesFrom(await watch);
   if(!candidates.length&&flix)candidates=candidatesFrom(await flix);
@@ -3184,10 +3188,10 @@ app.whenReady().then(async () => {
   // 설정 > 연결 (WireGuard): the state, a .conf picked from disk, on/off and removal; changes are sent as wireguard:state.
   ipcMain.handle('wireguard:status',()=>wireguard.status());
   ipcMain.handle('wireguard:choose',async event=>{
-    const picked=await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender),{title:'WireGuard 설정 파일',filters:[{name:'WireGuard 설정',extensions:['conf']},{name:'모든 파일',extensions:['*']}],properties:['openFile']});
+    const picked=await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender),{title:'WireGuard 설정 파일',filters:[{name:'WireGuard 설정 (.conf, .txt)',extensions:['conf','txt']},{name:'모든 파일',extensions:['*']}],properties:['openFile']});
     const file=picked.canceled?'':picked.filePaths[0];if(!file)return wireguard.status();
     if(fs.statSync(file).size>64*1024)throw new Error('WireGuard 설정 파일이 너무 커요.');
-    return wireguard.load(fs.readFileSync(file,'utf8'),path.basename(file));
+    return wireguard.load(decodeConfFile(fs.readFileSync(file)),path.basename(file));
   });
   ipcMain.handle('wireguard:enable',(_,on)=>wireguard.setEnabled(Boolean(on)));
   ipcMain.handle('wireguard:remove',()=>wireguard.remove());

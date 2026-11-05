@@ -53,6 +53,14 @@ function sanitizeConf(text) {
   const out = sections.map(section => `[${section.kind}]\n${section.keys.map(([key, val]) => `${key} = ${val}`).join('\n')}`).join('\n\n');
   return { text: `${out}\n`, peers: peers.length, endpoint: value(peers[0], 'Endpoint'), dropped: [...dropped] };
 }
+// The text of a picked file. A .conf saved again in Windows Notepad as "Unicode" is UTF-16 (with its byte order mark);
+// read as UTF-8 it had no [Interface] at all.
+function decodeConfFile(buffer) {
+  const bytes = Buffer.from(buffer || []);
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return bytes.subarray(2).toString('utf16le');
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) { const swapped = Buffer.from(bytes.subarray(2, bytes.length - (bytes.length % 2))); swapped.swap16(); return swapped.toString('utf16le'); }
+  return bytes.toString('utf8');
+}
 // wireproxy's own file: the tunnel, and its HTTP proxy on the loopback address.
 function wireproxyConfig(sanitized, port) {
   return `${sanitized.trimEnd()}\n\n[http]\nBindAddress = 127.0.0.1:${Number(port)}\n`;
@@ -231,4 +239,4 @@ function createWireGuardProxy({ app, safeStorage, spawn, fetch, now = Date.now, 
   return { status, proxyUrl, load, setEnabled, remove, start, stop, onChange: listener => { listeners.add(listener); return () => listeners.delete(listener); } };
 }
 
-module.exports = { createWireGuardProxy, sanitizeConf, wireproxyConfig, extractTarFile, lastHandshake, isDirectHost, CHROMIUM_BYPASS, NO_PROXY, ASSETS, WIREPROXY_VERSION };
+module.exports = { createWireGuardProxy, sanitizeConf, decodeConfFile,wireproxyConfig, extractTarFile, lastHandshake, isDirectHost, CHROMIUM_BYPASS, NO_PROXY, ASSETS, WIREPROXY_VERSION };

@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), zlib = require('node:zlib'), crypto = require('node:crypto'), net = require('node:net');
 const { EventEmitter } = require('node:events');
-const { createWireGuardProxy, sanitizeConf, wireproxyConfig, extractTarFile, lastHandshake, isDirectHost, ASSETS } = require('../electron/wireguard-proxy.cjs');
+const { createWireGuardProxy, sanitizeConf, decodeConfFile, wireproxyConfig, extractTarFile, lastHandshake, isDirectHost, ASSETS } = require('../electron/wireguard-proxy.cjs');
 
 const CONF = `# from the VPN's site
 [Interface]
@@ -118,4 +118,11 @@ test('a download that does not match its pinned hash is not run, and turning on 
   assert.match(bad.proxy.proxyUrl(), /^http:\/\/127\.0\.0\.1:/); // still on: nothing goes out directly
   const removed = bad.proxy.remove();
   assert.equal(removed.loaded, false); assert.equal(bad.proxy.proxyUrl(), null);
+});
+
+test('a .conf saved as UTF-16 (Notepad\'s "Unicode") or with a UTF-8 mark is read as text', () => {
+  const le = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(CONF, 'utf16le')]);
+  const be = Buffer.from(le); be.swap16();
+  for (const bytes of [le, be, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(CONF)]), Buffer.from(CONF)])
+    assert.equal(sanitizeConf(decodeConfFile(bytes)).endpoint, sanitizeConf(CONF).endpoint);
 });

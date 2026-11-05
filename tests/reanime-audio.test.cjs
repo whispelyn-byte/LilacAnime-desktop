@@ -25,3 +25,13 @@ test('shared SUB/DUB URLs are filtered before deduplication and legacy untyped l
   const result=await setup([],[server('same','HD-2','dub'),server('same','HD-2','sub'),server('legacy','HD-1',undefined)])();
   assert.deepEqual(Array.from(result,x=>x.url),['https://flixcloud.cc/e/same','https://flixcloud.cc/e/legacy']);
 });
+// An episode synced from the phone has no AniList id: it is read from the series route by the episode's slug.
+test('an episode without its AniList id asks Flix by the one the series route gives',async()=>{
+  const asked=[];
+  const context=vm.createContext({URL,REANIME_WEB:'https://reanime.test',providerFetch:async url=>{asked.push(url);return url.includes('/api/watch/')?{episode_links:[]}:url.includes('/api/v1/anime/')?{anilist_id:14741}:{servers:[server('sub','HD-2','sub')]}}});
+  vm.runInContext(source.slice(source.indexOf('async function reanimeServers('),source.indexOf('// Subtitle track list only')),context);
+  const result=await context.reanimeServers({url:'https://reanime.to/watch/love-chunibyo-other-delusions-y66mwz?ep=1',number:1,dub:false});
+  assert.deepEqual(Array.from(result,x=>x.url),['https://flixcloud.cc/e/sub']);
+  assert.ok(asked.includes('https://reanime.test/api/v1/anime/love-chunibyo-other-delusions-y66mwz'));
+  assert.ok(asked.includes('https://reanime.test/api/flix/14741/1'));
+});
