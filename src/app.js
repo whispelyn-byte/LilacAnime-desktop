@@ -489,7 +489,7 @@ async function resolveWithVideoServer(episode,koreanSearch,anime,failedServers=[
 // The first answer that found something of several searches, or null when none did.
 function firstFound(...searches){return new Promise(resolve=>{let left=searches.length;if(!left)resolve(null);for(const search of searches)Promise.resolve(search).then(value=>{if(value)resolve(value);else if(!--left)resolve(null)},()=>{if(!--left)resolve(null)})})}
 // Whether the other sites have a Korean track of an episode (see crossSiteTracksFor).
-function otherSiteKorean(episode,anime){return crossSiteTracksFor(episode,anime).then(result=>(result?.tracks||[]).some(isKoreanTrack)?{source:'track'}:null,()=>null)}
+function otherSiteKorean(episode,anime){return firstFound(crossSiteTracksFor(episode,anime).then(result=>(result?.tracks||[]).some(isKoreanTrack)?{source:'track'}:null,()=>null),koreanSiteTracksFor(episode,anime).then(list=>list.some(isKoreanTrack)?{source:'track'}:null,()=>null))}
 async function resolveIntoPlayer(resolver,name,context={},subtitleTitle='',episode=1){
   const requestId=showPendingPlayer(name,context);
   const searchTitle=subtitleTitle||context.subtitleTitle||name.split(' · ')[0];
@@ -812,7 +812,7 @@ $('#subtitleSyncCheck').onchange=event=>localStorage.setItem('subtitleSyncCheck'
 // 다른 사이트 자막 트랙도 찾기 (on unless turned off): the other sites' tracks in the player, downloads and the next episode.
 function otherSiteTracksOn(){try{return localStorage.getItem('otherSiteTracks')!=='false'}catch{return true}}
 $('#otherSiteTracks').checked=otherSiteTracksOn();
-$('#otherSiteTracks').onchange=event=>{try{localStorage.setItem('otherSiteTracks',String(event.target.checked))}catch{}crossSiteRequests.clear()};
+$('#otherSiteTracks').onchange=event=>{try{localStorage.setItem('otherSiteTracks',String(event.target.checked))}catch{}crossSiteRequests.clear();koreanSiteRequests.clear()};
 // 설정 > 재생 > 다음 화 미리 준비 (each on until turned off).
 for(const id of ['prepareNextVideo','prepareNextSubtitle','prepareNextTranslation','prepareNextWhisper','arrowVolume']){$(`#${id}`).checked=localStorage.getItem(id)!=='false';$(`#${id}`).onchange=event=>localStorage.setItem(id,String(event.target.checked))}
 async function ensureSubtitle(stream,title,episode,{skipSaved=false}={}){
@@ -850,10 +850,12 @@ async function ensureSubtitle(stream,title,episode,{skipSaved=false}={}){
   if(saved[0]){await applySavedSubtitle(saved[0]);offerAfter(saved[0].source,!['provider','jimaku'].includes(saved[0].source));return true}
   // The search gives way to whatever the user picks meanwhile (a track, a Jimaku file, a saved or own subtitle).
   const before=currentSubtitle,superseded=()=>requestId!==playbackRequestId||Boolean(currentPlaybackContext.selectedSubtitleTrack)||currentSubtitle!==before;
-  // Another site's Korean track of this very episode (RE:Anime's, Miruro's, found by its AniList entry) comes before the
+  // Another site's Korean track of this very episode (RE:Anime's, Miruro's, else 애니24's, 링크애니's or Linkkf's file, found
+  // by its AniList entry) comes before the
   // blogs, whose posts are matched by title. It is timed for that site's video: put on, it is synced to this one's audio
-  // like any subtitle (checkSubtitleSync). Waited for 12 s at most; the blogs are searched meanwhile all the same.
-  if(currentPlaybackContext.tracksPromise||currentPlaybackContext.tracksLoading){$('#subtitleState').textContent='다른 사이트의 한국어 자막 트랙을 찾는 중...';await Promise.race([Promise.resolve(currentPlaybackContext.tracksPromise).catch(()=>{}),new Promise(resolve=>setTimeout(resolve,12000))]);if(superseded())return false}
+  // like any subtitle (checkSubtitleSync). Waited for 16 s at most (the Korean sites' files take
+  // longer: their pages are read when RE:Anime and Miruro have no Korean track); the blogs are searched meanwhile all the same.
+  if(currentPlaybackContext.tracksPromise||currentPlaybackContext.tracksLoading){$('#subtitleState').textContent='다른 사이트의 한국어 자막 트랙을 찾는 중...';await Promise.race([Promise.resolve(currentPlaybackContext.tracksPromise).catch(()=>{}),new Promise(resolve=>setTimeout(resolve,16000))]);if(superseded())return false}
   const otherKorean=(currentPlaybackContext.subtitleTracks||[]).find(track=>track.crossSite&&isKoreanTrack(track));
   if(otherKorean&&await selectSubtitleTrack(otherKorean,{auto:true,notice:`${trackLabel(otherKorean)}의 같은 회차 한국어 자막이에요. 이 영상에 싱크를 맞춰요.`})){currentPlaybackContext.siteKorean=true;return true}
   if(superseded())return false;$('#subtitleState').textContent='온라인 자막을 찾는 중...';
@@ -895,7 +897,7 @@ function isKoreanTrack(track){return /kor|korean|한국/i.test(`${track.language
 // Every site's episode also gets the other sites' tracks of the same episode (RE:Anime's, Miruro's), found by its
 // AniList entry (crossSite, with their origin; see loadMissingSubtitleTracks): all of them where the site has none,
 // only a Korean one beside a site's own. The chip and list show while they load or when found.
-const TRACK_PROVIDERS=['reanime','miruro'],ORIGIN_LABEL={reanime:'Re:Anime',miruro:'Miruro'};
+const TRACK_PROVIDERS=['reanime','miruro'],ORIGIN_LABEL={reanime:'Re:Anime',miruro:'Miruro',ohli24:'애니24',linkani:'링크애니',linkkf:'Linkkf'};
 function trackProvider(){const context=currentPlaybackContext,provider=context.episode?.provider;if(TRACK_PROVIDERS.includes(provider))return provider;return context.subtitleTracks?.length||context.tracksLoading?'reanime':null}
 // The sites the listed tracks come from ("Re:Anime", "Re:Anime·Miruro"): the playing site's first.
 function trackSourceLabel(){
@@ -927,25 +929,41 @@ function renderSubtitleTracks(){
 const crossSiteRequests=new Map();
 const TRACK_ANIME_FIELDS=['provider','id','title','title_english','title_japanese','year','aired','anilistId','malId','type'];
 function plainAnime(anime={}){return Object.fromEntries(TRACK_ANIME_FIELDS.filter(key=>anime?.[key]!=null&&typeof anime[key]!=='object').map(key=>[key,anime[key]]))}
-function crossSiteTracksFor(episode,anime){
-  if(!episode||episode.special||episode.dub||!otherSiteTracksOn())return Promise.resolve({tracks:[]});
-  const key=episodeRef(episode),known=crossSiteRequests.get(key);if(known&&Date.now()-known.at<10*60*1000)return known.promise;
-  const promise=window.lilac.crossSiteSubtitleTracks(JSON.parse(JSON.stringify(episode)),plainAnime(anime||{})).catch(()=>({tracks:[]}));
-  crossSiteRequests.set(key,{at:Date.now(),promise});if(crossSiteRequests.size>20)crossSiteRequests.delete(crossSiteRequests.keys().next().value);
+// One request per episode, kept 10 minutes (crossSiteRequests: RE:Anime's and Miruro's; koreanSiteRequests: the Korean
+// sites' files, which come slower).
+const koreanSiteRequests=new Map();
+function rememberedRequest(map,episode,ask){
+  const key=episodeRef(episode),known=map.get(key);if(known&&Date.now()-known.at<10*60*1000)return known.promise;
+  const promise=ask();map.set(key,{at:Date.now(),promise});if(map.size>20)map.delete(map.keys().next().value);
   return promise;
 }
-// The tracks the stream did not bring: a downloaded Re:ANIME episode's own (it plays from disk), then the other sites'
-// (all of them when there are no others, else only a Korean one, and none when a Korean track is there already).
+function crossSiteTracksFor(episode,anime){
+  if(!episode||episode.special||episode.dub||!otherSiteTracksOn())return Promise.resolve({tracks:[]});
+  return rememberedRequest(crossSiteRequests,episode,()=>window.lilac.crossSiteSubtitleTracks(JSON.parse(JSON.stringify(episode)),plainAnime(anime||{})).catch(()=>({tracks:[]})));
+}
+// 애니24's, 링크애니's and Linkkf's Korean files of the episode (never the playing site's), as tracks.
+function koreanSiteTracksFor(episode,anime){
+  if(!episode||episode.special||episode.dub||!otherSiteTracksOn())return Promise.resolve([]);
+  return rememberedRequest(koreanSiteRequests,episode,()=>window.lilac.koreanSiteSubtitleTracks(JSON.parse(JSON.stringify(episode)),plainAnime(anime||{})).then(list=>list||[],()=>[]));
+}
+// The tracks the stream did not bring: a downloaded Re:ANIME episode's own (it plays from disk), RE:Anime's and Miruro's
+// (all of them when there are no others, else only a Korean one, and none when a Korean track is there already), and
+// always the Korean sites' files. Those are waited for only while there is no Korean track (one of them may be the
+// subtitle put on); otherwise they join the list when they come.
 // context.tracksPromise is what a translation and the Korean track step wait for (see autoTranslate, ensureSubtitle).
 async function loadMissingSubtitleTracks(){
-  const context=currentPlaybackContext,episode=context.episode;if(!episode||context.tracksLoading||(context.subtitleTracks||[]).some(isKoreanTrack))return;
+  const context=currentPlaybackContext,episode=context.episode;if(!episode||context.tracksLoading)return;
   const requestId=playbackRequestId,current=()=>requestId===playbackRequestId;context.tracksLoading=true;renderSubtitleTracks();
+  const koreanSites=koreanSiteTracksFor(episode,context.anime);
+  const addKoreanSites=found=>{if(!current())return;const list=context.subtitleTracks||[],fresh=(found||[]).filter(track=>!list.some(item=>item.url===track.url));if(fresh.length){context.subtitleTracks=[...list,...fresh];renderSubtitleTracks()}};
   context.tracksPromise=(async()=>{
     try{
       if(episode.provider==='reanime'&&!context.subtitleTracks?.length){const result=await window.lilac.providerSubtitleTracks(JSON.parse(JSON.stringify(episode))).catch(()=>null);if(!current())return;if(result?.tracks?.length){context.subtitleTracks=result.tracks;context.subtitleReferer=result.referer||context.subtitleReferer}}
-      if((context.subtitleTracks||[]).some(isKoreanTrack))return;
-      const found=(await crossSiteTracksFor(episode,context.anime))?.tracks||[];if(!current()||!found.length)return;
-      const own=context.subtitleTracks||[];context.subtitleTracks=own.length?[...own,...found.filter(isKoreanTrack)]:found;
+      if(!(context.subtitleTracks||[]).some(isKoreanTrack)){
+        const found=(await crossSiteTracksFor(episode,context.anime))?.tracks||[];if(!current())return;
+        const own=context.subtitleTracks||[];if(found.length)context.subtitleTracks=own.length?[...own,...found.filter(isKoreanTrack)]:found;
+      }
+      if((context.subtitleTracks||[]).some(isKoreanTrack))koreanSites.then(addKoreanSites);else addKoreanSites(await koreanSites);
     }catch{}
     finally{if(current()){context.tracksLoading=false;renderSubtitleTracks()}}
   })();

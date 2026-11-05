@@ -29,11 +29,12 @@ test('a site without tracks keeps all the other sites\' tracks; one with its own
   assert.deepEqual((await none.state.withOtherSiteTracks(none.job, [own])).map(track => track.url), ['own-en', 'other-ko']);
 });
 
-test('none are asked when the site has a Korean track or the setting was off', async t => {
+test('the other sites\' Korean tracks are added beside the site\'s Korean one too, and none when the setting was off', async t => {
   const state = manager(t);
-  await state.state.withOtherSiteTracks(state.job, [{ url: 'ko', language: 'ko', label: 'Korean' }]);
-  await state.state.withOtherSiteTracks({ ...state.job, otherSiteTracks: false }, []);
-  assert.equal(state.calls.asked, 0);
+  const own = { url: 'ko', language: 'ko', label: 'Korean' };
+  assert.deepEqual((await state.state.withOtherSiteTracks(state.job, [own])).map(track => track.url), ['ko', 'other-ko']);
+  assert.deepEqual(await state.state.withOtherSiteTracks({ ...state.job, otherSiteTracks: false }, []), []);
+  assert.equal(state.calls.asked, 1);
 });
 
 test('saved tracks keep their site, and each file is fetched with its own Referer', async t => {

@@ -10,7 +10,8 @@ const { spawn } = require('child_process');
 const { pathToFileURL } = require('url');
 const { createFlixProxyUrl, createFlixAvProxyUrl, closeFlixProxy, primeFlix, flixReadable } = require('./flix-proxy.cjs');
 const { createCatalogBrowser } = require('./catalog-browser.cjs');
-const { createCrossSiteTracks } = require('./cross-site-tracks.cjs');
+const { createCrossSiteTracks, titleKey: workTitleKey } = require('./cross-site-tracks.cjs');
+const { createKoreanSiteSubtitles } = require('./korean-site-subtitles.cjs');
 const { createWeeklySchedule } = require('./weekly-schedule.cjs');
 const { createProviderSchedule } = require('./provider-schedule.cjs');
 const subtitleSource = require('../src/subtitle-source.js');
@@ -437,10 +438,25 @@ function firstAnswering(items,attempt,stagger){
   });
 }
 // A Linkkf episode's stream: the NR-HD player link from its API (the episode page when there is none).
-async function resolveLinkkfStream(episode) {
+// options: resolveStreamPage's (a partition of its own lets another site's lookup run beside the player's).
+async function resolveLinkkfStream(episode, options = {}) {
   let playerUrl='';try{const root=await linkkfFetch(`https://emdlinkkf.5imgdarr.top/apilink2.php?data=${encodeURIComponent(episode.token)}`);const links=Array.isArray(root.data)?root.data:[];playerUrl=(links.find(x=>String(x.server).toUpperCase()==='NR-HD')||links[0]||{}).link||'';}catch{}
   if(!playerUrl)playerUrl=`${LINKKF_WEB}/up/${encodeURIComponent(episode.postId)}/watch/?slug=${encodeURIComponent(episode.slug)}`;
-  return resolveStreamPage(playerUrl,`${LINKKF_WEB}/`,15000);
+  return resolveStreamPage(playerUrl,`${LINKKF_WEB}/`,15000,options);
+}
+// A Linkkf show's episode servers, each with its numbered episodes.
+async function linkkfServers(postId) {
+  const root = await linkkfFetch(`${LINKKF_EPISODE_API}/api2.php?epid=${encodeURIComponent(postId)}`);
+  return (Array.isArray(root) ? root : []).map(server => ({
+    id: server.id, name: server.server_name || `Server ${server.id}`,
+    episodes: numberTitledEpisodes((server.server_data || []).map(item => ({
+      name: String(item.name || item.slug || ''), slug: String(item.slug || ''),
+      // The player's episode number (next episode, subtitles, OP/ED) from the name ("12", "12화", "12-13"); an
+      // episode named by its title ("80000대장경") is numbered by its place in the list instead.
+      number: episodeLabelNumber(item.name) || episodeLabelNumber(item.slug),
+      token: String(item.link || `${postId}v${server.id}_${item.slug || ''}`), postId
+    })))
+  })).filter(server => server.episodes.length);
 }
 async function resolveProviderEpisode(episode) {
   if(episode.provider==='miruro')return resolveMiruroEpisode(episode);
@@ -771,8 +787,41 @@ async function searchAnilist(search){
 }
 // The other sites' tracks (RE:Anime's, Miruro's) of any site's episode, by its AniList entry (see cross-site-tracks.cjs).
 const otherSiteTracksFor=(anime={},episode={})=>crossSiteTracks.tracks({...anime,provider:anime?.provider||episode?.provider||''},episode).then(result=>result.tracks||[]);
+// The Korean sites' files of it (애니24, 링크애니, Linkkf: slower, asked apart), and both lists together.
+const koreanSiteTracksFor=(anime={},episode={})=>crossSiteTracks.koreanSiteTracks({...anime,provider:anime?.provider||episode?.provider||''},episode);
+const allOtherSiteTracksFor=async(anime={},episode={})=>{const [fast,korean]=await Promise.all([otherSiteTracksFor(anime,episode).catch(()=>[]),koreanSiteTracksFor(anime,episode).catch(()=>[])]);return [...fast,...korean]};
+// Another site's Korean track of the episode: RE:Anime's or Miruro's, else (only then waited for) a Korean site's file.
+const otherSiteKoreanTrack=async(anime={},episode={})=>(await otherSiteTracksFor(anime,episode).catch(()=>[])).find(isKoreanTrack)||(await koreanSiteTracksFor(anime,episode).catch(()=>[])).find(isKoreanTrack)||null;
 const crossSiteAnilistFile=()=>path.join(app.getPath('userData'),'cross-site-anilist.json');
+// The Korean sites' subtitle files of the same episode (see korean-site-subtitles.cjs), always asked beside RE:Anime's
+// and Miruro's tracks. 애니24 and 링크애니 are searched by the work's Korean title and checked on the show's page;
+// Linkkf's catalog (only when it is on disk already: it is not fetched whole for this) names the AniList entry.
+const koreanSiteFile=()=>path.join(app.getPath('userData'),'korean-site-subtitles.json');
+const koreanSiteSubtitles=createKoreanSiteSubtitles({
+  koreanTitles:anime=>hasHangul(anime.title)?[anime.title]:koreanTitleCandidates(anime.title||'',anime).catch(()=>[]),
+  readCache:()=>{try{return JSON.parse(fs.readFileSync(koreanSiteFile(),'utf8'))||{}}catch{return {}}},
+  writeCache:value=>writeCacheFile(koreanSiteFile(),JSON.stringify(value)),
+  sites:{
+    ohli24:{
+      search:async titles=>(await Promise.all([...new Set(titles)].slice(0,3).map(title=>ohliSearch(title).catch(()=>[])))).flat().map(item=>({ref:item.url,title:item.title})),
+      detail:async ref=>{const {data,episodes}=await ohliDetail({provider:'ohli24',url:ref,title:''});return {anilistId:data.anilistId||null,native:data.title_japanese||'',episodes}},
+      subtitle:episode=>ohliEpisodeSubtitle(episode)
+    },
+    linkani:{
+      search:async titles=>(await Promise.all([...new Set(titles)].slice(0,3).map(title=>linkaniFetch(`${LINKANI_WEB}/view/?wd=${encodeURIComponent(title)}`).then(linkaniItems,()=>[])))).flat().map(item=>({ref:item.url,title:item.title})),
+      detail:async ref=>{const {data,episodes}=await linkaniDetail({provider:'linkani',url:ref,title:''});return {anilistId:data.anilistId||null,native:data.title_japanese||'',episodes}},
+      subtitle:episode=>linkaniEpisodeSubtitle(episode)
+    },
+    linkkf:{
+      byAnilist:(anilistId,native)=>{const key=workTitleKey(native||''),item=catalogIndex('linkkf').items.find(item=>Number(item.anilistId)===Number(anilistId)||(key&&workTitleKey(item.title_japanese||'')===key));return item?.id||null},
+      detail:async ref=>{const item=catalogIndex('linkkf').items.find(entry=>String(entry.id)===String(ref))||{};return {anilistId:item.anilistId||null,native:item.title_japanese||'',episodes:(await linkkfServers(ref))[0]?.episodes||[]}},
+      // The subtitle comes only with the player page (a hidden window, 15 s at most), in a session of its own.
+      subtitle:async episode=>{const stream=await resolveLinkkfStream(episode,{partition:'lilac-korean-site'});return stream?.subtitlePath?{path:stream.subtitlePath,url:stream.subtitleUrl,assPath:stream.subtitleAss?.path||null,assUrl:stream.subtitleAss?.url||null}:null}
+    }
+  }
+});
 const crossSiteTracks=createCrossSiteTracks({
+  koreanSites:request=>koreanSiteSubtitles.tracks(request),
   searchAnilist,
   reanimeTracks:(anilistId,number)=>reanimeSubtitleTracks({anilistId,number,dub:false}),
   miruroId:(anilistId,titles)=>miruroIdByAnilist(anilistId,titles),
@@ -924,10 +973,23 @@ async function resolveOhliEpisode(episode){
   const {subtitle,...stream}=await ohliStream(player);
   if(!subtitle)return {...stream,burnedKorean:true,subtitleTracks:[]};
   // Saved like the other sites' tracks and applied (and downloaded) as the episode's own Korean subtitle.
-  const dir=path.join(app.getPath('userData'),'subtitles','provider');fs.mkdirSync(dir,{recursive:true});
-  const file=path.join(dir,`ohli24_${Date.now()}_${Math.random().toString(36).slice(2,8)}${subtitle.ext}`);fs.writeFileSync(file,subtitle.data);
-  const saved=subtitleResult(file);
+  const saved=saveProviderSubtitle('ohli24',subtitle.data,subtitle.ext);
   return {...stream,burnedKorean:false,subtitleTracks:[],subtitleUrl:saved.url,subtitlePath:saved.path,subtitleAss:saved.assUrl?{url:saved.assUrl,path:saved.assPath}:null,subtitleLabel:'애니24 한국어 자막'};
+}
+// A site's subtitle file kept under subtitles/provider (its bytes as they are; see subtitleResult).
+function saveProviderSubtitle(prefix,data,ext){
+  const dir=path.join(app.getPath('userData'),'subtitles','provider');fs.mkdirSync(dir,{recursive:true});
+  const file=path.join(dir,`${prefix}_${Date.now()}_${Math.random().toString(36).slice(2,8)}${ext}`);fs.writeFileSync(file,data);
+  return subtitleResult(file);
+}
+// An episode's Korean subtitle file alone, for another site's episode (see koreanSiteSubtitles): read from its player
+// page's list (playerjsSubtitle) without the video or a hidden window. None for a video with the subtitle in the picture.
+async function ohliEpisodeSubtitle(episode){
+  const player=String((await ohliPage(episode.url)).playing?.body?.url||'');if(!/^https?:\/\//i.test(player))return null;
+  const response=await net.fetch(player,{signal:AbortSignal.timeout(20000),headers:{'User-Agent':LINKKF_UA,Referer:`${OHLI24_WEB}/`}});if(!response.ok)return null;
+  const listed=String((await response.text()).match(/playerjsSubtitle\s*=\s*"([^"]*)"/)?.[1]||''),files=[...listed.matchAll(/(?:\[[^\]]*\])?\s*(https?:\/\/[^,\s]+)/g)].map(match=>match[1]);
+  const subtitle=await ohliSubtitleFile(files,player,(url,options)=>net.fetch(url,options));
+  return subtitle?saveProviderSubtitle('ohli24',subtitle.data,subtitle.ext):null;
 }
 
 // 링크애니 (linkani.tv): Linkkf's web site (a MacCMS "ewave" template), its titles in Korean and its videos with the
@@ -996,22 +1058,34 @@ async function resolveLinkaniEpisode(episode){
   // the video carries its id (aniplayer1.site/h/da/88/da88f9…/index.m3u8 → /s/da/88/da88f9…/sub.vtt); one with another
   // id was added to a video that has the subtitle in the picture already (both would show), so it is left out.
   const stream={url,headers:{'User-Agent':LINKKF_UA,Referer:`${LINKANI_WEB}/`},referer:`${LINKANI_WEB}/`,hls:/\.m3u8(?:$|\?)/i.test(url),burnedKorean:true,subtitleTracks:[]};
-  const subtitle=/^https?:\/\//i.test(String(player?.subtitle_url||''))?player.subtitle_url:'';
-  const fileId=value=>String(value||'').match(/\/[hs]\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{16,})\//i)?.[1]||'';
-  const ownFile=!fileId(url)||!fileId(subtitle)||fileId(url)===fileId(subtitle);
-  if(subtitle&&ownFile){
+  const subtitle=linkaniOwnSubtitle(player);
+  if(subtitle){
     stream.burnedKorean=false;
-    try{
-      const response=await net.fetch(subtitle,{signal:AbortSignal.timeout(20000),headers:{'User-Agent':LINKKF_UA,Referer:`${LINKANI_WEB}/`}});
-      if(!response.ok)throw new Error(`자막 HTTP ${response.status}`);
-      const text=(await response.text()).replace(/^﻿/,''),ext=/^webvtt/i.test(text.trimStart())?'.vtt':/\[script info\]/i.test(text)?'.ass':'.srt';
-      if(!text.includes('-->')&&ext!=='.ass')throw new Error('자막 파일이 아닙니다.');
-      const dir=path.join(app.getPath('userData'),'subtitles','provider');fs.mkdirSync(dir,{recursive:true});
-      const file=path.join(dir,`linkani_${Date.now()}_${Math.random().toString(36).slice(2,8)}${ext}`);fs.writeFileSync(file,text,'utf8');
-      const saved=subtitleResult(file);Object.assign(stream,{subtitleUrl:saved.url,subtitlePath:saved.path,subtitleAss:saved.assUrl?{url:saved.assUrl,path:saved.assPath}:null,subtitleLabel:'링크애니 한국어 자막'});
-    }catch{/* no subtitle then: the Korean subtitle is searched for as for a clean video */}
+    // No subtitle when it does not come: the Korean subtitle is searched for as for a clean video.
+    const saved=await linkaniSaveSubtitle(subtitle).catch(()=>null);
+    if(saved)Object.assign(stream,{subtitleUrl:saved.url,subtitlePath:saved.path,subtitleAss:saved.assUrl?{url:saved.assUrl,path:saved.assPath}:null,subtitleLabel:'링크애니 한국어 자막'});
   }
   return stream;
+}
+// The address of an episode's own subtitle file (player_aaaa's subtitle_url), '' when it has none or the file belongs to
+// another video (see resolveLinkaniEpisode).
+function linkaniOwnSubtitle(player){
+  const url=player?.url||player?.actual_url||'',subtitle=/^https?:\/\//i.test(String(player?.subtitle_url||''))?player.subtitle_url:'';
+  const fileId=value=>String(value||'').match(/\/[hs]\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{16,})\//i)?.[1]||'';
+  return subtitle&&(!fileId(url)||!fileId(subtitle)||fileId(url)===fileId(subtitle))?subtitle:'';
+}
+async function linkaniSaveSubtitle(subtitle){
+  const response=await net.fetch(subtitle,{signal:AbortSignal.timeout(20000),headers:{'User-Agent':LINKKF_UA,Referer:`${LINKANI_WEB}/`}});
+  if(!response.ok)throw new Error(`자막 HTTP ${response.status}`);
+  const text=(await response.text()).replace(/^﻿/,''),ext=/^webvtt/i.test(text.trimStart())?'.vtt':/\[script info\]/i.test(text)?'.ass':'.srt';
+  if(!text.includes('-->')&&ext!=='.ass')throw new Error('자막 파일이 아닙니다.');
+  return saveProviderSubtitle('linkani',Buffer.from(text,'utf8'),ext);
+}
+// An episode's own Korean subtitle file alone, for another site's episode (see koreanSiteSubtitles).
+async function linkaniEpisodeSubtitle(episode){
+  const raw=(await linkaniFetch(episode.url)).match(/var\s+player_aaaa\s*=\s*(\{[\s\S]*?\})\s*;?\s*<\/script>/)?.[1];
+  let player=null;try{player=JSON.parse(raw||'')}catch{return null}
+  const subtitle=linkaniOwnSubtitle(player);return subtitle?linkaniSaveSubtitle(subtitle):null;
 }
 
 function parseFlixSubtitleTracks(html=''){
@@ -2558,8 +2632,8 @@ app.whenReady().then(async () => {
     // Another site's Korean track of the episode (RE:Anime, Miruro) before the blogs, as in the player. It is timed for
     // that site's video: the player syncs it to the saved one when it is played (자막 싱크 자동 맞추기).
     if(job.otherSiteTracks!==false){
-      const track=(await otherSiteTracksFor(job.anime||{},job.episode||{}).catch(()=>[])).find(isKoreanTrack);
-      if(track)try{const file=subtitleResult(await saveRemoteSubtitle(track.url,remoteTrackOptions(track.url,track.referer)));return {source:'reanime',korean:true,path:file.path,assPath:file.assPath,fonts:[],label:`${track.origin==='miruro'?'Miruro':'Re:Anime'} ${track.label} 자막`}}catch{/* the blogs then */}
+      const track=await otherSiteKoreanTrack(job.anime||{},job.episode||{});
+      if(track)try{const file=track.path&&fs.existsSync(track.path)?{path:track.path,assPath:track.assPath||null}:subtitleResult(await saveRemoteSubtitle(track.url,remoteTrackOptions(track.url,track.referer)));return {source:'reanime',korean:true,path:file.path,assPath:file.assPath,fonts:[],label:`${{miruro:'Miruro',ohli24:'애니24',linkani:'링크애니',linkkf:'Linkkf'}[track.origin]||'Re:Anime'} ${track.label} 자막`}}catch{/* the blogs then */}
     }
     const search=communitySearch(job);
     for(const source of COMMUNITY_SOURCES.includes(preferred)?[preferred,...COMMUNITY_SOURCES.filter(x=>x!==preferred)]:COMMUNITY_SOURCES){
@@ -2602,7 +2676,7 @@ app.whenReady().then(async () => {
     return segments;
   };
   const analyzeDownload=async(job,siblings)=>analyzeOfflineOpEd({title:job.title,episode:job.episodeNumber,currentUrl:pathToFileURL(job.filePath).href,duration:job.duration,candidates:siblings.map(item=>({...item.episode,number:item.episodeNumber,localUrl:pathToFileURL(item.filePath).href}))});
-  downloadManager=new DownloadManager({app,resolveTitles:anime=>resolveDisplayTitle(anime),otherSiteTracks:job=>otherSiteTracksFor(job.anime||{},job.episode||{}),
+  downloadManager=new DownloadManager({app,resolveTitles:anime=>resolveDisplayTitle(anime),otherSiteTracks:job=>allOtherSiteTracksFor(job.anime||{},job.episode||{}),
     saveTrack:(url,referer)=>saveRemoteSubtitle(String(url),remoteTrackOptions(url,referer)).then(file=>subtitleResult(file)),
     translateTrack:async(file,title,anime)=>{const settings=translator().settings();return translator().ready()&&settings.translateDownloads?translator().translate({file,title,context:await translationContext(anime||{},title)}):null},findSubtitle:findDownloadSubtitle,findJimaku:findDownloadJimaku,translateJimaku:translateDownloadJimaku,jimakuTranslates:()=>Boolean(jimakuTranslation()),findSkips:findDownloadSkips,analyzeOpEd:analyzeDownload,// Animenosub and Miruro downloads follow the player: the RAW video when the episode has a Korean subtitle (saved or found
     // by the same search the download attaches afterwards) or a Jimaku file it will translate, else SUB with its
@@ -2681,19 +2755,7 @@ app.whenReady().then(async () => {
     }))).filter(Boolean).sort((a, b) => b.count - a.count);
     return { stats, related };
   });
-  ipcMain.handle('linkkf:episodes', async (_, postId) => {
-    const root = await linkkfFetch(`${LINKKF_EPISODE_API}/api2.php?epid=${encodeURIComponent(postId)}`);
-    return (Array.isArray(root) ? root : []).map(server => ({
-      id: server.id, name: server.server_name || `Server ${server.id}`,
-      episodes: numberTitledEpisodes((server.server_data || []).map(item => ({
-        name: String(item.name || item.slug || ''), slug: String(item.slug || ''),
-        // The player's episode number (next episode, subtitles, OP/ED) from the name ("12", "12화", "12-13"); an
-        // episode named by its title ("80000대장경") is numbered by its place in the list instead.
-        number: episodeLabelNumber(item.name) || episodeLabelNumber(item.slug),
-        token: String(item.link || `${postId}v${server.id}_${item.slug || ''}`), postId
-      })))
-    })).filter(server => server.episodes.length);
-  });
+  ipcMain.handle('linkkf:episodes', (_, postId) => linkkfServers(postId));
   ipcMain.handle('linkkf:resolve', async (_, episode) => { playerStreamHeaders=null; return resolveLinkkfStream(episode); });
   // Home rails, most popular first and only shows that already have episodes (early in a season most are still to
   // air): "2026 가을 신작" (this season; Re:Anime and Miruro filter their catalog by season and year, Animenosub its
@@ -2872,6 +2934,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('provider:subtitle-tracks', (_, episode) => reanimeSubtitleTracks(episode));
   // The same episode's tracks on the other sites (RE:Anime, Miruro; never the one playing), each marked crossSite.
   ipcMain.handle('provider:cross-site-tracks', (_, episode, anime = null) => crossSiteTracks.tracks({ ...(anime || {}), provider: anime?.provider || episode?.provider || '' }, episode || {}));
+  // The Korean sites' files of the same episode (slower; the player adds them when they come).
+  ipcMain.handle('provider:korean-site-tracks', (_, episode, anime = null) => koreanSiteTracksFor(anime || {}, episode || {}));
   ipcMain.handle('cover:data', (_, url) => coverDataUrl(url));
   updater=new Updater({app,broadcast});
   const deviceSync=new DeviceSync({app});
@@ -3008,7 +3072,8 @@ app.whenReady().then(async () => {
   async function episodeTracks(item, anime = null, otherSites = true) {
     const own = await siteTracks(item).catch(() => ({ tracks: [], referer: '' }));
     if (!otherSites || (own.tracks || []).some(isKoreanTrack)) return own;
-    const other = await otherSiteTracksFor(anime || {}, item || {}).catch(() => []);
+    let other = await otherSiteTracksFor(anime || {}, item || {}).catch(() => []);
+    if (![...(own.tracks || []), ...other].some(isKoreanTrack)) other = [...other, ...await koreanSiteTracksFor(anime || {}, item || {}).catch(() => [])];
     return { tracks: own.tracks?.length ? [...own.tracks, ...other.filter(isKoreanTrack)] : other, referer: own.referer || '' };
   }
   // A subtitle made ready for another episode, synced with that episode's site tracks and kept for it ("<label> (<name>)
@@ -3047,7 +3112,7 @@ app.whenReady().then(async () => {
     preparing = preparing.then(async () => {
       if (!translator().ready(provider)) return;
       const { tracks, referer } = await episodeTracks(item, anime, otherSites !== false).catch(() => ({tracks:[],referer:''}));
-      // A Korean track (the site's or another site's) is what the episode will open with: nothing to translate ahead.
+      // A Korean track (the site's, another site's, a Korean site's file) is what the episode opens with: nothing to translate ahead.
       if((tracks||[]).some(isKoreanTrack))return;
       const korean=await findDownloadSubtitle({anime,title,episodeNumber:episode,episode:item||{},otherSiteTracks:otherSites!==false},null).catch(()=>null);
       if(korean&&(korean.korean||['kairan','csora','anissia','user','gemini','linkkf'].includes(korean.source)))return;

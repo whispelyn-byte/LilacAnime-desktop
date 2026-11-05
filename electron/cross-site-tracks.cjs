@@ -28,6 +28,12 @@ function nativeOf(anime = {}) {
   const value = String(anime.title_japanese || '').trim();
   return value && KANA_KANJI.test(value) && !hasHangul(value) ? value : '';
 }
+// The original title as it is written, Latin letters too ("NEW GAME!"), never a Korean one: what the Korean sites'
+// show pages are checked by (see korean-site-subtitles.cjs).
+function originalTitle(value = '') {
+  const text = String(value || '').trim();
+  return text && !hasHangul(text) ? text : '';
+}
 function yearOf(anime = {}) {
   return Number((String(anime.year || '').match(/(?:19|20)\d{2}/) || String(anime.aired || '').match(/(?:19|20)\d{2}/) || [])[0]) || null;
 }
@@ -64,6 +70,7 @@ function mergeTracks(reanime = [], miruro = []) {
 }
 
 // deps: searchAnilist(text) → AniList media list; reanimeTracks(anilistId, number) → {tracks, referer};
+// koreanSites({anime, episode, entry}) → the Korean sites' tracks (optional, see korean-site-subtitles.cjs);
 // miruroId(anilistId, titles) → Miruro's id of the entry or null; miruroTracks(miruroId, number) → {tracks};
 // readCache() / writeCache(object): the AniList and Miruro matches kept on disk; now().
 function createCrossSiteTracks(deps) {
@@ -91,11 +98,11 @@ function createCrossSiteTracks(deps) {
   }
   // The AniList entry ({id, episodes, titles}) of a site's show, or null; titles are what Miruro is searched by.
   async function anilistEntry(anime = {}) {
-    if (TRUSTED_IDS.includes(anime.provider) && Number(anime.anilistId)) return { id: Number(anime.anilistId), episodes: null, titles: animeTitles(anime) };
+    if (TRUSTED_IDS.includes(anime.provider) && Number(anime.anilistId)) return { id: Number(anime.anilistId), episodes: null, titles: animeTitles(anime), native: originalTitle(anime.title_japanese) };
     return cached(cacheKey(anime), async () => {
       const media = await lookup(anime);
       const titles = [media?.title?.native, media?.title?.english, media?.title?.romaji, ...animeTitles(anime)].filter(Boolean);
-      return { id: Number(media?.id) || null, episodes: Number(media?.episodes) || null, titles: [...new Set(titles)] };
+      return { id: Number(media?.id) || null, episodes: Number(media?.episodes) || null, titles: [...new Set(titles)], native: originalTitle(media?.title?.native || anime.title_japanese) };
     });
   }
   const miruroId = entry => cached(`miruro:${entry.id}`, async () => ({ id: await deps.miruroId(entry.id, entry.titles || []) || null })).then(found => found?.id || null);
@@ -112,11 +119,16 @@ function createCrossSiteTracks(deps) {
   // origin and the Referer its file wants. None for a special or dub (no numbered episode of the entry) or a number
   // past the entry's episodes (a site numbering a later season on from the first). Kept for half an hour; an empty
   // answer is asked again, and one site failing leaves the other's tracks.
-  async function tracks(anime = {}, episode = {}) {
+  // The episode's numbered AniList entry, or null (a special or dub, a number past the entry's episodes).
+  async function episodeEntry(anime, episode) {
     const number = Number(episode.number);
-    if (episode.special || episode.dub || !Number.isInteger(number) || number <= 0) return EMPTY;
+    if (episode.special || episode.dub || !Number.isInteger(number) || number <= 0) return null;
     const entry = await anilistEntry({ ...anime, anilistId: anime.anilistId || episode.anilistId || null });
-    if (!entry || (entry.episodes && number > entry.episodes)) return EMPTY;
+    return !entry || (entry.episodes && number > entry.episodes) ? null : entry;
+  }
+  async function tracks(anime = {}, episode = {}) {
+    const entry = await episodeEntry(anime, episode), number = Number(episode.number);
+    if (!entry) return EMPTY;
     const key = `${anime.provider || ''}>${entry.id}:${number}`, known = trackCache.get(key);
     if (known && now() - known.at < 30 * 60 * 1000) return known.promise;
     const ask = (site, load) => anime.provider === site ? Promise.resolve([]) : load(entry, number).catch(() => []);
@@ -128,7 +140,15 @@ function createCrossSiteTracks(deps) {
     promise.then(result => { if (!result.tracks.length && trackCache.get(key)?.promise === promise) trackCache.delete(key); });
     return promise;
   }
-  return { anilistEntry, tracks };
+  // The Korean sites' files of the episode (deps.koreanSites: 애니24, 링크애니, Linkkf; never the one playing), asked
+  // apart from tracks() because they come slower (a page or a hidden player each): always asked, so they are there to
+  // pick beside RE:Anime's and Miruro's, but waited for only when those have no Korean track (see the player).
+  async function koreanSiteTracks(anime = {}, episode = {}) {
+    if (!deps.koreanSites) return [];
+    const entry = await episodeEntry(anime, episode);
+    return entry ? (await Promise.resolve().then(() => deps.koreanSites({ anime, episode, entry })).catch(() => [])) || [] : [];
+  }
+  return { anilistEntry, tracks, koreanSiteTracks };
 }
 
-module.exports = { createCrossSiteTracks, titleKey, nativeOf, yearOf, pickByNative, pickByTitle, languageKey, mergeTracks };
+module.exports = { createCrossSiteTracks, titleKey, nativeOf, originalTitle, yearOf, pickByNative, pickByTitle, languageKey, mergeTracks };

@@ -398,8 +398,8 @@ class DownloadManager {
   // Re:Anime and Miruro subtitle tracks are all kept with the episode, so the track list works offline, and one of them
   // is translated into Korean (설정 > 다운로드할 때 자막 트랙 번역). This runs one episode at a time after the download
   // has finished, so it never holds a download slot.
-  // Every site's episode also keeps the other sites' tracks of it (RE:Anime's, Miruro's; marked crossSite with their
-  // origin): all of them when the site has none, else only a Korean one beside them. Not when 플레이어 설정 > 자막 >
+  // Every site's episode also keeps the other sites' tracks of it (RE:Anime's, Miruro's, and the Korean sites' files;
+  // marked crossSite with their origin): all of them when the site has none, else the Korean ones beside them. Not when 플레이어 설정 > 자막 >
   // 다른 사이트 자막 트랙도 찾기 was off as the episode was queued (job.otherSiteTracks false).
   queueTracks(job, stream) {
     if (!this.saveTrack) return;
@@ -409,7 +409,7 @@ class DownloadManager {
     }).catch(() => {});
   }
   async withOtherSiteTracks(job, own) {
-    if (!this.otherSiteTracks || job.otherSiteTracks === false || own.some(isKoreanTrack)) return own;
+    if (!this.otherSiteTracks || job.otherSiteTracks === false) return own;
     const found = await Promise.resolve().then(() => this.otherSiteTracks(job)).catch(() => []) || [];
     return own.length ? [...own, ...found.filter(isKoreanTrack)] : found;
   }
@@ -419,7 +419,7 @@ class DownloadManager {
     fs.mkdirSync(dir, { recursive: true });
     for (const [index, track] of stream.subtitleTracks.entries()) {
       try {
-        const file = await this.saveTrack(track.url, track.referer || stream.referer), name = `${String(index + 1).padStart(2, '0')}_${safeName(track.label || 'track')}`;
+        const file = track.path && fs.existsSync(track.path) ? { path: track.path, assPath: track.assPath || null } : await this.saveTrack(track.url, track.referer || stream.referer), name = `${String(index + 1).padStart(2, '0')}_${safeName(track.label || 'track')}`;
         if(!this.jobs.includes(job)||this.stopping)return;
         const entry = { label: track.label || `트랙 ${index + 1}`, format: track.format || 'vtt', language: track.language || '', url: track.url, path: path.join(dir, `${name}${path.extname(file.path)}`), ...(track.crossSite ? { crossSite: true, origin: track.origin || '' } : {}) };
         fs.copyFileSync(file.path, entry.path);

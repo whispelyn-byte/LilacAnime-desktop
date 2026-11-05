@@ -7,9 +7,9 @@ const section = (start, end) => { const first = source.indexOf(start), last = so
 // other: the other sites' tracks of the episode (RE:Anime's, Miruro's).
 function chooser(saved, online = {}, other = []) {
   const searched = [];
-  const make = new Function('subtitleStore', 'downloadSubtitleKey', 'communitySearch', 'otherSiteTracksFor', 'isKoreanTrack', 'saveRemoteSubtitle', 'remoteTrackOptions', 'subtitleResult', `${section('const COMMUNITY_SOURCES=', '\n', 0)}\n${section('const DOWNLOAD_KOREAN_SOURCES=', '\n')}\n${section('const findDownloadSubtitle=', "  // One online source's Korean subtitle")}\nreturn findDownloadSubtitle;`);
+  const make = new Function('subtitleStore', 'downloadSubtitleKey', 'communitySearch', 'otherSiteKoreanTrack', 'saveRemoteSubtitle', 'remoteTrackOptions', 'subtitleResult', 'fs', `${section('const COMMUNITY_SOURCES=', '\n', 0)}\n${section('const DOWNLOAD_KOREAN_SOURCES=', '\n')}\n${section('const findDownloadSubtitle=', "  // One online source's Korean subtitle")}\nreturn findDownloadSubtitle;`);
   const find = make({ list: () => saved }, () => 'key', () => async name => { searched.push(name); if (online[name]) return { source: name, path: online[name] }; throw new Error('none'); },
-    async () => { searched.push('other sites'); return other; }, track => /ko/i.test(track.language), async url => `${url}.vtt`, () => ({}), file => ({ path: file, assPath: null }));
+    async () => { searched.push('other sites'); return other.find(track => /ko/i.test(track.language)) || null; }, async url => `${url}.vtt`, () => ({}), file => ({ path: file, assPath: null }), { existsSync: () => false });
   return { find, searched };
 }
 
