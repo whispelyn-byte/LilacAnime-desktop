@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, session, net, Tray, Menu, screen, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, session, net, Tray, Menu, screen, nativeImage, safeStorage } = require('electron');
 const path = require('path');
 const zlib = require('zlib');
 const cheerio = require('cheerio');
@@ -34,6 +34,18 @@ const { createSubtitleSync } = require('./subtitle-sync.cjs');
 const { createWhisper } = require('./whisper.cjs');
 let subtitleTranslator = null;
 const translator = () => subtitleTranslator ||= createTranslator(app.getPath('userData'));
+
+// --- 설정 > 연결: this app's traffic alone through WireGuard (see wireguard-proxy.cjs) -----------------------------------
+// While it is on, every Chromium session (the window, the hidden player pages, each partition as it is made), Node's
+// fetch and the child processes (ffmpeg, uv) go to wireproxy's local HTTP proxy; this computer's and the local network's
+// addresses go direct. It is set before anything is asked, so nothing goes out directly while the tunnel comes up.
+const { createWireGuardProxy } = require('./wireguard-proxy.cjs');
+const { createAppRouting } = require('./app-routing.cjs');
+// directFetch: Node's fetch outside the tunnel (wireproxy's own download, device sync: a server of the user's).
+const appRouting = createAppRouting({ app }), { directFetch } = appRouting, routeSession = appRouting.routeSession;
+const wireguard = createWireGuardProxy({ app, safeStorage, spawn, fetch: directFetch });
+appRouting.route(wireguard.proxyUrl());
+wireguard.onChange(() => appRouting.route(wireguard.proxyUrl()));
 
 app.commandLine.appendSwitch('disable-blink-features','AutomationControlled');
 // Android BackgroundAudioService: playback continues while the window is hidden or minimized.
@@ -2938,7 +2950,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('provider:korean-site-tracks', (_, episode, anime = null) => koreanSiteTracksFor(anime || {}, episode || {}));
   ipcMain.handle('cover:data', (_, url) => coverDataUrl(url));
   updater=new Updater({app,broadcast});
-  const deviceSync=new DeviceSync({app});
+  // Device sync talks to the user's own server: never through the WireGuard tunnel.
+  const deviceSync=new DeviceSync({app,fetchImpl:directFetch});
   ipcMain.handle('device-sync:status',()=>deviceSync.status());
   ipcMain.handle('device-sync:connect',(_,server,password)=>deviceSync.connect(server,password));
   ipcMain.handle('device-sync:disconnect',()=>deviceSync.disconnect());
@@ -3168,6 +3181,17 @@ app.whenReady().then(async () => {
   // Default ASS font: the user's choice (설정 > 기본 자막 폰트) or a Korean system font,
   // since libass' bundled fallback font has no Hangul glyphs.
   ipcMain.handle('tmdb:get',()=>({key:tmdbKey()}));
+  // 설정 > 연결 (WireGuard): the state, a .conf picked from disk, on/off and removal; changes are sent as wireguard:state.
+  ipcMain.handle('wireguard:status',()=>wireguard.status());
+  ipcMain.handle('wireguard:choose',async event=>{
+    const picked=await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender),{title:'WireGuard 설정 파일',filters:[{name:'WireGuard 설정',extensions:['conf']},{name:'모든 파일',extensions:['*']}],properties:['openFile']});
+    const file=picked.canceled?'':picked.filePaths[0];if(!file)return wireguard.status();
+    if(fs.statSync(file).size>64*1024)throw new Error('WireGuard 설정 파일이 너무 커요.');
+    return wireguard.load(fs.readFileSync(file,'utf8'),path.basename(file));
+  });
+  ipcMain.handle('wireguard:enable',(_,on)=>wireguard.setEnabled(Boolean(on)));
+  ipcMain.handle('wireguard:remove',()=>wireguard.remove());
+  wireguard.onChange(value=>broadcast('wireguard:state',value));
   // Gemini translation of subtitle tracks (the user's own key); progress goes to the page that asked.
   ipcMain.handle('jimaku:list',(_,anime={},episode=1,preferred='')=>jimakuEpisodeFiles(anime||{},Number(episode)||1,String(preferred||'')));
   ipcMain.handle('jimaku:download',(_,file={},anime={},episode=1)=>jimakuDownload(file||{},anime||{},Number(episode)||1));
@@ -3301,6 +3325,9 @@ app.whenReady().then(async () => {
     app.quit();return;
   }
   startupComplete = true;
+  // With 이 앱만 WireGuard로 연결 on, the tunnel is opened first (8 s at most): the home's lists are asked through it.
+  routeSession(session.defaultSession);
+  if(wireguard.proxyUrl())await Promise.race([wireguard.start(),new Promise(resolve=>setTimeout(resolve,8000))]);
   createWindow();
   // Installed builds check GitHub releases shortly after launch; dev runs use the settings button.
   // At start and every 3 hours while the app stays open.
@@ -3321,5 +3348,5 @@ app.whenReady().then(async () => {
   app.quit();
 });
 
-app.on('before-quit', () => { desktopState?.beforeQuit();subtitleSync?.stop();whisper?.stop();downloadManager?.shutdown();closeFlixProxy(); subtitleTranslator?.local?.stop(); updater?.installOnQuit(); });
+app.on('before-quit', () => { desktopState?.beforeQuit();wireguard.stop();subtitleSync?.stop();whisper?.stop();downloadManager?.shutdown();closeFlixProxy(); subtitleTranslator?.local?.stop(); updater?.installOnQuit(); });
 app.on('window-all-closed', () => { if (process.env.LILAC_SMOKE_REANIME==='1'||desktopState?.settings().trayEnabled&&!desktopState.quitting)return;if (process.platform !== 'darwin') app.quit(); });

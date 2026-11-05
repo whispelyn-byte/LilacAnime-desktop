@@ -1549,6 +1549,18 @@ $('#localRuntimeInstall').onclick=async()=>{
 window.lilac.onLocalRuntimeProgress(value=>{if(localRuntimeState)renderLocalRuntime({...localRuntimeState,installing:value})});
 $('#addLocalModel').onclick=async()=>{try{const value=await window.lilac.addLocalModelFile();if(value)renderTranslationSettings(value)}catch(error){toast(ipcMessage(error))}};
 $('#saveTmdbKey').onclick=async()=>{const button=$('#saveTmdbKey');button.disabled=true;$('#tmdbKeyState').textContent='키를 확인하는 중...';try{const value=await window.lilac.setTmdbKey($('#tmdbKey').value);renderTmdbState(value,value.key?'키를 확인하고 저장했습니다.':undefined);toast('TMDB 설정을 저장했습니다.')}catch(e){$('#tmdbKeyState').textContent=`저장하지 못했습니다: ${String(e.message||e).replace(/^Error invoking remote method '[^']+': (?:Error: )?/,'')}`}finally{button.disabled=false}};
+// 설정 > 연결 (WireGuard): this app's traffic alone through a WireGuard tunnel (see electron/wireguard-proxy.cjs).
+const WG_STATES={off:'꺼져 있어요.',installing:'wireproxy를 받는 중...',starting:'WireGuard 터널을 여는 중...',connecting:'VPN 서버에 연결하는 중...',connected:'연결됨: 이 앱의 통신이 VPN 서버를 거치고 있어요.',error:'연결하지 못했어요.'};
+function renderWireguard(value={}){
+  const loaded=Boolean(value.loaded),on=Boolean(value.enabled);$('#wgEnabled').checked=on;$('#wgEnabled').disabled=!loaded;$('#wgRemove').disabled=!loaded;
+  $('#wgState').textContent=!loaded?'먼저 설정 파일을 불러와 주세요.':!on?'꺼져 있어요.':value.status==='connected'?WG_STATES.connected:value.message||WG_STATES[value.status]||'';
+  $('#wgFile').textContent=loaded?`${value.name||'wireguard.conf'}${value.endpoint?` · 서버 ${value.endpoint}`:''}${value.sealed?'':' · 이 컴퓨터에서는 암호화할 수 없어 그대로 저장했어요'}${value.dropped?.length?` · 쓰지 않는 항목: ${value.dropped.join(', ')}`:''}`:'불러온 설정 파일이 없습니다.';
+}
+const wireguardFailed=error=>{toast(ipcMessage(error));window.lilac.wireguardStatus().then(renderWireguard).catch(()=>{})};
+window.lilac.wireguardStatus().then(renderWireguard).catch(()=>{});window.lilac.onWireguardState?.(renderWireguard);
+$('#wgChoose').onclick=()=>window.lilac.wireguardChoose().then(renderWireguard,wireguardFailed);
+$('#wgEnabled').onchange=event=>{const on=event.target.checked;$('#wgState').textContent=on?WG_STATES.starting:'끄는 중...';window.lilac.wireguardEnable(on).then(renderWireguard,wireguardFailed)};
+$('#wgRemove').onclick=async()=>{if(await askConfirm('불러온 WireGuard 설정을 지울까요? 켜져 있었다면 바로 연결로 돌아갑니다.',{ok:'지우기',danger:true}))window.lilac.wireguardRemove().then(renderWireguard,wireguardFailed)};
 window.lilac.onUpdateState(renderUpdate);window.lilac.updateState().then(value=>{$('#appVersion').textContent=`Version ${value.current}`;renderUpdate(value);showChangelogIfUpdated(value.current)});
 // Release notes (GitHub Markdown) as plain HTML: headings, lists, paragraphs, bold, code and https links.
 function releaseNotesHtml(text){
