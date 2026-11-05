@@ -2872,7 +2872,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('provider:subtitle-tracks', (_, episode) => reanimeSubtitleTracks(episode));
   // The same episode's tracks on the other sites (RE:Anime, Miruro; never the one playing), each marked crossSite.
   ipcMain.handle('provider:cross-site-tracks', (_, episode, anime = null) => crossSiteTracks.tracks({ ...(anime || {}), provider: anime?.provider || episode?.provider || '' }, episode || {}));
-  ipcMain.handle('cover:data', (_, url) => coverDataUrl(url));  ipcMain.handle('cover:data', (_, url) => coverDataUrl(url));
+  ipcMain.handle('cover:data', (_, url) => coverDataUrl(url));
   updater=new Updater({app,broadcast});
   const deviceSync=new DeviceSync({app});
   ipcMain.handle('device-sync:status',()=>deviceSync.status());
