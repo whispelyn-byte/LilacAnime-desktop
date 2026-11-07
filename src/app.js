@@ -652,7 +652,7 @@ function applySavedSubtitle(entry){if(entry.source==='jimaku')return applySavedJ
 function activeSubtitleSource(){const context=currentPlaybackContext;if(context.pressedSource&&context.pressedFor===currentSubtitle)return context.pressedSource;
   // AI 번역 pressed: lit while its translation runs, though the Japanese file it translates is on screen meanwhile.
   if(context.pressedSource==='ai'&&translatingNow())return 'ai';const source=currentSubtitle?.source||'';return source==='gemini'?'ai':source}
-function pressSubtitleSource(source){Object.assign(currentPlaybackContext,{pressedSource:source,pressedFor:currentSubtitle})}
+function pressSubtitleSource(source){Object.assign(currentPlaybackContext,{pressedSource:source,pressedFor:currentSubtitle,manualSubtitle:true})}
 function openSheet(){const picked=currentPlaybackContext.sheetSource;return picked!==undefined?picked:['reanime','jimaku','anissia'].includes(currentSubtitle?.source)?currentSubtitle.source:null}
 function translatableSubtitle(){const source=currentSubtitle?.source;if(source==='jimaku')return currentPlaybackContext.jimakuSubtitle?'jimaku':null;if(source==='user')return currentSubtitle.korean?null:'user';if(source==='whisper')return 'whisper';if(source!=='reanime')return null;const track=(currentPlaybackContext.subtitleTracks||[]).find(item=>item.url===currentPlaybackContext.selectedSubtitleTrack);return track&&!isKoreanTrack(track)?'track':null}
 // A machine translation on screen whose source file is still there can be made again (다시 번역): the saved one is
@@ -689,7 +689,7 @@ async function offerKoreanSubtitle(title,episode,requestId,current){
   const name=communityLabel(found.source,found.result).replace(/ 자막$/,'');
   const box=$('#subtitleOffer');$('#subtitleOfferText').textContent=`한국어 자막(${name})을 찾았어요. 바꿀까요?`;
   box.classList.remove('hidden');clearTimeout(offerKoreanSubtitle.timer);offerKoreanSubtitle.timer=setTimeout(()=>box.classList.add('hidden'),20000);
-  $('#subtitleOfferApply').textContent='바꾸기';$('#subtitleOfferDismiss').textContent='그대로';$('#subtitleOfferApply').onclick=()=>{box.classList.add('hidden');if(requestId===playbackRequestId){preferAiSubtitle(false);attachOnlineSubtitle(found)}};
+  $('#subtitleOfferApply').textContent='바꾸기';$('#subtitleOfferDismiss').textContent='그대로';$('#subtitleOfferApply').onclick=()=>{box.classList.add('hidden');if(requestId===playbackRequestId){currentPlaybackContext.manualSubtitle=true;preferAiSubtitle(false);attachOnlineSubtitle(found)}};
   $('#subtitleOfferDismiss').onclick=()=>box.classList.add('hidden');
 }
 // 자막 싱크 맞추기: ffsubsync (in the main process) matches the subtitle on screen to the episode's audio and gives a
@@ -857,15 +857,81 @@ async function ensureSubtitle(stream,title,episode,{skipSaved=false}={}){
   // blogs, whose posts are matched by title. It is timed for that site's video: put on, it is synced to this one's audio
   // like any subtitle (checkSubtitleSync). Waited for 16 s at most (the Korean sites' files take
   // longer: their pages are read when RE:Anime and Miruro have no Korean track); the blogs are searched meanwhile all the same.
-  if(currentPlaybackContext.tracksPromise||currentPlaybackContext.tracksLoading){$('#subtitleState').textContent='다른 사이트의 한국어 자막 트랙을 찾는 중...';await Promise.race([Promise.resolve(currentPlaybackContext.tracksPromise).catch(()=>{}),new Promise(resolve=>setTimeout(resolve,16000))]);if(superseded())return false}
-  const otherKorean=(currentPlaybackContext.subtitleTracks||[]).find(track=>track.crossSite&&isKoreanTrack(track));
-  if(otherKorean&&await selectSubtitleTrack(otherKorean,{auto:true,notice:`${trackLabel(otherKorean)}의 같은 회차 한국어 자막이에요. 이 영상에 싱크를 맞춰요.`})){currentPlaybackContext.siteKorean=true;return true}
-  if(superseded())return false;$('#subtitleState').textContent='온라인 자막을 찾는 중...';
-  const found=await onlineSubtitleFor(title,episode,subtitleSearchAnime());if(superseded())return false;if(found){attachOnlineSubtitle(found);return true}
+  // The other site's Korean track and the blogs' Korean subtitle are asked at once, and whatever Korean one is there
+  // after a short wait (2.5 s) goes on, the other site's first. A work whose Korean subtitle came last time from a slow
+  // site (애니24, 링크애니, Linkkf: their pages are read) waits for it 16 s, as before. The cloud translation costs a
+  // request, so it waits until both have answered (16 s at most); the local AI and Whisper start at once. A Korean
+  // subtitle coming after that takes the place of the translation, the Whisper subtitle or none (upgradeToLateKorean).
+  const korean=koreanSearchFor(title,episode);
+  $('#subtitleState').textContent='다른 사이트·블로그에서 한국어 자막을 찾는 중...';
+  let pick=await korean.wait(KOREAN_SLOW_SITES.includes(koreanSourceOf())?16000:2500);if(superseded())return false;
+  if(!pick&&!korean.settled()&&!prefersAiSubtitle()&&autoTranslateProvider()==='cloud'){$('#subtitleState').textContent='한국어 자막을 조금 더 찾아본 뒤 번역해요...';pick=await korean.wait(16000-korean.elapsed());if(superseded())return false}
+  if(pick&&await applyKoreanPick(pick))return true;if(superseded())return false;
+  if(!korean.settled())upgradeToLateKorean(korean,requestId);
   if(await autoTranslate(superseded))return true;
   // Nothing to show or translate: Whisper makes one from the speech (설정 > Whisper AI 자막 > 자동으로 만들기).
   if(!superseded()&&typeof whisperWhenNoSubtitle==='function'&&await whisperWhenNoSubtitle())return true;
   if(superseded())return false;const needsTmdb=currentPlaybackContext.episode?.provider==='reanime'&&!(await window.lilac.tmdbKey().catch(()=>({})))?.key;if(superseded())return false;$('#subtitleState').textContent=needsTmdb?'Kairan/Csora 자막을 찾지 못했습니다. 설정 > 한국어 제목 검색에서 TMDB API 키를 넣으면 더 많은 작품을 찾을 수 있어요.':trackProvider()&&currentPlaybackContext.subtitleTracks?.some(isKoreanTrack)?`${trackSourceLabel()} 트랙에 한국어 자막이 있어요. 플레이어 설정 > 자막에서 고를 수 있어요.`:trackProvider()&&currentPlaybackContext.subtitleTracks?.length?`한국어 자막이 없습니다. 아래 ${trackSourceLabel()} 트랙에서 다른 언어를 고르거나 내 자막 파일을 열 수 있어요.`:'자동으로 찾은 자막이 없습니다. 내 자막 파일을 열 수 있어요.';return false;
+}
+// The Korean subtitle the other sites and the blogs give an episode, asked at once (see ensureSubtitle): what is there
+// now (the other site's track first), whether both have answered, and a wait for it. The other sites' tracks are all in
+// once their promise settles (the Korean sites' files are awaited in it while there is no Korean track).
+const KOREAN_SLOW_SITES=['ohli24','linkani','linkkf'];
+function koreanSearchFor(title,episode){
+  const context=currentPlaybackContext,started=Date.now();let blog=null,blogDone=false,tracksDone=!context.tracksPromise;
+  const blogs=Promise.resolve(onlineSubtitleFor(title,episode,subtitleSearchAnime())).catch(()=>null).then(found=>{blog=found||null;blogDone=true});
+  const tracks=Promise.resolve(context.tracksPromise).catch(()=>{}).then(()=>{tracksDone=true});
+  const track=()=>(context.subtitleTracks||[]).find(item=>item.crossSite&&isKoreanTrack(item));
+  const now=()=>{const found=track();return found?{track:found}:blog?{blog}:null};
+  const settled=()=>blogDone&&tracksDone;
+  // The wait ends on the other site's Korean track, or the blogs' once the other sites have answered (theirs comes first).
+  const best=()=>Boolean(track())||Boolean(blog&&tracksDone)||settled();
+  return {now,settled,elapsed:()=>Date.now()-started,
+    async wait(ms){
+      if(best()||ms<=0)return now();
+      let timer;const timeout=new Promise(resolve=>{timer=setTimeout(resolve,ms)});let late=false;timeout.then(()=>{late=true});
+      try{while(!best()&&!late)await Promise.race([...(blogDone?[]:[blogs]),...(tracksDone?[]:[tracks]),timeout])}
+      finally{clearTimeout(timer)}
+      return now();
+    }};
+}
+// Which Korean source the series had last time (a site's origin, or 'blog'): a slow site's file is waited for longer.
+function koreanSources(){try{return JSON.parse(localStorage.getItem('koreanSubtitleSource')||'{}')||{}}catch{return {}}}
+function koreanSourceOf(){try{return koreanSources()[seriesKey()]||''}catch{return ''}}
+function rememberKoreanSource(source){try{const key=seriesKey();if(!key||!source)return;const all=koreanSources();all[key]=source;localStorage.setItem('koreanSubtitleSource',JSON.stringify(all))}catch{}}
+async function applyKoreanPick(pick){
+  if(pick.track){
+    if(!await selectSubtitleTrack(pick.track,{auto:true,notice:`${trackLabel(pick.track)}의 같은 회차 한국어 자막이에요. 이 영상에 싱크를 맞춰요.`}))return false;
+    currentPlaybackContext.siteKorean=true;rememberKoreanSource(pick.track.origin);return true;
+  }
+  attachOnlineSubtitle(pick.blog);rememberKoreanSource('blog');return true;
+}
+// What a Korean subtitle found late may replace: none, a machine translation, a Whisper subtitle, a Japanese or English
+// file or track. Not one the user picked (a chip, a track, a file, the offer) or a series watched in machine translation.
+function lateKoreanReplaces(){
+  const context=currentPlaybackContext,subtitle=currentSubtitle;
+  if(context.manualSubtitle||context.pressedSource||prefersAiSubtitle())return false;
+  if(!subtitle)return true;
+  if(['gemini','whisper','jimaku'].includes(subtitle.source))return true;
+  if(subtitle.source!=='reanime')return false;
+  const track=(context.subtitleTracks||[]).find(item=>item.url===context.selectedSubtitleTrack);return Boolean(track)&&!isKoreanTrack(track);
+}
+// The Korean subtitle came after the episode's subtitle went on: it takes its place (the translation or Whisper run
+// stops), told in the box under the player with 되돌리기.
+async function upgradeToLateKorean(korean,requestId){
+  const pick=await korean.wait(180000);
+  if(!pick||requestId!==playbackRequestId||!lateKoreanReplaces())return;
+  const before=currentSubtitle,beforeTrack=currentPlaybackContext.selectedSubtitleTrack;
+  translationRun++;if(translating?.requestId===playbackRequestId)window.lilac.cancelTranslation(translating.run).catch(()=>{});
+  if(typeof whisperRunning==='function'&&whisperRunning()){whisperRun.yielded=true;window.lilac.whisperCancel()}
+  if(!await applyKoreanPick(pick)||requestId!==playbackRequestId)return;
+  const after=currentSubtitle,name=pick.track?`${trackLabel(pick.track)} ${pick.track.label}`:communityLabel(pick.blog.source,pick.blog.result).replace(/ 자막$/,'');
+  showSyncDone(`한국어 자막(${name})을 찾아서 바꿨어요.`,()=>{
+    if(requestId!==playbackRequestId||currentSubtitle!==after)return false;
+    currentPlaybackContext.manualSubtitle=true;currentPlaybackContext.selectedSubtitleTrack=beforeTrack;
+    if(before){currentSubtitlePath=before.path;attachSubtitle(before.src,before.label,{...before,saved:true,notice:'원래 자막으로 되돌렸어요.'})}else clearSubtitle();
+    renderSubtitleSheet();return true;
+  });
 }
 // No Korean subtitle anywhere (no Korean track, nothing from Kairan / Csora / Anissia): the best source is put on and
 // translated (it plays until the translation is in).
@@ -1168,7 +1234,7 @@ window.lilac.onTranslateProgress(({id,done,total,status,lines})=>{
 // auto: put on by 자막 자동 번역 (to be translated), so the source the user prefers stays as it was.
 async function selectSubtitleTrack(track,{auto=false,notice=''}={}){
   const requestId=playbackRequestId;$('#subtitleState').textContent=`${track.label} 자막을 불러오는 중...`;
-  try{const file=await trackFile(track);if(requestId!==playbackRequestId)return false;if(!auto&&isKoreanTrack(track))preferAiSubtitle(false);currentPlaybackContext.selectedSubtitleTrack=track.url;currentSubtitlePath=file.path;if(!auto){localStorage.setItem('subtitleSource','reanime');$('#subtitleSource').value='reanime';syncSettingChoices()}renderSubtitleTracks();attachSubtitle(file.url,`${trackLabel(track)} ${track.label} 자막`,{path:file.path,assUrl:file.assUrl,assPath:file.assPath,fonts:file.fonts,source:'reanime',notice});return true}
+  try{const file=await trackFile(track);if(requestId!==playbackRequestId)return false;if(!auto)currentPlaybackContext.manualSubtitle=true;if(!auto&&isKoreanTrack(track))preferAiSubtitle(false);currentPlaybackContext.selectedSubtitleTrack=track.url;currentSubtitlePath=file.path;if(!auto){localStorage.setItem('subtitleSource','reanime');$('#subtitleSource').value='reanime';syncSettingChoices()}renderSubtitleTracks();attachSubtitle(file.url,`${trackLabel(track)} ${track.label} 자막`,{path:file.path,assUrl:file.assUrl,assPath:file.assPath,fonts:file.fonts,source:'reanime',notice});return true}
   catch(e){$('#subtitleState').textContent='자막을 불러오지 못했습니다.';toast(`자막을 불러오지 못했습니다: ${e.message}`);return false}
 }
 function formatTime(value){if(!Number.isFinite(value))return '00:00';const seconds=Math.max(0,Math.floor(value)),h=Math.floor(seconds/3600),m=Math.floor(seconds%3600/60),s=seconds%60;return h?`${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`}
@@ -1327,7 +1393,7 @@ $('#globalSearch').addEventListener('keydown',e=>{if(e.key==='Enter')doSearch(e.
 applyTheme(localStorage.getItem('theme')||'dark');
 const posterShade=()=>localStorage.getItem('posterShade')!=='false',applyPosterShade=()=>document.body.classList.toggle('no-poster-shade',!posterShade());applyPosterShade();$('#posterShade').checked=posterShade();$('#posterShade').onchange=e=>{localStorage.setItem('posterShade',String(e.target.checked));applyPosterShade()};
 $('#openVideo').onclick=async()=>{const src=await window.lilac.chooseVideo();if(src)play(src,decodeURIComponent(src.split('/').pop()))};$('#playUrl').onclick=()=>{const url=$('#streamUrl').value.trim();if(/^https?:\/\//i.test(url))play(url,'직접 스트림');else toast('올바른 https 영상 주소를 입력하세요.')};
-$('#openSubtitle').onclick=async()=>{const file=await window.lilac.chooseSubtitleDetails();if(!file)return;currentSubtitlePath=file.path;attachSubtitle(file.url,'사용자 자막',{path:file.path,assUrl:file.assUrl,assPath:file.assPath,fonts:file.fonts,source:'user'})};
+$('#openSubtitle').onclick=async()=>{const file=await window.lilac.chooseSubtitleDetails();if(!file)return;currentPlaybackContext.manualSubtitle=true;currentSubtitlePath=file.path;attachSubtitle(file.url,'사용자 자막',{path:file.path,assUrl:file.assUrl,assPath:file.assPath,fonts:file.fonts,source:'user'})};
 $('#findSubtitle').onclick=async()=>{const title=$('#skipTitle').value.trim(),episode=Number($('#skipEpisode').value)||1;if(!title){toast('작품명을 확인하지 못했습니다.');return;}preferAiSubtitle(false);$('#downloadStatus').textContent='온라인 자막을 찾는 중...';currentPlaybackContext.selectedSubtitleTrack=null;renderSubtitleTracks();onlineSubtitleSearch=null;const found=await ensureSubtitle(null,title,episode,{skipSaved:true});$('#downloadStatus').textContent=found?'자막 적용 완료':'자막을 찾지 못했습니다.'};
 $('#miniPlayer').onclick=()=>togglePictureInPicture();
 $('#screenshotPlayer').onclick=()=>{takeScreenshot();showPlayerControls()};

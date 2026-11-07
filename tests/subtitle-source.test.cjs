@@ -56,7 +56,8 @@ for(const source of ['kairan','csora','anissia'])for(const saved of [false,true]
   const context={window:{lilac:{savedSubtitles:async()=>saved?[{source}]:[]}},localStorage:{getItem:()=> 'reanime'},playbackRequestId:1,currentPlaybackContext:{episode:{provider:'reanime'}},currentSubtitle:null,
     $:()=>({classList:{add(){}},textContent:''}),subtitleStoreKey:()=> 'episode',prefersAiSubtitle:()=>false,
     applySavedSubtitle:async()=>{applied++},attachOnlineSubtitle:()=>{applied++},onlineSubtitleFor:async()=>({source,result:{}}),subtitleSearchAnime:()=>({}),
-    isKoreanTrack:()=>false,autoTranslate:async()=>{translated++;return true},offerKoreanSubtitle:()=>{},renderSubtitleTracks:()=>{}};
+    isKoreanTrack:()=>false,autoTranslate:async()=>{translated++;return true},offerKoreanSubtitle:()=>{},renderSubtitleTracks:()=>{},
+    setTimeout,clearTimeout,seriesKey:()=> 'series',autoTranslateProvider:()=>null};
   vm.createContext(context);vm.runInContext(ensure,context);
   assert.equal(await context.ensureSubtitle(null,'show',1),true);assert.equal(applied,1);assert.equal(translated,0);
 });
@@ -69,4 +70,24 @@ test('downloaded Korean fansubs do not trigger Jimaku or track translation',asyn
   const manager=Object.assign(Object.create(DownloadManager.prototype),{jobs:[job],save(){},copySubtitle(){},findSubtitle:async()=>({source:'kairan'}),findJimaku:async()=>{jimakuCalls++},saveTrack:async()=>({path:sub}),translateTrack:async()=>{translated++}});
   await manager.attachSubtitle(job,{subtitleTracks:[ja]});await manager.attachTracks(job,{subtitleTracks:[ja]});
   assert.equal(job.koreanSubtitle,true);assert.equal(jimakuCalls,0);assert.equal(translated,0);
+});
+// The Korean search of ensureSubtitle (koreanSearchFor), run as the player runs it.
+function koreanSearch({blog,blogAfter=0,tracksAfter=null,korean=false}){
+  const context={currentPlaybackContext:{subtitleTracks:[]},setTimeout,clearTimeout,Date,subtitleSearchAnime:()=>({}),
+    isKoreanTrack:item=>item.language==='ko',onlineSubtitleFor:()=>new Promise(done=>setTimeout(()=>done(blog||null),blogAfter))};
+  if(tracksAfter!==null)context.currentPlaybackContext.tracksPromise=new Promise(done=>setTimeout(()=>{if(korean)context.currentPlaybackContext.subtitleTracks=[{crossSite:true,language:'ko',url:'ohli24'}];done()},tracksAfter));
+  vm.createContext(context);vm.runInContext(ensure,context);return context.koreanSearchFor('show',1);
+}
+test('another site\'s Korean track that comes within the short wait is put on before the blogs\' one',async()=>{
+  const search=koreanSearch({blog:{source:'kairan'},tracksAfter:40,korean:true});
+  assert.equal((await search.wait(2500))?.track?.url,'ohli24');
+});
+test('the blogs\' Korean subtitle goes on once the other sites have nothing',async()=>{
+  const search=koreanSearch({blog:{source:'kairan'},tracksAfter:20});
+  assert.equal((await search.wait(2500))?.blog?.source,'kairan');assert.equal(search.settled(),true);
+});
+test('a slow search ends the short wait with nothing, and the Korean file it brings later is still there',async()=>{
+  const search=koreanSearch({tracksAfter:150,korean:true});
+  const started=Date.now();assert.equal(await search.wait(30),null);assert.ok(Date.now()-started<120);assert.equal(search.settled(),false);
+  assert.equal((await search.wait(5000))?.track?.url,'ohli24');
 });
