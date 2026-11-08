@@ -1002,6 +1002,9 @@ function handlePlayerKey(event) {
   }
   if (key === 'MediaTrackNext' || key === 'PageDown') { event.preventDefault(); playSiblingEpisode(siblingEpisode(1)); return; }
   if (key === 'MediaTrackPrevious' || key === 'PageUp') { event.preventDefault(); playSiblingEpisode(siblingEpisode(-1)); return; }
+  // Any other key brings the controls up, but not the Windows key, Alt / Ctrl / Shift on their own or a system shortcut
+  // held with them (Alt+Tab, Win+D): leaving the window should not put the bar over the picture.
+  if (['Meta', 'OS', 'Alt', 'AltGraph', 'Control', 'Shift', 'CapsLock', 'Process', 'Unidentified'].includes(key) || event.altKey || event.metaKey || event.ctrlKey) return;
   showPlayerControls();
 }
 
