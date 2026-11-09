@@ -412,17 +412,13 @@ async function reanimeServers(episode) {
   // and some episodes use the same URL for both labels. A failed SUB must never fall through to DUB.
   const candidatesFrom=links=>links.map(item=>({name:String(item.serverName||''),url:String(item.dataLink||item.link||''),dub:/^dub(?:bed)?$/i.test(String(item.dataType||''))||/\bdub(?:bed)?\b/i.test(String(item.serverName||''))}))
     .filter(item=>item.dub===Boolean(episode.dub)&&/^https:\/\/flixcloud\.cc\/e\//i.test(item.url));
-  // The current API often serves streams only from /api/flix: both are asked at once (one after the other, an empty
-  // /api/watch cost a whole request first), /api/watch's links used when it has any.
-  const watch=slug?providerFetch(`${REANIME_WEB}/api/watch/${encodeURIComponent(slug)}/${number}`,{json:true,referer:`${REANIME_WEB}/`}).then(root=>Array.isArray(root?.episode_links)?root.episode_links:[],()=>[]):Promise.resolve([]);
+  // The servers come from /api/flix alone. The old /api/watch route answers every episode with a 404 page, after 1 to
+  // 9 seconds (45 on a slow line, the request's limit), and the player waited for it before it used Flix's servers.
   // /api/flix is asked by the work's AniList id. An episode from the phone (기기 동기화) comes without it when this
-  // computer never opened the work: it is read from the series route by the episode's slug (/api/watch answers with
-  // the site's page at present, so without it nothing played).
+  // computer never opened the work: it is read from the series route by the episode's slug.
   const anilistId=Number(episode.anilistId)||(slug?await providerFetch(`${REANIME_WEB}/api/v1/anime/${encodeURIComponent(slug)}`,{json:true,referer:`${REANIME_WEB}/`}).then(root=>Number(root?.anilist_id)||null,()=>null):null);
-  const flix=anilistId?providerFetch(`${REANIME_WEB}/api/flix/${anilistId}/${number}`,{json:true,referer:`${REANIME_WEB}/`}).then(root=>Array.isArray(root?.servers)?root.servers:[]):null;
-  flix?.catch(()=>{});
-  let candidates=candidatesFrom(await watch);
-  if(!candidates.length&&flix)candidates=candidatesFrom(await flix);
+  const servers=anilistId?await providerFetch(`${REANIME_WEB}/api/flix/${anilistId}/${number}`,{json:true,referer:`${REANIME_WEB}/`}).then(root=>Array.isArray(root?.servers)?root.servers:[]):[];
+  const candidates=candidatesFrom(servers);
   return [...candidates.filter(item=>/HD-?2/i.test(item.name)),...candidates.filter(item=>/HD-?1/i.test(item.name)),...candidates]
     .filter((item,index,array)=>array.findIndex(x=>x.url===item.url)===index);
 }
