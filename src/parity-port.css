@@ -45,6 +45,14 @@ dialog { max-height: calc(100vh - 48px); }
 .episode-badge.filler { color: #e07a86; background: #e07a861a; }
 .episode-badge.recap { color: #7fb6d8; background: #7fb6d81a; }
 .episode-badge.dub { color: var(--lilac); background: color-mix(in srgb, var(--lilac) 12%, transparent); }
+/* 본 회차: 시청함 (played to 90%) and how far a started one got, with a bar along the row's foot. */
+.episode-badge.watched { display: inline-flex; align-items: center; gap: 3px; color: var(--lilac); background: color-mix(in srgb, var(--lilac) 20%, transparent); }
+.episode-badge.watched svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 3.2; stroke-linecap: round; stroke-linejoin: round; }
+.episode-badge.watching { color: var(--lilac); background: color-mix(in srgb, var(--lilac) 12%, transparent); }
+.episode-row.rich.watched .episode-number, .episode-row.rich.watched .episode-copy b { color: var(--muted); }
+.episode-row.rich.watching { position: relative; }
+.episode-watch-bar { position: absolute; left: 12px; right: 12px; bottom: 4px; height: 3px; border-radius: 3px; background: color-mix(in srgb, var(--muted) 22%, transparent); overflow: hidden; pointer-events: none; }
+.episode-watch-bar i { display: block; height: 100%; border-radius: inherit; background: var(--lilac); }
 .episode-download:disabled { opacity: .35; cursor: not-allowed; }
 
 /* Subtitle sheet: Re:Anime track picker */
