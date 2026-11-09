@@ -201,14 +201,18 @@ async function linkkfCatalog() {
 }
 function linkkfSearchKey(value = '') { return String(value).toLowerCase().normalize('NFKC').replace(/[\s\-_:·.,!?'"()[\]~]+/g, ''); }
 
+// Chromium's net.fetch first: with DoH on (configureHostResolver at ready) it reads the sites' HTTPS records and sends
+// the name encrypted (ECH), which ISPs that cut connections by the plain name (SNI) in Korea let through. Node's fetch
+// has no ECH: it is the fallback when Chromium's request fails outright.
 async function providerFetch(url, { json = false, referer } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 45000); // Android ReAnimeClient call timeout
   try {
-    const response = await fetch(url, { signal: controller.signal, headers: {
+    const options = { signal: controller.signal, headers: {
       'User-Agent': LINKKF_UA, Accept: json ? 'application/json' : 'text/html,application/xhtml+xml',
       'Accept-Language': 'en-US,en;q=0.9,ko;q=0.7', Referer: referer || new URL(url).origin + '/'
-    }});
+    }};
+    const response = await Promise.resolve().then(() => net.fetch(url, options)).catch(error => { if (controller.signal.aborted) throw error; return fetch(url, options); });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return json ? response.json() : response.text();
   } catch (error) {
@@ -2618,6 +2622,10 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   if (!singleInstanceLock) return;
+  // DNS over HTTPS (falling back to the system's DNS) through Chromium's own resolver: it also asks for the HTTPS records
+  // that carry a site's ECH key, so Chromium's requests (the window, the player pages, providerFetch) hide the site's
+  // name from ISPs that block by it. Without it a Korean ISP's DNS gives no ECH key and reanime.to is cut off.
+  try{app.configureHostResolver({enableBuiltInResolver:true,secureDnsMode:'automatic',secureDnsServers:['https://cloudflare-dns.com/dns-query','https://dns.google/dns-query']})}catch(error){console.warn('[dns]',error.message)}
   desktopState=new DesktopState({app,screen,Tray,Menu,nativeImage,icon:path.join(__dirname,'..','build',process.platform==='win32'?'icon.ico':'icon.png'),show:()=>{
     if(!startupComplete)return;
     if(!mainWindow||mainWindow.isDestroyed())createWindow();
