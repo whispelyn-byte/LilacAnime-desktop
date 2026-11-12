@@ -670,11 +670,17 @@ lines:${linesKey}`).digest('hex').slice(0, 20) : hashOf(name);
       if (signal?.aborted) throw cancelled();
       if (!lastError && unique.every(line => translated.has(line.i))) break;
     }
-    if (!translated.size) throw lastError || new Error('번역 결과를 받지 못했습니다.');
-    // The engine that did most of the lines names the result. A finished translation is cached under its name (found
-    // again whichever engine is asked first) and its kept lines go; an unfinished one is kept only for this time.
+    // No engine translated a line: the error that stopped it is the answer. The lines 효과음·화자 이름 빼고 번역 left empty
+    // (silent) are in `translated` without an engine, so they alone are not a result: counted as one, they left the run
+    // with no engine to name it (engineOf(undefined).name), and every failure of the local AI read "Cannot read
+    // properties of undefined (reading 'name')" instead of what went wrong.
     const count = name => [...by.values()].filter(value => value === name).length;
-    const used = order.filter(name => count(name)), main = [...used].sort((a, b) => count(b) - count(a))[0];
+    const used = order.filter(name => count(name));
+    if (!used.length && (lastError || silent.size < unique.length)) throw lastError || new Error('번역 결과를 받지 못했습니다.');
+    // The engine that did most of the lines names the result (every line left empty: the first engine asked). A finished
+    // translation is cached under its name (found again whichever engine is asked first) and its kept lines go; an
+    // unfinished one is kept only for this time.
+    const main = [...used].sort((a, b) => count(b) - count(a))[0] || order[0];
     // The models that did the lines, most first, are written into the file (the cache is named by the picked model, so
     // the file says which one it really was) and given with the result.
     const models = {};

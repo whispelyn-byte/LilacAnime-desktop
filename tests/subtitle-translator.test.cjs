@@ -337,3 +337,24 @@ test('a growing subtitle is translated line by line as it grows (linesKey, parti
   assert.equal(sent.length, requests, 'the final run sends nothing');
   assert.ok(final.path && fs.readFileSync(final.path, 'utf8').includes('번역'));
 });
+
+// A user report on 0.5.63: "자동 번역 실패: TypeError: Cannot read properties of undefined (reading 'name')". With
+// 효과음·화자 이름 빼고 번역 on, the lines left empty counted as a result, so a local AI that could not translate (llama.cpp
+// not starting, the model not loading) left the run without an engine to name it. Its own error is what is said now.
+test('a local AI that fails with 효과음·화자 이름 빼고 번역 on gives its own error, not a TypeError', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lilac-ai-test-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const run = async (settings, translateLines) => {
+    fs.writeFileSync(path.join(dir, 'translation.json'), JSON.stringify({ localModel: 'm', ...settings }));
+    const local = { models: () => [{ id: 'm', file: 'm.gguf', label: 'm', installed: true }], translateLines };
+    const module = { exports: {} }, requireReal = createRequire(filename);
+    vm.runInNewContext(source, { module, exports: module.exports, fetch: async () => { throw new Error('no API here'); }, AbortSignal, AbortController, setTimeout, clearTimeout, Buffer, console,
+      require: name => name === './local-ai.cjs' ? { createLocalAi: () => local, promptVersion: () => '' } : requireReal(name) }, { filename });
+    const file = path.join(dir, `source-${Math.random().toString(36).slice(2)}.vtt`);
+    fs.writeFileSync(file, 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n（拍手）\n\n00:00:03.000 --> 00:00:04.000\nこんにちは\n');
+    return module.exports.createTranslator(dir).translate({ file, provider: 'local', only: true });
+  };
+  const failing = async () => { throw new Error('llama.cpp를 시작하지 못했습니다.'); };
+  for (const dropCaptions of [true, false]) await assert.rejects(run({ dropCaptions }, failing), error => error.name === 'Error' && /llama\.cpp를 시작하지 못했습니다/.test(error.message));
+  const result = await run({ dropCaptions: true }, async (lines, { onLine }) => lines.forEach((_, index) => onLine(index, '안녕하세요')));
+  assert.equal(result.engine, '로컬 AI'); assert.match(fs.readFileSync(result.path, 'utf8'), /안녕하세요/);
+});
