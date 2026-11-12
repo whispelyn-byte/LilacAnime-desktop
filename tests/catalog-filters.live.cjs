@@ -8,7 +8,7 @@ const { createCatalogUpdates } = require('../electron/catalog-updates.cjs');
 const source = fs.readFileSync(path.join(__dirname, '../electron/main.cjs'), 'utf8');
 const ctx = vm.createContext({ cheerio, zlib, Buffer, URL, URLSearchParams, AbortController, AbortSignal, setTimeout, clearTimeout,
   fetch, LINKKF_UA: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
-  LINKKF_API: 'https://linkkf1.5imgdarr.top/api', LINKKF_WEB: 'https://linkkf.app', REANIME_WEB: 'https://reanime.to',
+  LINKKF_API: 'https://linkkf1.5imgdarr.top/api', LINKKF_WEB: 'https://linkkf.app', REANIME_WEB: 'https://reanime.cz', REANIME_ID: 'https://reanime.to', reanimeLive: url => String(url || '').replace(/^https?:\/\/(?:www\.)?reanime\.(?:to|cz)(?=[/?#]|$)/i, 'https://reanime.cz'),
   ANIMENOSUB_WEB: 'https://animenosub.to', MIRURO_WEB: 'https://www.miruro.to', MIRURO_KEY: Buffer.from('miruro/catalog'),
   LINKANI_WEB: 'https://linkani.tv', OHLI24_WEB: 'https://ani.ohli24.com', net: electron?.net || { fetch }
 });

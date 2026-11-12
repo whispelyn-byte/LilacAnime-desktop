@@ -71,7 +71,14 @@ const LINKKF_API = 'https://linkkf1.5imgdarr.top/api';
 const LINKKF_EPISODE_API = 'https://linkkfep1.5imgdarr.top';
 const LINKKF_WEB = 'https://linkkf.app';
 const LINKKF_UA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome||'131.0.0.0'} Safari/537.36`;
-const REANIME_WEB = 'https://reanime.to';
+// RE:Anime moved from reanime.to to reanime.cz in November 2026 (the old name answers every address, its API's too,
+// with a redirect to the new home page). Requests go to REANIME_WEB. The addresses the app keeps for a work and an
+// episode (내 목록, 시청 기록, downloads, saved subtitles, the phone's sync: all keyed by them) stay on REANIME_ID, as
+// they were saved, so nothing saved before is lost and both devices keep naming an episode the same way; reanimeLive()
+// turns one into the site's address of now when it is fetched or opened. A later move changes REANIME_WEB only.
+const REANIME_WEB = 'https://reanime.cz';
+const REANIME_ID = 'https://reanime.to';
+const reanimeLive = url => String(url || '').replace(/^https?:\/\/(?:www\.)?reanime\.(?:to|cz)(?=[/?#]|$)/i, REANIME_WEB);
 const ANIMENOSUB_WEB = 'https://animenosub.to';
 const MIRURO_WEB = 'https://www.miruro.to';
 const ANDROID_WEBVIEW_UA = 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
@@ -211,6 +218,7 @@ function linkkfSearchKey(value = '') { return String(value).toLowerCase().normal
 // the name encrypted (ECH), which ISPs that cut connections by the plain name (SNI) in Korea let through. Node's fetch
 // has no ECH: it is the fallback when Chromium's request fails outright.
 async function providerFetch(url, { json = false, referer } = {}) {
+  url = reanimeLive(url); if (referer) referer = reanimeLive(referer);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 45000); // Android ReAnimeClient call timeout
   try {
@@ -245,7 +253,7 @@ function reanimeItems(root) {
     const genres = (Array.isArray(genresRaw) ? genresRaw : Object.values(genresRaw)).map(x => ({name: typeof x === 'string' ? x : x.name || x.title || ''})).filter(x=>x.name);
     const episodeCount=Number(a.episodes||0)||Math.max(Number(a.subbed||0),Number(a.dubbed||0))||0;
     const metadata={season:a.season||'',aired:a.start_date||a.started_on||'',totalEpisodes:Number(a.episodes)||null,availableEpisodes:Math.max(Number(a.subbed)||0,Number(a.dubbed)||0),updatedAt:a.episode?.aired||''};
-    return {...metadata,provider:'reanime',id:slug,mal_id:`reanime:${slug}`,title,title_english:'',images:{webp:{large_image_url:imageUrl}},score:Number(a.average_score||a.score||0)/10||null,year:a.season_year||a.year||'',type:a.format||'Anime',episodes:episodeCount||null,status:a.status||'',synopsis:a.description||a.synopsis||'',genres,studios:[],url:`${REANIME_WEB}/anime/${slug}`,anilistId:Number(a.anilist_id||a.anilistId||a.anilist||0)||null,malId:Number(a.mal_id||0)||null,canWatch:a.can_watch!==false,subbed:Number(a.subbed||0),dubbed:Number(a.dubbed||0)};
+    return {...metadata,provider:'reanime',id:slug,mal_id:`reanime:${slug}`,title,title_english:'',images:{webp:{large_image_url:imageUrl}},score:Number(a.average_score||a.score||0)/10||null,year:a.season_year||a.year||'',type:a.format||'Anime',episodes:episodeCount||null,status:a.status||'',synopsis:a.description||a.synopsis||'',genres,studios:[],url:`${REANIME_ID}/anime/${slug}`,anilistId:Number(a.anilist_id||a.anilistId||a.anilist||0)||null,malId:Number(a.mal_id||0)||null,canWatch:a.can_watch!==false,subbed:Number(a.subbed||0),dubbed:Number(a.dubbed||0)};
   }).filter(x => x.title && x.id);
 }
 
@@ -326,7 +334,7 @@ function reanimeRelated(list,selfSlug){
   return (Array.isArray(list)?list:[]).map(item=>{
     const slug=String(item.anime_id||'').trim();if(!slug||slug===selfSlug)return null;
     const english=item.title?.english||'',native=item.title?.native||'',romaji=item.title?.romaji||'',poster=item.cover_image?.extra_large||item.cover_image?.large||'';
-    return {provider:'reanime',id:slug,mal_id:`reanime:${slug}`,title:english||romaji||native,title_english:'',title_japanese:native,romaji,images:{webp:{large_image_url:poster}},type:item.format||'',relationType:item.relation_type||'',season:item.season||'',year:item.season_year||'',url:`${REANIME_WEB}/anime/${slug}`};
+    return {provider:'reanime',id:slug,mal_id:`reanime:${slug}`,title:english||romaji||native,title_english:'',title_japanese:native,romaji,images:{webp:{large_image_url:poster}},type:item.format||'',relationType:item.relation_type||'',season:item.season||'',year:item.season_year||'',url:`${REANIME_ID}/anime/${slug}`};
   }).filter(Boolean).filter((item,index,array)=>array.findIndex(x=>x.id===item.id)===index);
 }
 function reanimeMediaFromJson(root,original){
@@ -377,7 +385,7 @@ async function reanimeDetail(anime,page){
 }
 function reanimeEpisode(raw,anime){
   const number=Number(raw.episode_number);if(!Number.isFinite(number)||number<=0)return null;
-  return {name:String(number),number,url:`${REANIME_WEB}/watch/${encodeURIComponent(anime.id)}?ep=${number}`,dub:false,provider:'reanime',anilistId:anime.anilistId||null,malId:anime.malId||null,
+  return {name:String(number),number,url:`${REANIME_ID}/watch/${encodeURIComponent(anime.id)}?ep=${number}`,dub:false,provider:'reanime',anilistId:anime.anilistId||null,malId:anime.malId||null,
     title:String(raw.title||'').trim()||`Episode ${number}`,nativeTitle:String(raw.title_japanese||'').trim(),airedDate:String(raw.aired||''),
     isFiller:raw.is_filler===true,isRecap:raw.is_recap===true,playable:raw.playable!==false,subbed:raw.subbed===true,dubbed:raw.dubbed===true,thumbnail:String(raw.thumbnail||'')};
 }
@@ -411,7 +419,7 @@ async function reanimeEpisodes(anime, page, listed = null) {
   const count=Math.min(Math.max(Number(anime.subbed||0),Number(anime.episodes||0),highestParsed),5000);
   if(!count)return episodes;
   const byNumber=new Map(episodes.map(episode=>[Number(episode.number),episode]));
-  for(let number=1;number<=count;number++)if(!byNumber.has(number))byNumber.set(number,{name:String(number),number,url:`${REANIME_WEB}/watch/${encodeURIComponent(anime.id)}?ep=${number}`,dub:false,provider:'reanime',anilistId:anime.anilistId||null});
+  for(let number=1;number<=count;number++)if(!byNumber.has(number))byNumber.set(number,{name:String(number),number,url:`${REANIME_ID}/watch/${encodeURIComponent(anime.id)}?ep=${number}`,dub:false,provider:'reanime',anilistId:anime.anilistId||null});
   return [...byNumber.values()].sort((a,b)=>a.number-b.number);
 }
 
@@ -2697,7 +2705,7 @@ app.whenReady().then(async () => {
   if (!singleInstanceLock) return;
   // DNS over HTTPS (falling back to the system's DNS) through Chromium's own resolver: it also asks for the HTTPS records
   // that carry a site's ECH key, so Chromium's requests (the window, the player pages, providerFetch) hide the site's
-  // name from ISPs that block by it. Without it a Korean ISP's DNS gives no ECH key and reanime.to is cut off.
+  // name from ISPs that block by it. Without it a Korean ISP's DNS gives no ECH key and RE:Anime is cut off.
   try{app.configureHostResolver({enableBuiltInResolver:true,secureDnsMode:'automatic',secureDnsServers:['https://cloudflare-dns.com/dns-query','https://dns.google/dns-query']})}catch(error){console.warn('[dns]',error.message)}
   desktopState=new DesktopState({app,screen,Tray,Menu,nativeImage,icon:path.join(__dirname,'..','build',process.platform==='win32'?'icon.ico':'icon.png'),show:()=>{
     if(!startupComplete)return;
@@ -3390,7 +3398,7 @@ app.whenReady().then(async () => {
     return result.canceled ? null : result.filePaths[0];
   });
   ipcMain.handle('open:external', (_, url) => {
-    if (/^https:\/\//i.test(url)) return shell.openExternal(url);
+    if (/^https:\/\//i.test(url)) return shell.openExternal(reanimeLive(url));
   });
   // 스크린샷 (P): the frame on screen as a PNG in 사진\LilacAnime. The page hands over the frame at the video's own
   // size; a video it cannot read (another site's file without CORS) is taken from the window instead (rect: where the

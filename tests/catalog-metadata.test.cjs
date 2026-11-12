@@ -23,7 +23,7 @@ test('uploaded episodes and total episodes are distinct, including zero and unkn
 test('RE catalog mapping carries quarters and separate counts into cached and saved cards', () => {
   const source = fs.readFileSync(path.join(__dirname, '../electron/main.cjs'), 'utf8');
   const at = source.indexOf('function reanimeItems('), last = source.indexOf('function absoluteUrl(', at);
-  const context = vm.createContext({ REANIME_WEB: 'https://re.test' }); vm.runInContext(source.slice(at, last), context);
+  const context = vm.createContext({ REANIME_WEB: 'https://re.test', REANIME_ID: 'https://re.test' }); vm.runInContext(source.slice(at, last), context);
   const item = context.reanimeItems({ results: [{ anime_id: 'show', title: 'Show', season_year: 2026, season: 'FALL', episodes: 12, subbed: 2, dubbed: 1 }] })[0];
   assert.equal(item.season, 'FALL'); assert.equal(item.totalEpisodes, 12); assert.equal(item.availableEpisodes, 2);
   assert.equal(episodeLabel(item), '업로드 2화 / 총 12화');

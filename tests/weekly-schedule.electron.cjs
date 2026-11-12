@@ -12,7 +12,7 @@ app.whenReady().then(async () => {
   const preload = fs.readFileSync(path.join(root, 'electron/preload.cjs'), 'utf8');
   const main = fs.readFileSync(path.join(root, 'electron/main.cjs'), 'utf8');
   const fn = main.slice(main.indexOf('function reanimeItems('), main.indexOf('\nfunction absoluteUrl('));
-  const convert = vm.runInNewContext(`${fn}; reanimeItems`, { REANIME_WEB: 'https://reanime.to' });
+  const convert = vm.runInNewContext(`${fn}; reanimeItems`, { REANIME_WEB: 'https://reanime.cz', REANIME_ID: 'https://reanime.to' });
   let shows = [];
   if (live) shows = convert(JSON.parse(fs.readFileSync(path.join(root, 'build/schedule-home-live.json'), 'utf8'))).filter(item => item.availableEpisodes > 0);
   const load = createWeeklySchedule(async day => {
