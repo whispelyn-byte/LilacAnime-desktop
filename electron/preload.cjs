@@ -28,6 +28,8 @@ contextBridge.exposeInMainWorld('lilac', {
   providerSeason: provider => ipcRenderer.invoke('provider:season', provider),
   providerAiring: provider => ipcRenderer.invoke('provider:airing', provider),
   providerDetail: anime => ipcRenderer.invoke('provider:detail', anime),
+  libraryRefresh: list => ipcRenderer.invoke('library:refresh', list),
+  animeExtras: anime => ipcRenderer.invoke('anime:extras', anime),
   providerResolve: episode => ipcRenderer.invoke('provider:resolve', episode),
   whisperStatus: () => ipcRenderer.invoke('whisper:status'),
   whisperSelect: id => ipcRenderer.invoke('whisper:select', id),

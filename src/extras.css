@@ -1,0 +1,24 @@
+/* 작품 정보 더 보기 (AniList / MAL): the next episode's air time, the PV button, and the 캐릭터·정보 tab. */
+.detail-airing { margin: 4px 0 0; color: var(--lilac); font-size: 12px; line-height: 1.5; }
+.info-block { margin-top: 14px; }
+.info-block h3 { margin: 18px 0 10px; color: var(--lilac); font-size: 12px; }
+.info-block h3:first-child { margin-top: 4px; }
+.cast-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px 14px; }
+.cast-item { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.cast-face { flex: 0 0 48px; width: 48px; height: 64px; border-radius: 6px; background: var(--line) center / cover no-repeat; }
+.cast-item div { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+.cast-item b { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cast-item small { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.theme-list { margin: 0; padding-left: 18px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.link-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.link-list button { padding: 6px 12px; font-size: 12px; border-radius: 999px; cursor: pointer; }
+.extra-card { cursor: pointer; }
+.related-group h3 small { margin-left: 4px; }
+
+/* 이어서 보기 미리보기 (continue-preview.js): the episode playing in the card's picture, faded in once it plays. */
+.continue-preview { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; opacity: 0; transition: opacity .35s ease; pointer-events: none; }
+.continue-card.previewing .continue-preview { opacity: 1; }
+.continue-card.previewing .continue-play { opacity: 0; }
+.continue-card.preview-loading .continue-play { animation: continue-preview-wait 1s ease-in-out infinite; }
+@keyframes continue-preview-wait { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .continue-preview { transition: none; } .continue-card.preview-loading .continue-play { animation: none; } }

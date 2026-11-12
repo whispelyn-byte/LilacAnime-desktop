@@ -238,10 +238,10 @@ test('a Drive folder archive is searched for the title, newest years first, with
 
 test('previous-season lookup retries a failure, shares concurrent chains, and stops cycles', async () => {
   let fail = true, calls = 0;
-  const h = setup({ fetch: async (_, options) => {
+  // AniList is asked through the shared client (electron/anilist-client.cjs), which gives the answer's data or throws.
+  const h = setup({ anilist: async (_, { id }) => {
     calls++; await new Promise(resolve => setImmediate(resolve)); if (fail) throw Error('offline');
-    const id = JSON.parse(options.body).variables.id;
-    return { ok: true, json: async () => ({ data: { Media: { relations: { edges: [{ relationType: 'PREQUEL', node: { id: id === 3 ? 2 : 3, format: 'TV', episodes: '12' } }] } } } }) };
+    return { Media: { relations: { edges: [{ relationType: 'PREQUEL', node: { id: id === 3 ? 2 : 3, format: 'TV', episodes: '12' } }] } } };
   } });
   h.load('const prequelEpisodeCache=', 'async function findCommunitySubtitle(');
   const anime = { anilistId: 3, title: 'Show Season 2' };

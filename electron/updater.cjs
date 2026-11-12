@@ -8,6 +8,11 @@ const { spawn } = require('child_process');
 const { shell } = require('electron');
 const { Readable } = require('stream');
 const { pipeline } = require('stream/promises');
+const crypto = require('crypto');
+
+// The SHA-256 GitHub publishes for a release file ("sha256:<hex>", the asset's digest), or '' when it gives none.
+function assetDigest(asset = {}) { return String(asset.digest || '').match(/^sha256:([0-9a-f]{64})$/i)?.[1].toLowerCase() || ''; }
+async function fileSha256(file) { const hash = crypto.createHash('sha256'); await pipeline(fs.createReadStream(file), hash); return hash.digest('hex'); }
 
 const RELEASES = 'https://api.github.com/repos/whispelyn-byte/LilacAnime-desktop/releases';
 const RELEASE_API = `${RELEASES}/latest`;
@@ -38,6 +43,22 @@ class Updater {
     this.broadcast = broadcast;
     this.state = { status: 'idle', current: app.getVersion() };
     this.downloading = null;
+    this.cleanup();
+  }
+
+  // Installers of earlier updates stayed in the temp folder for good, one per version (GitHub issue #28). At start the
+  // ones this build no longer needs go: its own version's and older ones, and downloads cut short (.part). A newer one
+  // (downloaded, not installed yet) stays. A file still in use (an installer running) is left for the next start.
+  cleanup() {
+    const dir = path.join(this.app.getPath('temp'), 'LilacAnime-update');
+    let names = []; try { names = fs.readdirSync(dir); } catch { return 0; }
+    let removed = 0;
+    for (const name of names) {
+      const version = name.match(/^LilacAnime-Setup-(.+)\.(?:exe|dmg|deb)$/i)?.[1];
+      if (!/\.part$/i.test(name) && !(version && !isNewer(version, this.app.getVersion()))) continue;
+      try { fs.unlinkSync(path.join(dir, name)); removed++; } catch { /* in use */ }
+    }
+    return removed;
   }
 
   set(patch) { this.state = { ...this.state, ...patch }; this.broadcast('update:state', this.state); return this.state; }
@@ -94,6 +115,10 @@ class Updater {
         });
         await pipeline(stream, fs.createWriteStream(partial));
         if (this.asset.size && fs.statSync(partial).size !== Number(this.asset.size)) throw new Error('설치 파일 크기가 릴리스와 다릅니다.');
+        // The file is run as an installer (silently, when the app closes): it must be the one the release names, byte
+        // for byte. Its size alone said nothing of its contents.
+        const expected = assetDigest(this.asset);
+        if (expected && await fileSha256(partial) !== expected) throw new Error('설치 파일이 릴리스의 것과 다릅니다 (SHA-256 불일치).');
         fs.renameSync(partial, file);
         this.installer = file;
         return this.set({ status: 'ready', percent: 100 });
@@ -160,4 +185,4 @@ Updater.prototype.notes = async function notes() {
   return { version, notes: '', url: 'https://github.com/whispelyn-byte/LilacAnime-desktop/releases' };
 };
 
-module.exports = { Updater, isNewer };
+module.exports = { Updater, isNewer, assetDigest, fileSha256 };

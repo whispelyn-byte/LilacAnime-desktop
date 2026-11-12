@@ -56,7 +56,7 @@ class SubtitleStore {
     // Only delete files the app downloaded itself; user-picked files stay where they are.
     const stillUsed = file => Object.values(this.data).some(items => items.some(item => item.path === file || item.assPath === file));
     for (const file of [entry.path, entry.assPath]) {
-      if (file && path.resolve(file).startsWith(path.resolve(this.managedRoot)) && !stillUsed(file)) { try { fs.unlinkSync(file); } catch { /* already gone */ } }
+      if (file && path.resolve(file).startsWith(path.resolve(this.managedRoot) + path.sep) && !stillUsed(file)) { try { fs.unlinkSync(file); } catch { /* already gone */ } }
     }
     return true;
   }
