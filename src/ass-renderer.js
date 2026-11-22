@@ -7,6 +7,9 @@ let fontUrl = null;
 // Every attach/destroy bumps this. An attach that finishes after a newer call (a new episode, another
 // subtitle, clearing) throws its instance away instead of leaving the old subtitle on screen.
 let generation = 0;
+// 자막 크기 (GitHub issue #27), like mpv's sub-scale with sub-ass-override=scale on Android: every style's font size,
+// outline and shadow times the setting. The file's own styles are kept to scale from, so changes never add up.
+let scale = 1, baseStyles = null;
 
 async function release(active, url) {
   if (url) URL.revokeObjectURL(url);
@@ -16,7 +19,7 @@ async function release(active, url) {
 async function destroy() {
   generation++;
   const active = instance, url = fontUrl;
-  instance = null; fontUrl = null;
+  instance = null; fontUrl = null; baseStyles = null;
   await release(active, url);
 }
 
@@ -24,7 +27,7 @@ async function destroy() {
 // defaultFont: { family, data } of the 기본 자막 폰트. It becomes libass' fallback for styles
 // whose font is not installed, which also supplies Hangul glyphs. libass matches the fallback
 // by its real family name, and the font has to be handed over as a URL (a blob), not raw bytes.
-async function attach(video, { subUrl, fonts = [], defaultFont = null, offsetMs = 0, visible = true } = {}) {
+async function attach(video, { subUrl, fonts = [], defaultFont = null, offsetMs = 0, visible = true, fontScale = 1 } = {}) {
   await destroy();
   const token = generation;
   const options = { video, subUrl, fonts, queryFonts: 'local' };
@@ -46,7 +49,21 @@ async function attach(video, { subUrl, fonts = [], defaultFont = null, offsetMs 
   if (token !== generation) { await release(created, url); return false; }
   setOffset(offsetMs);
   setVisible(visible);
+  await setScale(fontScale);
   return true;
+}
+
+async function setScale(value = 1) {
+  scale = Number(value) > 0 ? Number(value) : 1;
+  const active = instance;
+  if (!active?.renderer) return;
+  try {
+    if (!baseStyles) { if (scale === 1) return; baseStyles = await active.renderer.getStyles(); }
+    if (instance !== active) return;
+    await Promise.all(baseStyles.map((style, index) => active.renderer.setStyle({ ...style, FontSize: style.FontSize * scale,
+      Outline: style.Outline * scale, Shadow: style.Shadow * scale }, index)));
+    if (instance === active) await active.resize(true);
+  } catch { /* the file's own sizes stay */ }
 }
 
 function setVisible(visible) {
@@ -69,5 +86,5 @@ function frame(video) {
 }
 
 function resize() { const active = instance; active?.ready.then(() => { if (instance === active) return active.resize(); }).catch(() => {}); }
-window.LilacAss = { attach, destroy, setVisible, setOffset, frame, resize, get active() { return Boolean(instance); } };
+window.LilacAss = { attach, destroy, setVisible, setOffset, setScale, frame, resize, get active() { return Boolean(instance); } };
 window.dispatchEvent(new Event('lilac-ass-ready'));

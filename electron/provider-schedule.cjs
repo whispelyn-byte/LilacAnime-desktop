@@ -12,6 +12,23 @@ function entry(anime, extra = {}) {
   return { id: anime.mal_id, title: anime.title, originalTitle: anime.title_japanese || '', time: '', cancelled: false,
     genres: (anime.genres || []).map(item => item.name), startDate: '', endDate: '', anime, ...extra };
 }
+// One row per episode of a work (GitHub issue #30): the sites list its raw, sub and dub airings apart, often at
+// different times (raw 00:00, sub and dub 00:30), so the same episode showed up two or three times. The sub airing is
+// kept (when it can be watched with subtitles), else raw; a dub of the same episode only marks that row (dub: true).
+// A dub on its own (an earlier episode dubbed later) stays a row of its own.
+function onePerEpisode(rows, workOf, trackOf) {
+  const rank = track => track === 'sub' ? 0 : track === 'dub' ? 2 : 1, byEpisode = new Map();
+  for (const raw of rows) {
+    const id = `${workOf(raw)}:${raw.episode_number}`, kept = byEpisode.get(id);
+    if (!kept) byEpisode.set(id, { id, raw, dubbed: trackOf(raw) === 'dub' });
+    else {
+      kept.dubbed ||= trackOf(raw) === 'dub';
+      if (rank(trackOf(raw)) < rank(trackOf(kept.raw))) kept.raw = raw;
+    }
+  }
+  // dub marks a sub/raw row that also has a dub; a dub-only row says so by its own track.
+  return [...byEpisode.values()].map(({ id, raw, dubbed }) => ({ id, raw, dub: dubbed && trackOf(raw) !== 'dub' }));
+}
 function createProviderSchedule(deps) {
   const cache = new Map(), pending = new Map();
   async function cached(key, fetcher) {
@@ -40,16 +57,10 @@ function createProviderSchedule(deps) {
       if (!Array.isArray(root?.schedule)) throw new Error('리애니 방영표를 읽지 못했습니다.');
       const group = root.schedule.find(item => item.date === date);
       if (!group || !Array.isArray(group.episodes)) throw new Error('리애니 방영표의 날짜가 일치하지 않습니다.');
-      // Match the site's raw/sub deduplication, retaining the separate dub schedule.
-      const unique = new Map();
-      for (const raw of group.episodes) {
-        if (!raw.anime_id || !Number.isFinite(Date.parse(raw.episode_date))) continue;
-        const key = `${raw.anime_id}:${raw.episode_number}:${raw.air_type === 'dub' ? 'dub' : 'sub'}`;
-        if (!unique.has(key) || raw.air_type === 'sub') unique.set(key, raw);
-      }
-      return [...unique.entries()].flatMap(([id, raw]) => {
+      const rows = group.episodes.filter(raw => raw.anime_id && Number.isFinite(Date.parse(raw.episode_date)));
+      return onePerEpisode(rows, raw => raw.anime_id, raw => raw.air_type).flatMap(({ id, raw, dub }) => {
         const anime = deps.reanimeItems([raw])[0];
-        return anime ? [entry(anime, { id, time: koreaTime(raw.episode_date), episode: raw.episode_number, track: raw.air_type,
+        return anime ? [entry(anime, { id, time: koreaTime(raw.episode_date), episode: raw.episode_number, track: raw.air_type, dub,
           airingStatus: raw.airing_status })] : [];
       });
     }
@@ -64,13 +75,8 @@ function createProviderSchedule(deps) {
       for (let i = 0; i < ids.length; i += 200) {
         for (const raw of await pages('anime', { id_in: ids.slice(i, i + 200).join(','), limit: 200 })) anime.set(raw.id, deps.miruroItem(raw));
       }
-      const result = new Map();
-      for (const raw of rows) {
-        const show = anime.get(raw.anime_id); if (!show) continue;
-        const id = `${raw.anime_id}:${raw.episode_number}:${raw.air_at}:${raw.track === 'dub' ? 'dub' : 'sub'}`;
-        if (!result.has(id) || raw.track === 'sub') result.set(id, entry(show, { id, time: koreaTime(raw.air_at), episode: raw.episode_number, track: raw.track }));
-      }
-      return [...result.values()];
+      return onePerEpisode(rows.filter(raw => anime.has(raw.anime_id)), raw => raw.anime_id, raw => raw.track)
+        .map(({ id, raw, dub }) => entry(anime.get(raw.anime_id), { id, time: koreaTime(raw.air_at), episode: raw.episode_number, track: raw.track, dub }));
     }
     if (provider === 'animenosub') {
       const html = await cached(`animenosub:week:${monday}`, () => deps.animenosubFetch(`${deps.animenosubBase}/schedule/`)), $ = cheerio.load(html);

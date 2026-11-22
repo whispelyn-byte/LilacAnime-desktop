@@ -108,6 +108,22 @@ test('a loaded .conf is kept encrypted, wireproxy is fetched once, checked, run 
   assert.equal(calls.filter(call => /wp\.tar\.gz$/.test(call)).length, 1); // the program is fetched once
 });
 
+test('starts asked for at once run one wireproxy, and a start after a stop while one runs still opens the tunnel', async t => {
+  const { proxy, spawned, calls } = harness(t);
+  await proxy.load(CONF, 'vpn.conf');
+  // Turned on while the start at launch and the restart timer ask too: one wireproxy on the port, not one each.
+  await Promise.all([proxy.setEnabled(true), proxy.start(), proxy.start()]);
+  assert.equal(spawned.length, 1);
+  proxy.stop();
+  const first = proxy.start(); proxy.stop(); const second = proxy.start();
+  await Promise.all([first, second]);
+  assert.equal(spawned.length, 2);
+  assert.notEqual(proxy.status().status, 'off');
+  const kills = calls.filter(call => call === 'kill').length;
+  proxy.stop();
+  assert.equal(calls.filter(call => call === 'kill').length, kills + 1); // the running one is known, and stopped
+});
+
 test('a download that does not match its pinned hash is not run, and turning on needs a .conf', async t => {
   const empty = harness(t);
   await assert.rejects(empty.proxy.setEnabled(true), /설정 파일을 불러와/);

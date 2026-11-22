@@ -19,7 +19,7 @@ function createAppRouting({ app, env = process.env } = {}) {
     destroy(...args) { return this.proxy.destroy(...args); }
   }
   const sessions = new Set(), originalEnv = Object.fromEntries(PROXY_ENV.map(key => [key, env[key]]));
-  let current = null;
+  let current = null, dispatcher = null;
   function routeSession(ses) {
     if (typeof ses?.setProxy !== 'function') return Promise.resolve();
     sessions.add(ses);
@@ -30,7 +30,13 @@ function createAppRouting({ app, env = process.env } = {}) {
   function route(proxy) {
     if (proxy === current) return Promise.resolve();
     const was = current; current = proxy;
-    if (proxy || was) setGlobalDispatcher(proxy ? new RoutingDispatcher(new ProxyAgent(proxy)) : new Agent());
+    // The dispatcher replaced is closed (its requests still running finish first), or each switch kept its pool open.
+    if (proxy || was) {
+      const old = dispatcher;
+      dispatcher = proxy ? new RoutingDispatcher(new ProxyAgent(proxy)) : new Agent();
+      setGlobalDispatcher(dispatcher);
+      Promise.resolve().then(() => old?.close()).catch(() => {});
+    }
     for (const key of PROXY_ENV) {
       const value = proxy ? (/no_proxy/i.test(key) ? NO_PROXY : proxy) : originalEnv[key];
       if (value === undefined) delete env[key]; else env[key] = value;

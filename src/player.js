@@ -96,7 +96,9 @@ function syncPlayerSettingsUI() {
 
 // Android "발견된 ASS 폰트": fonts shipped with the current Kairan/Csora/Anissia subtitle. The chosen one becomes the
 // subtitle font (VTT text and the ASS fallback), like a custom font file; all of them stay available to the ASS script.
-function fontPathOf(url) { try { return decodeURIComponent(new URL(url).pathname).replace(/^\/([A-Za-z]:)/, '$1').replace(/\//g, '\\'); } catch { return ''; } }
+// A Windows path ("/C:/…" in the URL) gets its drive back and backslashes; on macOS and Linux the path stays as it is
+// (turned into "\Users\…" there, the font was never found).
+function fontPathOf(url) { try { const file = decodeURIComponent(new URL(url).pathname); return /^\/[A-Za-z]:/.test(file) ? file.slice(1).replace(/\//g, '\\') : file; } catch { return ''; } }
 function renderDiscoveredFonts() {
   const fonts = [...new Set(currentSubtitle?.fonts || [])].map(url => ({ url, path: fontPathOf(url) })).filter(font => font.path);
   $('#psDiscoveredFonts').classList.toggle('hidden', !fonts.length);
@@ -1089,7 +1091,7 @@ $$('#psSeekSteps button').forEach(button => button.onclick = () => setSeekSecond
 $('#psSeekSeconds').onchange = event => setSeekSeconds(event.target.value);
 $$('#psSubtitleSources button').forEach(button => button.onclick = () => selectSubtitleSource(button.dataset.source));
 $('#psSubtitleSync').onchange = event => { setSubtitleSync(event.target.value); syncPlayerSettingsUI(); };
-$('#psSubtitleSize').oninput = event => { setSubtitleSetting('subtitleSize', event.target.value); applyCueStyle(); };
+$('#psSubtitleSize').oninput = event => { setSubtitleSetting('subtitleSize', event.target.value); applyCueStyle(); window.LilacAss?.setScale(assFontScale()); };
 $('#psSubtitleLineHeight').oninput = event => { setSubtitleSetting('subtitleLineHeight', event.target.value); renderCueStyle(); };
 $('#psLineHeightReset').onclick = () => { setSubtitleSetting('subtitleLineHeight', 0); renderCueStyle(); };
 $('#psSubtitlePosition').oninput = event => { setSubtitleSetting('subtitlePosition', event.target.value); applyVttLayout(); };

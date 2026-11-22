@@ -7,15 +7,15 @@ test('Korean calendar week is independent of the system timezone, including Sund
   assert.equal(weekDate(0, now()), '2026-10-18');
   assert.equal(weekDate(1, Date.parse('2026-10-18T16:00:00Z')), '2026-10-19');
 });
-test('RE schedule retains native IDs, converts time, deduplicates sub/raw and keeps dub', async () => {
+test('RE schedule retains native IDs, converts time, shows one row per episode and marks its dub', async () => {
   let calls = 0;
   const load = createProviderSchedule({ now, reanimeBase: 'https://re.test', reanimeFetch: async url => {
     calls++; assert.match(url, /tz=Asia%2FSeoul/);
     return { schedule: [{ date: '2026-10-17', episodes: ['raw', 'sub', 'dub'].map(air_type => ({ anime_id: 'show', episode_number: 2, episode_date: '2026-10-16T15:30:00Z', air_type })) }] };
   }, reanimeItems: rows => rows.map(raw => anime('reanime', raw.anime_id)) });
   const result = await load('reanime', 6);
-  assert.equal(result.native, true); assert.equal(result.items.length, 2);
-  assert.equal(result.items[0].time, '00:30'); assert.equal(result.items[0].track, 'sub');
+  assert.equal(result.native, true); assert.equal(result.items.length, 1);
+  assert.equal(result.items[0].time, '00:30'); assert.equal(result.items[0].track, 'sub'); assert.equal(result.items[0].dub, true);
   assert.equal(result.items[0].anime.mal_id, 'reanime:show');
   await load('reanime', 6); assert.equal(calls, 1);
 });
@@ -32,6 +32,13 @@ test('Miruro reads pagination, filters Korean date boundaries and joins native I
   assert.equal(result.items[0].anime.mal_id, 'miruro:show');
   assert.equal(calls[0].params.from, '2026-10-11'); assert.equal(calls[0].params.to, '2026-10-18');
   assert.equal(calls[2].params.id_in, 'show');
+});
+test('Miruro raw, sub and dub airings of one episode are one row at the sub time (#30)', async () => {
+  const at = (time, track, episode_number = 6) => ({ anime_id: 'show', air_at: `2026-10-16T${time}:00Z`, episode_number, track });
+  const load = createProviderSchedule({ now, miruroItem: raw => anime('miruro', raw.id), miruroApi: async route => route === 'anime'
+    ? { data: [{ id: 'show' }] } : { data: [at('15:00', 'raw'), at('15:30', 'dub'), at('15:30', 'sub'), at('16:00', 'dub', 3)] } });
+  const result = await load('miruro', 6);
+  assert.deepEqual(result.items.map(item => [item.time, item.episode, item.track, item.dub]), [['00:30', 6, 'sub', true], ['01:00', 3, 'dub', false]]);
 });
 test('weekday sources preserve grouping and do not invent broadcast times', async () => {
   let ohliUrl;

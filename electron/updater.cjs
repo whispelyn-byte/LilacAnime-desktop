@@ -41,7 +41,7 @@ class Updater {
   constructor({ app, broadcast }) {
     this.app = app;
     this.broadcast = broadcast;
-    this.state = { status: 'idle', current: app.getVersion() };
+    this.state = { status: 'idle', current: app.getVersion(), auto: this.readAuto() };
     this.downloading = null;
     this.cleanup();
   }
@@ -61,9 +61,22 @@ class Updater {
     return removed;
   }
 
+  // 자동 업데이트 (GitHub issue #28): on, the app looks for a new version by itself, downloads it, shows the banner and
+  // installs it when closed. Off, nothing happens until 설정 > 업데이트 확인, and a downloaded installer waits for 지금 설치.
+  get prefsFile() { return path.join(this.app.getPath('userData'), 'update-prefs.json'); }
+  readAuto() { try { return JSON.parse(fs.readFileSync(this.prefsFile, 'utf8')).auto !== false; } catch { return true; } }
+  get auto() { return this.state.auto !== false; }
+  setAuto(value) {
+    const auto = value !== false;
+    try { fs.writeFileSync(this.prefsFile, JSON.stringify({ auto })); } catch { /* kept for this run */ }
+    return this.set({ auto });
+  }
+
   set(patch) { this.state = { ...this.state, ...patch }; this.broadcast('update:state', this.state); return this.state; }
 
-  async check() {
+  // scheduled: the app's own periodic check, skipped while 자동 업데이트 is off.
+  async check({ scheduled = false } = {}) {
+    if (scheduled && !this.auto) return this.state;
     if (['checking', 'downloading', 'ready'].includes(this.state.status)) return this.state;
     this.set({ status: 'checking', error: null });
     try {
@@ -79,8 +92,8 @@ class Updater {
       if (LINUX && !DEB) throw new Error(`새 버전 v${latest}이 있습니다. Linux는 이제 .deb로 설치합니다. 릴리스 페이지에서 .deb를 받아 설치해 주세요.`);
       this.asset = asset;
       this.set({ status: 'available', latest, notes: String(release.body || '').slice(0, 20000), url: release.html_url || '', size: Number(asset.size) || 0 });
-      // Downloaded right away; installing still waits for the user (it restarts the app).
-      this.download();
+      // Downloaded right away when updates are automatic; installing still waits for the user (it restarts the app).
+      if (this.auto) this.download();
       return this.state;
     } catch (error) {
       return this.set({ status: 'error', error: error.message || '업데이트 확인 실패' });
@@ -156,14 +169,28 @@ class Updater {
       return true;
     }
     // NSIS assisted installer: /S installs silently into the existing directory, --updated relaunches.
-    const child = spawn(this.installer, relaunch ? ['/S', '--updated', '--force-run'] : ['/S', '--updated'], { detached: true, stdio: 'ignore' });
+    // Windows security (Defender, Smart App Control) can refuse to start it (GitHub issue #31): then the app stays open
+    // and says so, and the installer's folder opens so it can be run by hand (or allowed in Windows 보안) — instead of an
+    // unhandled spawn error, or an app that closed with nothing installed.
+    let child;
+    try { child = spawn(this.installer, relaunch ? ['/S', '--updated', '--force-run'] : ['/S', '--updated'], { detached: true, stdio: 'ignore' }); }
+    catch (error) { this.blocked(error); return false; }
+    let quit = null;
+    child.once('error', error => { if (quit) clearTimeout(quit); this.blocked(error); });
     child.unref();
-    if (relaunch) setTimeout(() => this.app.quit(), 300);
+    if (relaunch) quit = setTimeout(() => this.app.quit(), 1500);
     return true;
+  }
+  blocked(error) {
+    this.installing = false;
+    const refused = ['EACCES', 'EPERM', 'UNKNOWN'].includes(error?.code) || /virus|malware|blocked|operation did not complete/i.test(error?.message || '');
+    this.set({ status: 'error', error: `${refused ? 'Windows 보안이 설치 파일 실행을 막았습니다' : '설치 파일을 실행하지 못했습니다'} (${error?.code || error?.message || '알 수 없음'}). 열린 폴더의 설치 파일을 직접 실행하거나 릴리스 페이지에서 받아 설치해 주세요.` });
+    try { shell.showItemInFolder(this.installer); } catch { /* the message is enough */ }
   }
   // A downloaded update the user did not install is put in when the app is closed (silently, without opening it again).
   // (Not on macOS, where it takes the person, nor for a .deb, which asks for the password.)
-  installOnQuit() { if (!MAC && !DEB && this.state.status === 'ready' && !this.installing) try { this.install(false); } catch { /* next start */ } }
+  // Only with 자동 업데이트 on: off, closing the app never installs anything.
+  installOnQuit() { if (!MAC && !DEB && this.auto && this.state.status === 'ready' && !this.installing) try { this.install(false); } catch { /* next start */ } }
 }
 
 // Release notes of this build: the ones saved when it was installed, else the GitHub release of its tag.

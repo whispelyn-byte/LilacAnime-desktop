@@ -105,7 +105,7 @@ function primeFlix(urls=[]){primed.clear();const kept=new Set();for(const url of
 function fetchAhead(data,target,headers){const place=data.order.get(target);if(!place)return;
   for(const url of place.list.slice(place.index+1,place.index+1+AHEAD)){if(ahead.has(url))continue;const job=fetchRanges(url,headers);job.catch(()=>{});ahead.set(url,job)}
   while(ahead.size>KEEP)ahead.delete(ahead.keys().next().value)}
-async function handle(req,res){try{const parts=new URL(req.url,'http://127.0.0.1').pathname.split('/').filter(Boolean);if(parts.length<3||parts[0]!=='__flix'){res.writeHead(404).end();return}const data=sessions.get(parts[1]);if(!data){res.writeHead(410).end();return}if(parts[2]==='master.m3u8'&&data.videoUrl&&data.audioUrl){const port=server.address().port,video=proxyUrl(port,parts[1],data.videoUrl),audio=proxyUrl(port,parts[1],data.audioUrl);const body=Buffer.from(`#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Default",DEFAULT=YES,AUTOSELECT=YES,URI="${audio}"\n#EXT-X-STREAM-INF:BANDWIDTH=5000000,AUDIO="audio"\n${video}\n`);res.writeHead(200,{'content-type':'application/vnd.apple.mpegurl','content-length':body.length,'access-control-allow-origin':'*','cache-control':'no-store'});res.end(body);return}const target=Buffer.from(parts.slice(2).join('/'),'base64url').toString();const headers=requestHeaders(data);const type=kind(target);let upstream,raw,body;
+async function handle(req,res){try{const parts=new URL(req.url,'http://127.0.0.1').pathname.split('/').filter(Boolean);if(parts.length<3||parts[0]!=='__flix'){res.writeHead(404).end();return}const data=sessions.get(parts[1]);if(!data){res.writeHead(410).end();return}sessions.delete(parts[1]);sessions.set(parts[1],data);if(parts[2]==='master.m3u8'&&data.videoUrl&&data.audioUrl){const port=server.address().port,video=proxyUrl(port,parts[1],data.videoUrl),audio=proxyUrl(port,parts[1],data.audioUrl);const body=Buffer.from(`#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Default",DEFAULT=YES,AUTOSELECT=YES,URI="${audio}"\n#EXT-X-STREAM-INF:BANDWIDTH=5000000,AUDIO="audio"\n${video}\n`);res.writeHead(200,{'content-type':'application/vnd.apple.mpegurl','content-length':body.length,'access-control-allow-origin':'*','cache-control':'no-store'});res.end(body);return}const target=Buffer.from(parts.slice(2).join('/'),'base64url').toString();const headers=requestHeaders(data);const type=kind(target);let upstream,raw,body;
   // The player asks for one video and one audio segment at a time; more at once is a download, which asks for the
   // following segments itself. FFmpeg (Lavf) reading the same stream for 자막 싱크 or Whisper is not counted as the
   // player and fetches ahead only while the player asks for nothing: it read the whole episode at full speed beside
@@ -146,9 +146,24 @@ async function flixReadable(url){
   const {body}=await fetchHedged(target,requestHeaders(data),0,4095),decoded=decodeSegment(Buffer.from(body));
   return isMedia(decoded)||Boolean(findTs(decoded)||findTs(body));
 }
-async function ensureServer(){if(server?.listening)return;server=http.createServer(handle);await new Promise((resolve,reject)=>server.once('error',reject).listen(0,'127.0.0.1',resolve))}
-async function createFlixProxyUrl(url,pk,headers={}){await ensureServer();const id=crypto.randomUUID().replaceAll('-','');sessions.set(id,{pk,headers,order:new Map()});return proxyUrl(server.address().port,id,url)}
-async function createFlixAvProxyUrl(videoUrl,audioUrl,pk,headers={}){await ensureServer();const id=crypto.randomUUID().replaceAll('-','');sessions.set(id,{pk,headers,videoUrl,audioUrl,order:new Map()});return `http://127.0.0.1:${server.address().port}/__flix/${id}/master.m3u8`}
+// Callers asking at once while the server is still starting share that start (each made its own server before, and
+// the first then read the port of the second, not yet listening: null).
+let starting=null;
+function ensureServer(){
+  if(server?.listening)return Promise.resolve();
+  if(starting)return starting;
+  const created=http.createServer(handle);
+  starting=new Promise((resolve,reject)=>created.once('error',reject).listen(0,'127.0.0.1',resolve))
+    .then(()=>{server=created},error=>{created.close();throw error})
+    .finally(()=>{starting=null});
+  return starting;
+}
+// Sessions are kept by last use (a request moves its session to the end): the oldest unused ones go past MAX_SESSIONS,
+// so a long run does not keep every episode's playlists. One in use (playing, downloading) is asked for all the time.
+const MAX_SESSIONS=64;
+function addSession(data){const id=crypto.randomUUID().replaceAll('-','');sessions.set(id,data);while(sessions.size>MAX_SESSIONS)sessions.delete(sessions.keys().next().value);return id}
+async function createFlixProxyUrl(url,pk,headers={}){await ensureServer();const id=addSession({pk,headers,order:new Map()});return proxyUrl(server.address().port,id,url)}
+async function createFlixAvProxyUrl(videoUrl,audioUrl,pk,headers={}){await ensureServer();const id=addSession({pk,headers,videoUrl,audioUrl,order:new Map()});return `http://127.0.0.1:${server.address().port}/__flix/${id}/master.m3u8`}
 function closeFlixProxy(){sessions.clear();ahead.clear();primed.clear();heldLists.clear();server?.close();server=null}
 
 module.exports={createFlixProxyUrl,createFlixAvProxyUrl,closeFlixProxy,fetchHedged,primeFlix,flixReadable,evenVideoDts};

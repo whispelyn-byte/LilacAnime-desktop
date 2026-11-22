@@ -32,6 +32,7 @@ async function renderWhisperSettings(value) {
     else {
       action.textContent = model.partial ? `이어 받기 · ${Math.round(model.partial / model.size * 100)}% 받음` : `받기 · ${model.size >= 1e9 ? `${(model.size / 1e9).toFixed(1)}GB` : `${Math.round(model.size / 1e6)}MB`}`;
       action.onclick = () => downloadWhisperModel(model.id);
+      if (model.partial) action.before(partialDiscardButton(model, async () => renderWhisperSettings(await window.lilac.whisperRemove(model.id))));
     }
     return row;
   }));

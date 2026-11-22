@@ -85,6 +85,7 @@ contextBridge.exposeInMainWorld('lilac', {
   checkUpdate: () => ipcRenderer.invoke('update:check'),
   downloadUpdate: () => ipcRenderer.invoke('update:download'),
   installUpdate: () => ipcRenderer.invoke('update:install'),
+  setAutoUpdate: value => ipcRenderer.invoke('update:auto', value),
   onUpdateState: callback => ipcRenderer.on('update:state', (_, value) => callback(value)),
   tmdbKey: () => ipcRenderer.invoke('tmdb:get'),
   wireguardStatus: () => ipcRenderer.invoke('wireguard:status'),

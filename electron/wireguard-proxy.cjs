@@ -176,8 +176,19 @@ function createWireGuardProxy({ app, safeStorage, spawn, fetch, now = Date.now, 
       set(fresh ? { status: 'connected', message: '', handshake } : { status: 'connecting', message: 'VPN 서버의 응답을 기다리는 중... (계속되면 설정 파일의 서버 주소나 키를 확인해 주세요)', handshake });
     } catch { /* the next check */ }
   }
-  async function start() {
+  // One start at a time: two at once (turned off and on during the first wireproxy download, a .conf loaded while the
+  // start at launch ran, the restart timer) each spawned wireproxy on the same port; the one that lost exited, which
+  // cleared `child` and started the 5 s restart loop, while the one that won was no longer known (never stopped, not
+  // even at quit). A start asked for meanwhile waits for the one running, and goes again when that one ended without a
+  // tunnel because it was stopped in between (load(): stop(), then start()).
+  let startRun = null;
+  function start() {
     clearTimeout(restartTimer); stopping = false;
+    if (startRun) return startRun.then(() => (child || stopping || !read().enabled ? status() : start()));
+    startRun = startTunnel().finally(() => { startRun = null; });
+    return startRun;
+  }
+  async function startTunnel() {
     const saved = read(); if (!saved.enabled || !saved.conf) return status();
     if (child) return status();
     try {

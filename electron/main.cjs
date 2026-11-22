@@ -228,7 +228,8 @@ async function providerFetch(url, { json = false, referer } = {}) {
     }};
     const response = await Promise.resolve().then(() => net.fetch(url, options)).catch(error => { if (controller.signal.aborted) throw error; return fetch(url, options); });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return json ? response.json() : response.text();
+    // Awaited here, so the time limit also covers the body (a server that stalls mid-answer held the request for good).
+    return await (json ? response.json() : response.text());
   } catch (error) {
     if (error.name === 'AbortError') throw new Error('서버 응답 시간이 초과되었습니다.');
     throw error;
@@ -947,7 +948,8 @@ async function ohliStreamFromPage(playerUrl){
   const ses=win.webContents.session;let master=null,headers=null,media=null,found=()=>{};
   // Done the moment the player asks for its playlist (or a video file), not at the next poll.
   const seen=new Promise(resolve=>{found=resolve});
-  ses.webRequest.onSendHeaders({urls:['*://*/*']},details=>{
+  // Only this page's requests: two pages resolved at once (the player and the next episode made ready) share the session.
+  const unhook=hookSendHeaders(ses,win.webContents.id,details=>{
     if(!master&&/\/master\.txt(?:$|\?)|\.m3u8(?:$|\?)/i.test(details.url)){master=details.url;headers=details.requestHeaders;found()}
     else if(!media&&details.resourceType==='media'&&/\.mp4(?:$|\?)/i.test(details.url)){media=details.url;found()}
   });
@@ -963,7 +965,16 @@ async function ohliStreamFromPage(playerUrl){
     const userAgent=headers?.['User-Agent']||LINKKF_UA;
     const text=await (await ses.fetch(master,{headers:{'User-Agent':userAgent,Accept:'*/*','Accept-Language':headers?.['Accept-Language']||'ko'}})).text();
     return {...ohliVariant(text,master,userAgent),subtitle};
-  }finally{clearInterval(nudge);clearTimeout(timer);ses.webRequest.onSendHeaders(null);if(!win.isDestroyed())win.destroy()}
+  }finally{clearInterval(nudge);clearTimeout(timer);unhook();if(!win.isDestroyed())win.destroy()}
+}
+// A session has one onSendHeaders listener; a second one replaced the first, and its removal took the other page's away
+// (each then waited its 30 s for nothing). The session's listener hands each request to the page it came from.
+const sendHeaderHooks=new Map();
+function hookSendHeaders(ses,webContentsId,handler){
+  let handlers=sendHeaderHooks.get(ses);
+  if(!handlers){handlers=new Map();sendHeaderHooks.set(ses,handlers);ses.webRequest.onSendHeaders({urls:['*://*/*']},details=>handlers.get(details.webContentsId)?.(details))}
+  handlers.set(webContentsId,handler);
+  return ()=>{handlers.delete(webContentsId);if(!handlers.size&&sendHeaderHooks.get(ses)===handlers){sendHeaderHooks.delete(ses);ses.webRequest.onSendHeaders(null)}};
 }
 // Most videos have the Korean subtitle in the picture; an older raw one ("[Ohys-Raws] New Game! - 01") comes clean, and
 // the player puts the Korean subtitle over it from a file: a captions track of its playlist (an SRT on the player's
@@ -1144,7 +1155,9 @@ async function saveRemoteSubtitle(url,{referer='',userAgent=LINKKF_UA,headers={}
   const response=await fetch(url,{signal:AbortSignal.timeout(20000),headers:{...headers,'User-Agent':userAgent,Referer:referer||new URL(url).origin+'/'}});
   if(!response.ok)throw new Error(`자막 다운로드 HTTP ${response.status}`);
   const data=Buffer.from(await response.arrayBuffer());if(!data.length||data.length>=200*1024*1024)throw new Error('자막 파일 크기가 올바르지 않습니다.');
-  const text=data.toString('utf8').replace(/^﻿/,''),head=text.trimStart().slice(0,200).toLowerCase();
+  // Decoded by its own encoding (UTF-16, CP949) before it is written as UTF-8: read as UTF-8, such a file was saved as
+  // replacement characters, which nothing could read back.
+  const text=decodeSubtitle(data).text.replace(/^﻿/,''),head=text.trimStart().slice(0,200).toLowerCase();
   if(head.startsWith('<!doctype html')||head.startsWith('<html')||head.startsWith('<head'))throw new Error('자막 대신 HTML 응답을 받았습니다.');
   const ext=/^webvtt/i.test(text.trimStart())?'.vtt':/\[script info\]/i.test(text)?'.ass':/^\s*\d+\s*$/m.test(text)&&text.includes(' --> ')?'.srt':'.vtt';
   const dir=path.join(app.getPath('userData'),'subtitles','provider');fs.mkdirSync(dir,{recursive:true});
@@ -1284,12 +1297,13 @@ function fontFamilyName(data){
   }
   return fallback;
 }
-// Korean SRT/SMI files are often CP949 or UTF-16 rather than UTF-8.
-function readSubtitleText(file){
-  const data=fs.readFileSync(file);
-  if(data[0]===0xff&&data[1]===0xfe)return new TextDecoder('utf-16le').decode(data.subarray(2));
-  if(data[0]===0xfe&&data[1]===0xff)return new TextDecoder('utf-16be').decode(data.subarray(2));
-  try{return new TextDecoder('utf-8',{fatal:true}).decode(data).replace(/^\uFEFF/,'')}catch{return new TextDecoder('euc-kr').decode(data)}
+// Korean SRT/SMI/ASS files are often CP949 or UTF-16 rather than UTF-8.
+function readSubtitleText(file){return decodeSubtitle(fs.readFileSync(file)).text}
+// utf8: the bytes were UTF-8 already.
+function decodeSubtitle(data){
+  if(data[0]===0xff&&data[1]===0xfe)return {text:new TextDecoder('utf-16le').decode(data.subarray(2)),utf8:false};
+  if(data[0]===0xfe&&data[1]===0xff)return {text:new TextDecoder('utf-16be').decode(data.subarray(2)),utf8:false};
+  try{return {text:new TextDecoder('utf-8',{fatal:true}).decode(data).replace(/^\uFEFF/,''),utf8:true}}catch{return {text:new TextDecoder('euc-kr').decode(data),utf8:false}}
 }
 // Plain text as a VTT cue (as the translator writes one). VTT drops whatever would end or open something there: a blank
 // line ends the cue (two breaks in a row, a break before a line break of the file), a "-->" line starts another, and
@@ -1321,7 +1335,14 @@ function reconvertSubtitle(vtt){
   for(const [ext,convert] of [['.smi',smiToVtt],['.sami',smiToVtt],['.srt',srtToVtt],['.ass',assToVtt],['.ssa',assToVtt]]){const original=vtt.replace(/\.vtt$/i,ext);if(fs.existsSync(original)){convert(original);return true}}
   return false;
 }
-function assToVtt(file){const lines=fs.readFileSync(file,'utf8').replace(/^\uFEFF/,'').split(/\r?\n/);let inEvents=false,fields=[];const cues=[];const stamp=value=>{const match=String(value).trim().match(/(\d+):(\d{2}):(\d{2})[.](\d{1,3})/);if(!match)return null;return `${String(match[1]).padStart(2,'0')}:${match[2]}:${match[3]}.${match[4].padEnd(3,'0').slice(0,3)}`};for(const line of lines){if(/^\[Events]/i.test(line)){inEvents=true;continue}if(/^\[/.test(line)){inEvents=false;continue}if(!inEvents)continue;if(/^Format:/i.test(line)){fields=line.slice(line.indexOf(':')+1).split(',').map(x=>x.trim().toLowerCase());continue}if(!/^Dialogue:/i.test(line)||!fields.length)continue;const raw=line.slice(line.indexOf(':')+1),parts=raw.split(','),values=parts.slice(0,fields.length-1);values.push(parts.slice(fields.length-1).join(','));const row=Object.fromEntries(fields.map((field,index)=>[field,values[index]||'']));const start=stamp(row.start),end=stamp(row.end);if(!start||!end)continue;const text=vttCueText((row.text||'').replace(/\{[^}]*\\p[1-9][^}]*\}[^{]*/g,'').replace(/\{[^}]*}/g,'').replace(/\\[Nn]/g,'\n').replace(/\\h/g,' '));if(text)cues.push(`${start} --> ${end}\n${text}`)}const out=file.replace(/\.(ass|ssa)$/i,'.vtt');fs.writeFileSync(out,`WEBVTT\n\n${cues.join('\n\n')}\n`,'utf8');return out}
+// An ASS file of the app's own (under userData) is kept as UTF-8: libass (JASSUB), the sync and the translation read it
+// as such, and one saved as UTF-16 or CP949 (Aegisub's "Unicode", older Korean fansubs) gave an empty VTT and broken lines.
+function assText(file){
+  const {text,utf8}=decodeSubtitle(fs.readFileSync(file));
+  try{if(!utf8&&path.resolve(file).startsWith(path.resolve(app.getPath('userData'))+path.sep))fs.writeFileSync(file,text,'utf8')}catch{/* read as it is */}
+  return text;
+}
+function assToVtt(file){const lines=assText(file).replace(/^\uFEFF/,'').split(/\r?\n/);let inEvents=false,fields=[];const cues=[];const stamp=value=>{const match=String(value).trim().match(/(\d+):(\d{2}):(\d{2})[.](\d{1,3})/);if(!match)return null;return `${String(match[1]).padStart(2,'0')}:${match[2]}:${match[3]}.${match[4].padEnd(3,'0').slice(0,3)}`};for(const line of lines){if(/^\[Events]/i.test(line)){inEvents=true;continue}if(/^\[/.test(line)){inEvents=false;continue}if(!inEvents)continue;if(/^Format:/i.test(line)){fields=line.slice(line.indexOf(':')+1).split(',').map(x=>x.trim().toLowerCase());continue}if(!/^Dialogue:/i.test(line)||!fields.length)continue;const raw=line.slice(line.indexOf(':')+1),parts=raw.split(','),values=parts.slice(0,fields.length-1);values.push(parts.slice(fields.length-1).join(','));const row=Object.fromEntries(fields.map((field,index)=>[field,values[index]||'']));const start=stamp(row.start),end=stamp(row.end);if(!start||!end)continue;const text=vttCueText((row.text||'').replace(/\{[^}]*\\p[1-9][^}]*\}[^{]*/g,'').replace(/\{[^}]*}/g,'').replace(/\\[Nn]/g,'\n').replace(/\\h/g,' '));if(text)cues.push(`${start} --> ${end}\n${text}`)}const out=file.replace(/\.(ass|ssa)$/i,'.vtt');fs.writeFileSync(out,`WEBVTT\n\n${cues.join('\n\n')}\n`,'utf8');return out}
 // Local audio analysis over downloaded episodes only (Android LinkkfChapterService.detectSkipSegmentsOffline).
 // Results are cached per title and episode.
 async function analyzeOfflineOpEd({title,episode,currentUrl,duration,candidates,status=()=>{}}){
@@ -2125,7 +2146,9 @@ async function extractCommunityArchive(buffer,dir){
   try{
     fs.writeFileSync(archive,buffer);fs.mkdirSync(out);
     await new Promise((resolve,reject)=>{const child=spawn(bsdtar,['-xf',archive,'-C',out],{windowsHide:true});child.once('error',reject);child.once('close',code=>code===0?resolve():reject(new Error(`tar ${code}`)))});
-    const walk=folder=>fs.readdirSync(folder,{withFileTypes:true}).flatMap(item=>item.isDirectory()?walk(path.join(folder,item.name)):[path.join(folder,item.name)]);
+    // Regular files only: a link in the archive (macOS, Linux) named like a subtitle would be read through to whatever
+    // file it points at.
+    const walk=folder=>fs.readdirSync(folder,{withFileTypes:true}).flatMap(item=>item.isDirectory()?walk(path.join(folder,item.name)):item.isFile()?[path.join(folder,item.name)]:[]);
     for(const file of walk(out))write(file,fs.readFileSync(file));
     return files;
   }finally{fs.rmSync(work,{recursive:true,force:true})}
@@ -2654,7 +2677,7 @@ async function downloadHls(url,filePath,event){
   // are written in order, each as soon as it and the ones before it are in.
   const segment=async i=>{const response=await fetch(segments[i],{headers:{'User-Agent':LINKKF_UA,Referer:playlistUrl}});if(!response.ok)throw new Error(`세그먼트 ${i+1} HTTP ${response.status}`);return Buffer.from(await response.arrayBuffer())};
   const ahead=[];let asked=0;const fill=()=>{while(asked<segments.length&&ahead.length<6){const next=segment(asked++);next.catch(()=>{});ahead.push(next)}};
-  const output=fs.createWriteStream(filePath);try{for(let i=0;i<segments.length;i++){fill();const data=await ahead.shift();if(!output.write(data))await new Promise(resolve=>output.once('drain',resolve));event.sender.send('download:progress',{received:i+1,total:segments.length,percent:Math.round((i+1)/segments.length*100)});}}finally{await new Promise(resolve=>output.end(resolve));}
+  const output=fs.createWriteStream(filePath);try{for(let i=0;i<segments.length;i++){fill();const data=await ahead.shift();if(!output.write(data))await new Promise(resolve=>output.once('drain',resolve));if(!event.sender.isDestroyed())event.sender.send('download:progress',{received:i+1,total:segments.length,percent:Math.round((i+1)/segments.length*100)});}}finally{await new Promise(resolve=>output.end(resolve));}
 }
 
 // A saved work's facts for 내 목록 (see library:refresh): its counts as its page gives them, and updatedAt, the day of
@@ -3107,6 +3130,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('update:check',()=>updater.check());
   ipcMain.handle('update:download',()=>updater.download());
   ipcMain.handle('update:install',()=>updater.install());
+  ipcMain.handle('update:auto',(_,value)=>updater.setAuto(value));
   ipcMain.handle('downloads:list',()=>downloadManager.list());
   ipcMain.handle('downloads:add',(_,request)=>downloadManager.enqueue(request));
   ipcMain.handle('downloads:cancel',(_,id)=>downloadManager.cancel(id));
@@ -3132,7 +3156,7 @@ app.whenReady().then(async () => {
     if(special&&!offline)return [];
     // 애니24 has no AniList id of its own: it is found by the original title (see ohliAnilist).
     if(!anilistId&&!malId&&nativeTitle&&!hasHangul(nativeTitle))({anilistId=null,malId=null}=await ohliAnilist(String(nativeTitle),year)||{});
-    const status=message=>event.sender.send('oped:status',message);
+    const status=message=>{if(!event.sender.isDestroyed())event.sender.send('oped:status',message)};
     if(!offline){status('AniSkip 타임스탬프 확인 중');try{return await androidOnlineSkipTimes({episode,anilistId,malId,duration})}catch{return []}}
     const saved=downloadManager.jobs.find(job=>job.id===jobId)?.skipSegments;if(Array.isArray(saved)&&saved.length)return saved;
     if(audioAnalysis===false)return [];
@@ -3147,7 +3171,7 @@ app.whenReady().then(async () => {
     const response = await fetch(url,{headers:{'User-Agent':LINKKF_UA}});
     if (!response.ok || !response.body) throw new Error(`다운로드 HTTP ${response.status}`);
     const total=Number(response.headers.get('content-length')||0);let received=0;
-    const stream=Readable.fromWeb(response.body);stream.on('data',chunk=>{received+=chunk.length;event.sender.send('download:progress',{received,total,percent:total?Math.round(received/total*100):null})});
+    const stream=Readable.fromWeb(response.body);stream.on('data',chunk=>{received+=chunk.length;if(!event.sender.isDestroyed())event.sender.send('download:progress',{received,total,percent:total?Math.round(received/total*100):null})});
     await pipeline(stream,fs.createWriteStream(result.filePath));
     return result.filePath;
   });
@@ -3438,7 +3462,7 @@ app.whenReady().then(async () => {
   // At start and every 3 hours while the app stays open.
   // The selected source's catalog index refreshes in the background (started by the page, see catalog:activate).
   setInterval(()=>buildCatalogIndexes().catch(()=>{}),6*60*60*1000).unref?.();
-  if(app.isPackaged){setTimeout(()=>updater.check(),5000);setInterval(()=>updater.check(),3*60*60*1000).unref?.()}
+  if(app.isPackaged){setTimeout(()=>updater.check({scheduled:true}),5000);setInterval(()=>updater.check({scheduled:true}),3*60*60*1000).unref?.()}
   app.on('activate', () => desktopState.show());
 }).catch(error => {
   startupComplete = false;

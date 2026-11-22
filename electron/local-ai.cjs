@@ -578,6 +578,9 @@ function createLocalAi(userData) {
       saveRun(file, { device: layers ? `${device} · ${RUNTIMES[kind].label}` : '', layers, total, reason: layers ? '' : reason || (device ? '' : '그래픽카드를 찾지 못함'), time: Date.now() });
       let template = '';
       try { template = String((await (await fetch(`http://127.0.0.1:${port}/props`, { signal: AbortSignal.timeout(3000) })).json())?.chat_template || ''); } catch { /* asked by the model's name */ }
+      // Stopped, or another model's start took over, while this one loaded: its llama.cpp is not kept (it went on running
+      // beside the new one, holding the card's memory, with nothing left to stop it).
+      if (starting?.promise !== promise) { child.kill(); throw new Error('다른 번역을 시작해 이 모델 불러오기를 멈췄습니다.'); }
       server = { child, port, model: file, template }; child.once('exit', () => { if (server?.child === child) server = null; }); touch();
       return server;
     })();

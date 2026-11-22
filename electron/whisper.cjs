@@ -271,8 +271,8 @@ function createWhisper({ userData, ffmpegPath, subtitleRoot, proxy = url => Prom
   }
 
   // --- Windows: whisper-server, one at a time for the model in use; stopped a minute after the last run ---
-  let server = null, idleTimer = null;
-  function stopServer() { clearTimeout(idleTimer); if (server && !server.child.killed) server.child.kill(); server = null; }
+  let server = null, idleTimer = null, launching = null;
+  function stopServer() { clearTimeout(idleTimer); launching = null; if (server && !server.child.killed) server.child.kill(); server = null; }
   const freePort = () => new Promise((resolve, reject) => { const probe = require('net').createServer(); probe.once('error', reject); probe.listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); }); });
   async function launch(kind, model, status) {
     const port = await freePort(), threads = String(Math.max(2, Math.min(8, os.cpus().length - 2)));
@@ -296,16 +296,27 @@ function createWhisper({ userData, ffmpegPath, subtitleRoot, proxy = url => Prom
     if (first) saveNative({ ran: { ...nativeInfo().ran, [kind]: gpu?.driver } });
     return { kind, model, port, child };
   }
+  // A server still starting is shared: a run stopped while it loaded (the episode changed) and the next run used to
+  // start one each, and the one that finished first was left running with nothing to stop it. A start that a
+  // stopServer() (another model, the idle timer) passed over stops its own server when it is up.
   async function serverFor(model, status) {
     clearTimeout(idleTimer);
     if (server && server.model === model && !server.child.killed && server.child.exitCode === null) return server;
+    if (launching?.model === model) return launching.promise;
     stopServer();
-    let lastError = null;
-    for (const kind of nativeKinds().filter(serverExe)) {
-      try { server = await launch(kind, model, status); return server; }
-      catch (error) { lastError = error; if (BUILDS[kind].gpu) saveNative({ broken: { ...nativeInfo().broken, [kind]: gpu?.driver } }); }
-    }
-    throw lastError || new Error('whisper.cpp가 설치되지 않았습니다.');
+    const promise = (async () => {
+      let lastError = null;
+      for (const kind of nativeKinds().filter(serverExe)) {
+        let started;
+        try { started = await launch(kind, model, status); }
+        catch (error) { lastError = error; if (BUILDS[kind].gpu) saveNative({ broken: { ...nativeInfo().broken, [kind]: gpu?.driver } }); continue; }
+        if (launching?.promise !== promise) { started.child.kill(); throw new Error('whisper.cpp 실행을 멈췄습니다.'); }
+        server = started; return server;
+      }
+      throw lastError || new Error('whisper.cpp가 설치되지 않았습니다.');
+    })();
+    launching = { model, promise };
+    try { return await promise; } finally { if (launching?.promise === promise) launching = null; }
   }
   // One piece of the episode through whisper-server: FFmpeg's audio collected and cut at quiet moments into pieces of at
   // most 30 s (Whisper's window; a cut in the middle of a word would lose it), each sent as WAV as soon as it is there.

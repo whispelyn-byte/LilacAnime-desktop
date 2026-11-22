@@ -39,3 +39,21 @@ test('a downloaded installer must match the SHA-256 the release gives', async t 
   // A release without a digest (an older one) is still taken by its size.
   assert.equal((await download('')).status, 'ready');
 });
+
+test('자동 업데이트 off: no scheduled check, no download on a manual check, nothing installed on quit (issue #28)', async t => {
+  const { app } = fixture(t);
+  const realFetch = globalThis.fetch; t.after(() => { globalThis.fetch = realFetch; });
+  let fetched = 0;
+  globalThis.fetch = async () => { fetched++; return new Response(JSON.stringify({ tag_name: 'v0.5.64', body: '', assets: [{ name: 'LilacAnime-Setup.exe', size: 1, browser_download_url: 'https://example.test/x.exe' }] })); };
+  const updater = new Updater({ app, broadcast() {} });
+  assert.equal(updater.state.auto, true, 'on by default');
+  updater.setAuto(false);
+  assert.equal(new Updater({ app, broadcast() {} }).state.auto, false, 'the choice is kept across starts');
+  await updater.check({ scheduled: true });
+  assert.equal(fetched, 0); assert.equal(updater.state.status, 'idle');
+  let downloads = 0; updater.download = async () => { downloads++; };
+  assert.equal((await updater.check()).status, 'available'); assert.equal(downloads, 0);
+  let installs = 0; updater.install = () => { installs++; };
+  updater.state.status = 'ready'; updater.installOnQuit(); assert.equal(installs, 0);
+  updater.setAuto(true); updater.installOnQuit(); assert.equal(installs, 1);
+});
