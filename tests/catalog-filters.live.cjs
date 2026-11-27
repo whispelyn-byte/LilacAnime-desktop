@@ -10,7 +10,7 @@ const ctx = vm.createContext({ cheerio, zlib, Buffer, URL, URLSearchParams, Abor
   fetch, LINKKF_UA: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
   LINKKF_API: 'https://linkkf1.5imgdarr.top/api', LINKKF_WEB: 'https://linkkf.app', REANIME_WEB: 'https://reanime.cz', REANIME_ID: 'https://reanime.to', reanimeLive: url => String(url || '').replace(/^https?:\/\/(?:www\.)?reanime\.(?:to|cz)(?=[/?#]|$)/i, 'https://reanime.cz'),
   ANIMENOSUB_WEB: 'https://animenosub.to', MIRURO_WEB: 'https://www.miruro.to', MIRURO_KEY: Buffer.from('miruro/catalog'),
-  LINKANI_WEB: 'https://linkani.tv', OHLI24_WEB: 'https://ani.ohli24.com', net: electron?.net || { fetch }
+  LINKANI_WEB: 'https://linkani.tv', OHLI24_WEB: 'https://a101.ohli24.com', OHLI24_ID: 'https://ani.ohli24.com', net: electron?.net || { fetch }
 });
 function add(name, oneLine = false) {
   const match = new RegExp(`^(?:async )?function ${name}\\(`, 'm').exec(source);
@@ -22,7 +22,7 @@ for (const name of ['linkkfFetch', 'linkkfImage', 'linkkfAnime', 'linkkfFilterTa
 for (const name of ['absoluteUrl', 'miruroText', 'ohliAiring']) add(name, true);
 vm.runInContext(source.match(/^const ohliText=.*$/m)[0], ctx);
 vm.runInContext(source.match(/^const ohliInfo=.*$/m)[0], ctx);
-vm.runInContext("const ohliPath=(...parts)=>`${OHLI24_WEB}/${parts.map(part=>encodeURIComponent(part)).join('/')}`;", ctx);
+for (const name of ["OHLI24_HOST", "ohliLive", "ohliPath"]) vm.runInContext(source.match(new RegExp(`^const ${name}=.*$`, "m"))[0], ctx);
 const browser = createCatalogBrowser({
   reanimeBase: ctx.REANIME_WEB, reanimeFetch: url => ctx.providerFetch(url, { json: true }), reanimeItems: ctx.reanimeItems,
   animenosubBase: ctx.ANIMENOSUB_WEB, animenosubFetch: ctx.providerFetch, animenosubItems: ctx.animenosubList,

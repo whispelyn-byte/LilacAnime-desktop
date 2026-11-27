@@ -727,9 +727,16 @@ async function searchIgnoringSpaces(query,search,titles){
 // playing.body.url.
 // It took the place of www.ohli24.net, a copy no longer kept up (episodes missing, dates off): a series or episode
 // saved from there (내 목록, 시청 기록, downloads) is found again here by its title.
-const OHLI24_WEB='https://ani.ohli24.com',OHLI24_OLD=/^https?:\/\/(?:www\.)?ohli24\.net\//i;
+// In November 2026 ani.ohli24.com began answering every address with HTTP 451 (Cloudflare 1026); the same site is served
+// at a101.ohli24.com (its own next-page links name it). a101.ohli24.net is the other, older engine (/ing, /<id>/<title>.html),
+// not this one. Requests go to OHLI24_WEB. The addresses the app keeps for a series and an episode (내 목록, 시청 기록,
+// downloads, the phone's sync: all keyed by them) stay on OHLI24_ID, as they were saved; ohliLive() turns one into the
+// site's address of now when it is fetched or opened. A later move changes OHLI24_WEB only.
+const OHLI24_WEB='https://a101.ohli24.com',OHLI24_ID='https://ani.ohli24.com',OHLI24_OLD=/^https?:\/\/(?:www\.)?ohli24\.net\//i;
+const OHLI24_HOST=/^https?:\/\/(?:(?:ani|www|a\d+)\.)?ohli24\.com(?=[/?#]|$)/i;
+const ohliLive=url=>String(url||'').replace(OHLI24_HOST,OHLI24_WEB);
 async function ohliFetch(url){
-  const response=await net.fetch(url,{signal:AbortSignal.timeout(30000),headers:{'User-Agent':LINKKF_UA,Accept:'text/html,application/xhtml+xml','Accept-Language':'ko-KR,ko;q=0.9',Referer:`${OHLI24_WEB}/`}});
+  const response=await net.fetch(ohliLive(url),{signal:AbortSignal.timeout(30000),headers:{'User-Agent':LINKKF_UA,Accept:'text/html,application/xhtml+xml','Accept-Language':'ko-KR,ko;q=0.9',Referer:`${OHLI24_WEB}/`}});
   if(!response.ok)throw new Error(`애니24 HTTP ${response.status}`);
   return response.text();
 }
@@ -738,24 +745,30 @@ async function ohliPage(url){
   if(!json)throw new Error('애니24 페이지를 읽지 못했습니다.');
   return JSON.parse(json).props||{};
 }
-const ohliPath=(...parts)=>`${OHLI24_WEB}/${parts.map(part=>encodeURIComponent(part)).join('/')}`;
+const ohliPath=(...parts)=>`${OHLI24_ID}/${parts.map(part=>encodeURIComponent(part)).join('/')}`;
 const ohliText=html=>String(html||'').replace(/<br\s*\/?>/gi,'\n').replace(/<[^>]+>/g,'').replace(/&nbsp;/g,' ').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&amp;/g,'&').split('\n').map(line=>line.trim()).filter(Boolean).join('\n');
 const ohliInfo=item=>Object.fromEntries(Array.isArray(item?.metadata?.info_rows)?item.metadata.info_rows:[]);
 // "2025-10-29T10:14:25+09:00" / "2025-10-25T08:49:54.000000Z" → the day in Korea.
 const ohliDay=value=>{const time=Date.parse(value||'');return Number.isFinite(time)?new Date(time+9*3600000).toISOString().slice(0,10):''};
-// A series as the app lists it, from a board's card (comics.data) or the airing list's shorter one (title, thumbnail,
-// date, eps "63화").
+// A series as the app lists it, from a series page's comic, a board's card (comics.data) or the airing list's shorter
+// one (title, thumbnail, date, eps "63화"). A board card (since November 2026) has no category, count or tags: it has
+// main_left (the year, or the last episode's day "2026-11-23") and main_right ("49화", a movie's runtime "42분"), and
+// its genres as a list.
 function ohliAnime(item){
-  const slug=String(item.slug||item.title||''),info=ohliInfo(item),count=Number(item.episodes_count)||Number(String(item.eps||'').match(/\d+/)?.[0])||null;
+  const slug=String(item.slug||item.title||''),info=ohliInfo(item),right=String(item.main_right||'');
+  const count=Number(item.episodes_count)||Number(String(item.eps||'').match(/\d+/)?.[0])||Number(right.match(/^(\d+)\s*화$/)?.[1])||null;
+  const movie=item.category==='극장판'||/^\d+\s*분$/.test(right);
+  const genres=(Array.isArray(item.genres)?item.genres.map(genre=>String(genre?.name??genre).trim()):String(item.tags_string||'').split(',').map(name=>name.trim())).filter(Boolean).map(name=>({name}));
   return {provider:'ohli24',id:slug,mal_id:`ohli24:${slug}`,title:String(item.title||slug),title_english:'',title_japanese:String(item.original_title||info['원제']||''),
-    images:{webp:{large_image_url:item.thumbnail?`${OHLI24_WEB}/storage/${item.thumbnail}`:''}},score:Number(item.rating)||null,year:String(info['방영일']||info['상영일']||item.published_at||'').match(/\d{4}/)?.[0]||'',
-    type:item.category==='극장판'?'Movie':'TV',episodes:Number(item.episode_total)||count,availableEpisodes:count,totalEpisodes:Number(item.episode_total)||null,status:String(item.category||(item.eps?'방영중':'')),
-    synopsis:ohliText(item.description),genres:String(item.tags_string||'').split(',').map(name=>name.trim()).filter(Boolean).map(name=>({name})),studios:[],url:ohliPath('c',slug)};
+    images:{webp:{large_image_url:item.thumbnail?`${OHLI24_WEB}/storage/${item.thumbnail}`:''}},score:Number(item.rating)||null,year:String(info['방영일']||info['상영일']||item.published_at||item.main_left||'').match(/\d{4}/)?.[0]||'',
+    type:movie?'Movie':'TV',episodes:Number(item.episode_total)||count,availableEpisodes:count,totalEpisodes:Number(item.episode_total)||null,status:String(item.category||(item.eps?'방영중':'')),
+    synopsis:ohliText(item.description),genres,studios:[],url:ohliPath('c',slug)};
 }
+// A board's cards carry no category: the board names it (완결, 극장판).
 async function ohliBoard(board,page=1,keyword=''){
   const url=new URL(ohliPath(board));if(page>1)url.searchParams.set('page',String(page));if(keyword)url.searchParams.set('keyword',keyword);
   const comics=(await ohliPage(url.href)).comics||{};
-  return {data:(comics.data||[]).map(ohliAnime),done:!comics.next_page_url};
+  return {data:(comics.data||[]).map(item=>ohliAnime({category:board,...item})),done:!comics.next_page_url};
 }
 async function ohliAiring(){return ((await ohliPage(ohliPath('방영중'))).items||[]).map(ohliAnime)}
 // The whole catalog: the airing shows first, then the finished ones a page at a time (latest update first); movies
@@ -765,7 +778,8 @@ async function ohliBrowse(page=1,format=''){
   return page<=1?{data:await ohliAiring(),done:false}:ohliBoard('완결',page-1);
 }
 // 인기 순위: the site keeps no views (a sort it does not know falls back to update-desc), so its "별점 높은순" (a
-// weighted rating) front pages are ranked by how many people rated each show. Kept for an hour.
+// weighted rating) front pages are ranked by how many people rated each show. Kept for an hour. Board cards no longer
+// carry rating_count or rating (November 2026): the sort is stable, so the site's own rating order then stands.
 let ohliPopularCache=null;
 async function ohliPopular(){
   if(ohliPopularCache&&Date.now()-ohliPopularCache.time<60*60*1000)return ohliPopularCache.data;
@@ -884,7 +898,7 @@ function numberTitledEpisodes(episodes){
 // A series: what it is (원제, 장르, 방영일, 총화수 in its info rows), its story and every episode (100 a page). One saved
 // from www.ohli24.net (its url there) is opened here by its title, or found by a search for it.
 async function ohliDetail(anime){
-  const own=/^https?:\/\/ani\.ohli24\.com\/c\//i.test(anime.url||''),slug=own?decodeURIComponent(new URL(anime.url).pathname.slice(3)):String(anime.title||anime.id||'');
+  const own=/^https?:\/\/(?:(?:ani|www|a\d+)\.)?ohli24\.com\/c\//i.test(anime.url||''),slug=own?decodeURIComponent(new URL(anime.url).pathname.slice(3)):String(anime.title||anime.id||'');
   let props;
   try{props=await ohliPage(ohliPath('c',slug));if(!props.comic)throw new Error('애니24에서 이 작품을 찾지 못했습니다.')}
   catch(error){if(own)throw error;const hit=(await ohliSearch(slug)).find(item=>titleCompareKey(item.title)===titleCompareKey(slug));if(!hit)throw error;props=await ohliPage(hit.url)}
@@ -1188,6 +1202,16 @@ function hookResolver(ses,webContentsId,handler){
   handlers.set(webContentsId,handler);
   return ()=>{handlers.delete(webContentsId);if(!handlers.size&&resolverHooks.get(ses)===handlers){resolverHooks.delete(ses);ses.webRequest.onBeforeSendHeaders(null)}};
 }
+// The FlixCloud player's frame (an iframe of the resolver's page, see resolveStreamPage), null until it is there.
+function flixFrame(resolver){
+  if(resolver.isDestroyed())return null;
+  try{return resolver.webContents.mainFrame.framesInSubtree.find(frame=>/^https:\/\/(?:[\w-]+\.)?flixcloud\.cc\//i.test(frame.url||''))||null}catch{return null}
+}
+// The decryption key the player sets (window.__pk), '' while it has not.
+async function flixKey(resolver){
+  const frame=flixFrame(resolver);
+  return frame?String(await frame.executeJavaScript(`window.__pk||''`,true).catch(()=>'')||''):'';
+}
 async function resolveStreamPage(targetUrl, referer = '', timeoutMs = 30000, { partition: ownPartition = '', waitSubtitle = true, signal = null } = {}) {
   const isFlixCloud=/flixcloud\.cc/i.test(targetUrl);
   const partition=ownPartition||(isFlixCloud?'persist:lilac-android-webview-v2':'persist:lilac-provider');
@@ -1200,14 +1224,26 @@ async function resolveStreamPage(targetUrl, referer = '', timeoutMs = 30000, { p
   try {
     // The address is looked for while the page loads: a player page can keep loading ads for half a minute after the
     // video request this waits for. The time limit covers the load too, so a host that does not answer is left in time.
-    let loaded=false,blockChecked=false;
-    resolver.loadURL(targetUrl,{httpReferrer:referer||new URL(targetUrl).origin+'/',userAgent:browserUa}).then(()=>{loaded=true},()=>{loaded=true});
+    let blockChecked=false;
+    // A FlixCloud player is an embed: since November 2026 it answers a page opened on its own (a top-level document)
+    // with "404: File not found", and plays only inside a frame. It is opened as RE:Anime opens it, in an iframe of a
+    // page on the referring site's address (the data page's base URL), so it is asked with that site as its referrer.
+    if(isFlixCloud){
+      const embedder=new URL(referer||`${REANIME_WEB}/`).origin+'/',src=targetUrl.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+      const page=`<!doctype html><html><head><meta name="referrer" content="origin"><style>html,body{margin:0;height:100%;background:#000}iframe{border:0;width:100%;height:100%}</style></head><body><iframe src="${src}" allow="autoplay; fullscreen; encrypted-media" allowfullscreen></iframe></body></html>`;
+      resolver.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(page)}`,{baseURLForDataURL:embedder,userAgent:browserUa}).catch(()=>{});
+    }else resolver.loadURL(targetUrl,{httpReferrer:referer||new URL(targetUrl).origin+'/',userAgent:browserUa}).catch(()=>{});
     const streamDeadline=Date.now()+timeoutMs;
     while(!stream&&!resolver.isDestroyed()&&Date.now()<streamDeadline){
-      if(isFlixCloud&&loaded&&!blockChecked){
-        blockChecked=true;
-        const blocked=await resolver.webContents.mainFrame.executeJavaScript(`(()=>{const text=(document.title+' '+(document.body?.innerText||'')).toLowerCase();return text.includes('sorry, you have been blocked')||text.includes('you have been blocked')})()`,true).catch(()=>false);
-        if(blocked)throw new Error('FlixCloud가 이 앱 세션을 차단했습니다. 다른 영상 서버로 전환합니다.');
+      const player=isFlixCloud&&!blockChecked?flixFrame(resolver):null;
+      if(player){
+        // Looked at once the player's document has loaded: a block page, or the file gone (the next server is tried).
+        const state=await player.executeJavaScript(`(()=>{const text=(document.title+' '+(document.body?.innerText||'')).toLowerCase();return {ready:document.readyState==='complete',blocked:text.includes('you have been blocked'),missing:/404|file could not be found|file not found/.test(document.title.toLowerCase())||text.includes('this file could not be found')}})()`,true).catch(()=>null);
+        if(state?.ready){
+          blockChecked=true;
+          if(state.blocked)throw new Error('FlixCloud가 이 앱 세션을 차단했습니다. 다른 영상 서버로 전환합니다.');
+          if(state.missing)throw new Error('FlixCloud에서 이 영상을 찾지 못했습니다. 다른 영상 서버로 전환합니다.');
+        }
       }
       // Every frame, the page's own included: a player on the page itself (vidmoly) or two iframes down (Moon:
       // bysesayeveum → n1mwq.org) waits for a click, and .frames lists only the page's direct iframes. The script is a
@@ -1226,7 +1262,7 @@ async function resolveStreamPage(targetUrl, referer = '', timeoutMs = 30000, { p
       const complete=()=>has(/master/i)||(has(/\/video(?:\/|\.|$)/i)&&has(/\/audio(?:\/|\.|$)/i));
       const readyDeadline=Date.now()+10000;let previousSize=-1,stableSince=Date.now();
       while(!resolver.isDestroyed()&&Date.now()<readyDeadline){
-        if(!flixPk)flixPk=await resolver.webContents.mainFrame.executeJavaScript(`window.__pk||''`,true).catch(()=>'');
+        if(!flixPk)flixPk=await flixKey(resolver);
         if(streams.size!==previousSize){previousSize=streams.size;stableSince=Date.now()}
         if(flixPk&&(complete()||Date.now()-stableSince>=1500))break;
         await new Promise(resolve=>setTimeout(resolve,150));
@@ -1245,14 +1281,14 @@ async function resolveStreamPage(targetUrl, referer = '', timeoutMs = 30000, { p
     if(isFlixCloud&&!resolver.isDestroyed()){
       // FlixCloud embeds the complete track list in the player HTML. Report every track so the
       // player can offer a choice, and only auto-select Korean (Android v0.3.9).
-      const html=await resolver.webContents.mainFrame.executeJavaScript(`document.documentElement.innerHTML||''`,true).catch(()=>'');
+      const html=await (flixFrame(resolver)||resolver.webContents.mainFrame).executeJavaScript(`document.documentElement.innerHTML||''`,true).catch(()=>'');
       subtitleTracks=parseFlixSubtitleTracks(html);
       subtitle=subtitleTracks.find(isKoreanTrack)?.url||null;
     }
     if(stream&&!subtitle&&!isFlixCloud&&waitSubtitle){const subtitleDeadline=Date.now()+2500;while(Date.now()<subtitleDeadline&&!subtitle)await new Promise(resolve=>setTimeout(resolve,200));}
     if(!stream)throw new Error(resolver.isDestroyed()?'플레이어 창이 닫혀 스트림 탐색을 중단했습니다.':'영상 주소를 찾지 못했습니다 (응답 시간 초과).');
     // The key appears with the player; a page that never sets it is given up instead of waiting forever.
-    if(isFlixCloud){const keyDeadline=Date.now()+15000;while(!flixPk&&!resolver.isDestroyed()&&Date.now()<keyDeadline){flixPk=await resolver.webContents.mainFrame.executeJavaScript(`window.__pk||''`,true).catch(()=>'');if(!flixPk)await new Promise(resolve=>setTimeout(resolve,250))}if(!flixPk)throw new Error(resolver.isDestroyed()?'플레이어 창이 닫혀 복호화 키 탐색을 중단했습니다.':'FlixCloud 복호화 키를 찾지 못했습니다.');const headers={...lastHeaders,Referer:targetUrl,'User-Agent':ANDROID_WEBVIEW_UA};stream=flixVideo&&flixAudio?await createFlixAvProxyUrl(flixVideo,flixAudio,flixPk,headers):await createFlixProxyUrl(stream,flixPk,headers);}
+    if(isFlixCloud){const keyDeadline=Date.now()+15000;while(!flixPk&&!resolver.isDestroyed()&&Date.now()<keyDeadline){flixPk=await flixKey(resolver);if(!flixPk)await new Promise(resolve=>setTimeout(resolve,250))}if(!flixPk)throw new Error(resolver.isDestroyed()?'플레이어 창이 닫혀 복호화 키 탐색을 중단했습니다.':'FlixCloud 복호화 키를 찾지 못했습니다.');const headers={...lastHeaders,Referer:targetUrl,'User-Agent':ANDROID_WEBVIEW_UA};stream=flixVideo&&flixAudio?await createFlixAvProxyUrl(flixVideo,flixAudio,flixPk,headers):await createFlixProxyUrl(stream,flixPk,headers);}
     let subtitleUrl=subtitle,subtitlePath=null,subtitleAss=null;if(subtitle){try{const saved=subtitleResult(await saveRemoteSubtitle(subtitle,{referer:targetUrl,userAgent:browserUa,headers:lastHeaders}));subtitleUrl=saved.url;subtitlePath=saved.path;subtitleAss=saved.assUrl?{url:saved.assUrl,path:saved.assPath}:null}catch{/* Community subtitle fallback remains available. */}}
     resolvedStreamHeaders.set(new URL(stream).host,{...lastHeaders,Referer:targetUrl});return {url:stream,subtitleUrl,subtitlePath,subtitleAss,subtitleTracks,headers:lastHeaders,referer:targetUrl};
   } finally {signal?.removeEventListener('abort',stop);unhook();if(!resolver.isDestroyed())resolver.destroy();}
@@ -3422,7 +3458,7 @@ app.whenReady().then(async () => {
     return result.canceled ? null : result.filePaths[0];
   });
   ipcMain.handle('open:external', (_, url) => {
-    if (/^https:\/\//i.test(url)) return shell.openExternal(reanimeLive(url));
+    if (/^https:\/\//i.test(url)) return shell.openExternal(ohliLive(reanimeLive(url)));
   });
   // 스크린샷 (P): the frame on screen as a PNG in 사진\LilacAnime. The page hands over the frame at the video's own
   // size; a video it cannot read (another site's file without CORS) is taken from the window instead (rect: where the
